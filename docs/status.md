@@ -41,14 +41,19 @@ This document defines the current baseline state, active developments, and futur
 - **Deterministic Academic PDF Fixture**: Self-contained `tests/fixtures/paper/anomaly_agent.pdf` with automated generator `scripts/create_paper_fixtures.py`.
 - **Full Acceptance Suite**: 16 dedicated unit and acceptance tests validating structural completeness and JSON round-trip stability.
 
+### Research Presentation Planner (PR7.2)
+- **Presentation Plan Representation (`PresentationPlan`)**: Strongly-typed Pydantic v2 presentation plan (`SlideType`, `SlidePlan`, `PresentationPlan`) with lossless JSON round-trip serialization.
+- **Standard Academic Profiles**: Deterministic slot-based templates for `research_15min` (12 slides: Title, Background, Problem, Motivation, Related Work, Method Overview, Method Details, Algorithm, Setup, Results, Ablation, Conclusion) and `research_10min` (8 slides).
+- **Section Importance Ranking (`ranking.py`)**: Normalized academic relevance scoring and semantic role classification prioritizing Method and Experiment sections while filtering References and Appendix.
+- **Figure & Table Selection (`figure_selector.py`)**: Smart visual evidence binding mapping architecture diagrams to `METHOD_OVERVIEW`, comparative benchmark tables to `RESULT`, and ablation tables to `ABLATION`.
+- **Rule-First Architecture with Optional LLM Refinement (`enricher.py`)**: Guarantees deterministic structure and bullet points with non-destructive LLM wording refinement and safe zero-network degradation.
+- **Comprehensive Test Suite**: 13 unit and acceptance tests covering schema roundtrip, ranking, figure selection, profile slots, and deterministic plan generation.
+
 ---
 
 ## 2. In Progress
 
 ### Research Paper Presentation Agent (PR7)
-- **PR7.2 Research Presentation Planner**:
-  - Transforming `PaperIR` into a structured `PresentationPlan` (10-12 slide 15-minute academic lab meeting archetype).
-  - Stable slide archetype mapping (Background, Problem, Motivation, Method, Experiments, Limitations, Conclusion).
 - **PR7.3 Slide Semantic IR & Asset Understanding**:
   - `SlideSpec` semantic blocks (pipeline, comparison, metric highlights).
   - Figure classification (architecture, experiment, ablation) and table best-cell highlighting.
