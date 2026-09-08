@@ -23,7 +23,7 @@ def main():
         print(f"[Ready] Production frontend is built and mounted at http://{args.host}:{args.port}")
 
     import uvicorn
-    print(f"🚀 Starting PPT-Agent-Studio on http://{args.host}:{args.port} ...")
+    print(f">> Starting PPT-Agent-Studio on http://{args.host}:{args.port} ...")
     uvicorn.run("backend.main:app", host=args.host, port=args.port, reload=args.reload)
 
 
