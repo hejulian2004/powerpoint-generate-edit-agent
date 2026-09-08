@@ -8,6 +8,7 @@ when raster assets are not directly available on disk, ensuring robust, self-hea
 from __future__ import annotations
 
 import os
+import tempfile
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 
@@ -30,7 +31,7 @@ class AssetResolver:
         self.cache_dir = (
             Path(cache_dir)
             if cache_dir
-            else Path("C:/Users/Admin/AppData/Local/Temp/opencode/asset_cache")
+            else Path(tempfile.gettempdir()) / "opencode_asset_cache"
         )
         self.cache_dir.mkdir(parents=True, exist_ok=True)
 

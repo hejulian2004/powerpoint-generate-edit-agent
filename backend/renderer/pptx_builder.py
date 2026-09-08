@@ -295,11 +295,16 @@ class PPTXBuilder:
                 # Check if highlighted (coordinate match "r,c" or row match "r" or string presence)
                 cell_coord_1 = f"{r_idx},{c_idx}"
                 cell_coord_2 = f"{actual_row_idx},{c_idx}"
+                clean_highlights = [h.strip() for h in highlight_cells if isinstance(h, str) and h.strip()]
                 is_highlighted = (
-                    cell_coord_1 in highlight_cells
-                    or cell_coord_2 in highlight_cells
-                    or str(r_idx) in highlight_cells
-                    or any(h.lower() in cell_val.lower() for h in highlight_cells if not h.replace(",", "").isdigit())
+                    cell_coord_1 in clean_highlights
+                    or cell_coord_2 in clean_highlights
+                    or str(r_idx) in clean_highlights
+                    or any(
+                        h.lower() in cell_val.lower()
+                        for h in clean_highlights
+                        if not h.replace(",", "").isdigit()
+                    )
                 )
 
                 cell.fill.solid()

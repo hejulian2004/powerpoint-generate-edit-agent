@@ -16,6 +16,7 @@ from typing import Optional, Union
 from ..layout.schema import DeckLayoutSpec, ElementType
 from .assets import AssetResolver
 from .pptx_builder import PPTXBuilder
+from .schema import RenderConfig
 from .theme import AcademicTheme
 
 
@@ -25,6 +26,7 @@ def render_pptx(
     asset_resolver: Optional[AssetResolver] = None,
     theme: Optional[AcademicTheme] = None,
     validate_fidelity: bool = True,
+    config: Optional[RenderConfig] = None,
 ) -> str:
     """Render a DeckLayoutSpec into a PowerPoint presentation file (.pptx).
 
@@ -34,6 +36,7 @@ def render_pptx(
         asset_resolver: Optional asset resolver for figures and tables.
         theme: Optional AcademicTheme; defaults to academic_modern.
         validate_fidelity: Whether to execute automated fidelity inspection on the output.
+        config: Optional RenderConfig options.
 
     Returns:
         The string path of the generated .pptx file.
@@ -53,6 +56,7 @@ def render_pptx(
     out_file.parent.mkdir(parents=True, exist_ok=True)
 
     # 2. Setup environment
+    active_config = config or RenderConfig(validate_fidelity=validate_fidelity)
     active_theme = theme or AcademicTheme()
     active_resolver = asset_resolver or AssetResolver()
     builder = PPTXBuilder(canvas=deck_layout.canvas)
@@ -77,13 +81,19 @@ def render_pptx(
                 builder.add_text(element, active_theme)
 
             elif el_type == ElementType.FIGURE:
-                content_payload = element.content if isinstance(element.content, dict) else {}
-                figure_id = (
-                    content_payload.get("source_figure_id")
-                    or element.source_block_id
-                    or element.element_id
-                )
-                caption = content_payload.get("caption", "")
+                caption = ""
+                if isinstance(element.content, dict):
+                    figure_id = (
+                        element.content.get("source_figure_id")
+                        or element.source_block_id
+                        or element.element_id
+                    )
+                    caption = element.content.get("caption", "")
+                elif isinstance(element.content, str) and element.content:
+                    figure_id = element.content
+                else:
+                    figure_id = element.source_block_id or element.element_id
+
                 img_path = active_resolver.resolve_figure(
                     figure_id=figure_id,
                     caption_hint=caption,
@@ -91,12 +101,19 @@ def render_pptx(
                 builder.add_image(element, img_path, active_theme)
 
             elif el_type == ElementType.TABLE:
-                content_payload = element.content if isinstance(element.content, dict) else {}
-                table_id = (
-                    content_payload.get("source_table_id")
-                    or element.source_block_id
-                    or element.element_id
-                )
+                content_payload: Dict[str, Any] = {}
+                if isinstance(element.content, dict):
+                    content_payload = element.content
+                    table_id = (
+                        content_payload.get("source_table_id")
+                        or element.source_block_id
+                        or element.element_id
+                    )
+                elif isinstance(element.content, str) and element.content:
+                    table_id = element.content
+                else:
+                    table_id = element.source_block_id or element.element_id
+
                 table_data = active_resolver.resolve_table(
                     table_id=table_id,
                     content_payload=content_payload,
@@ -107,7 +124,8 @@ def render_pptx(
     saved_path = builder.save(out_file)
 
     # 5. Post-Render Fidelity Validation
-    if validate_fidelity:
+    should_validate = validate_fidelity and active_config.validate_fidelity
+    if should_validate:
         from .validators import validate_pptx_fidelity
 
         report = validate_pptx_fidelity(deck_layout, saved_path)

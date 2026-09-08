@@ -238,6 +238,8 @@ def render_slide_screenshots(
     # 1. Try Windows PowerPoint COM automation via PowerShell
     ps_script = f"""
 $ErrorActionPreference = 'Stop'
+$ppt = $null
+$pres = $null
 try {{
     $ppt = New-Object -ComObject PowerPoint.Application
     $pres = $ppt.Presentations.Open('{in_path}', [Microsoft.Office.Core.MsoTriState]::msoTrue, [Microsoft.Office.Core.MsoTriState]::msoFalse, [Microsoft.Office.Core.MsoTriState]::msoFalse)
@@ -245,12 +247,18 @@ try {{
         $slidePath = Join-Path '{out_dir}' ("slide_" + $i + ".png")
         $pres.Slides.Item($i).Export($slidePath, "PNG")
     }}
-    $pres.Close()
-    $ppt.Quit()
-    [System.Runtime.Interopservices.Marshal]::ReleaseComObject($ppt) | Out-Null
     Write-Host "COM_EXPORT_SUCCESS"
 }} catch {{
     Write-Host ("COM_EXPORT_ERROR: " + $_.Exception.Message)
+}} finally {{
+    if ($pres) {{
+        try {{ $pres.Close() }} catch {{}}
+        try {{ [System.Runtime.Interopservices.Marshal]::ReleaseComObject($pres) | Out-Null }} catch {{}}
+    }}
+    if ($ppt) {{
+        try {{ $ppt.Quit() }} catch {{}}
+        try {{ [System.Runtime.Interopservices.Marshal]::ReleaseComObject($ppt) | Out-Null }} catch {{}}
+    }}
 }}
 """
     try:
