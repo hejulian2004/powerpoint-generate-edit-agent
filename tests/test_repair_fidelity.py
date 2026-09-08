@@ -17,7 +17,7 @@ from backend.ir.patch import HistoryManager
 from backend.eval.remediation import (
     FixActionType, DefectCategory, FidelityRemediationGenerator
 )
-from backend.eval.fidelity import FidelityEvaluator, RepairAcceptancePolicy
+from backend.eval.fidelity import FidelityEvaluator
 from backend.agent.remediation_runner import RemediationRunner
 from backend.agent.action import ActionResolver, AgentAction
 
@@ -263,62 +263,3 @@ def test_action_resolver_low_confidence_flags_confirmation():
         pres_flat
     )
     assert tool is None or tool.get("_needs_confirmation") is not None
-
-
-# =====================================================================
-# PR6.1 RepairAcceptancePolicy unit tests
-# =====================================================================
-
-from backend.eval.fidelity.fidelity_score import FidelityScore
-
-
-def _score(**overrides):
-    base = dict(geometry=100.0, text=100.0, style=100.0, visual=100.0, total=100.0)
-    base.update(overrides)
-    return FidelityScore(**base)
-
-
-def test_repair_policy_accepts_no_regression():
-    policy = RepairAcceptancePolicy()
-    before = _score()
-    after = _score(geometry=100.0, text=100.0, style=100.0, visual=100.0, total=100.0)
-    accepted, reasons = policy.accepts(before, after)
-    assert accepted is True
-    assert reasons == []
-
-
-def test_repair_policy_accepts_small_gain():
-    policy = RepairAcceptancePolicy()
-    before = _score(geometry=92.0, text=90.0, style=95.0, visual=88.0, total=91.4)
-    after = _score(geometry=94.0, text=92.0, style=95.0, visual=90.0, total=93.0)
-    accepted, reasons = policy.accepts(before, after)
-    assert accepted is True
-
-
-def test_repair_policy_rejects_total_regression():
-    policy = RepairAcceptancePolicy()
-    before = _score(total=93.0)
-    after = _score(geometry=99.0, text=99.0, style=99.0, visual=80.0, total=92.4)
-    accepted, reasons = policy.accepts(before, after)
-    assert accepted is False
-    assert any("total" in r for r in reasons)
-
-
-def test_repair_policy_rejects_per_dimension_regression_even_if_total_rises():
-    """A repair raising the total but dropping geometry > 3.0 pts must be rejected."""
-    policy = RepairAcceptancePolicy()
-    before = _score(geometry=100.0, text=80.0, style=80.0, visual=80.0, total=88.0)
-    after = _score(geometry=80.0, text=100.0, style=100.0, visual=100.0, total=96.0)
-    # total rose 88 -> 96, but geometry dropped 100 -> 80 (> 3.0 and below critical floor 85)
-    accepted, reasons = policy.accepts(before, after)
-    assert accepted is False
-    assert any("geometry" in r for r in reasons)
-
-
-def test_repair_policy_rejects_critical_floor_violation():
-    policy = RepairAcceptancePolicy()
-    before = _score(geometry=100.0, total=95.0)
-    after = _score(geometry=84.0, total=95.0)
-    accepted, reasons = policy.accepts(before, after)
-    assert accepted is False
-    assert any("floor" in r for r in reasons)

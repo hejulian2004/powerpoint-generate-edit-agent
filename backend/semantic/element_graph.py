@@ -10,6 +10,7 @@ Provides:
 from __future__ import annotations
 from typing import Dict, List, Optional, Any, Union
 from .role_classifier import RoleClassifier, SemanticRole, ElementClassification
+from .stable_id import stable_id_for_classified
 from ..ir.models import SlideIR, ElementIR, ConnectorElementIR
 from ..eval.layout_diff import BoundingBox
 
@@ -22,6 +23,10 @@ class SemanticElementGraph:
         self.elements_by_id: Dict[str, ElementIR] = {el.id: el for el in slide.elements}
         self.boxes: Dict[str, BoundingBox] = {el.id: BoundingBox.from_element(el) for el in slide.elements}
         self.classifications: Dict[str, ElementClassification] = RoleClassifier.classify_slide(slide)
+        self.stable_ids: Dict[str, str] = {
+            el.id: stable_id_for_classified(el, self.classifications.get(el.id), slide)
+            for el in slide.elements
+        }
         self.relationships: Dict[str, List[str]] = self._build_relationships()
 
     def _build_relationships(self) -> Dict[str, List[str]]:
@@ -132,6 +137,7 @@ class SemanticElementGraph:
             return None
         return {
             "id": element_id,
+            "stable_id": self.stable_ids.get(element_id),
             "role": cl.role.value,
             "importance": cl.importance,
             "confidence": cl.confidence,

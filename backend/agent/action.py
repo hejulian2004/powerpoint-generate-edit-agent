@@ -208,9 +208,12 @@ class ActionResolver:
             """
             if resolution_confidence is None:
                 return {}
+            from .risk_policy import ActionRiskPolicy
             return {
                 "_resolution_confidence": round(resolution_confidence, 2),
-                "_needs_confirmation": resolution_confidence < 0.8,
+                "_needs_confirmation": ActionRiskPolicy.needs_confirmation(
+                    resolution_confidence, action.action_type
+                ),
             }
 
         # Resolve any theme color tokens in parameters (e.g. accent1, theme:accent1)

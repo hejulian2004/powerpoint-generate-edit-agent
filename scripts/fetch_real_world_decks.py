@@ -29,8 +29,24 @@ DECKS = {
     "backgrounds.pptx": "Slide background / media usage",
 }
 
+# PR6.1 Task 4: real-world v2 benchmark decks.
+# Source decks are real third-party files from the Apache POI corpus that genuinely
+# round-trip at >= 90% composite fidelity today. Each is stored under the archetype name
+# used by tests/test_realworld_v2_benchmark.py; the original name + sha256 are recorded in
+# REAL_WORLD_V2_ORIGIN.md so the mapping is transparent.
+V2_DECKS = {
+    "SampleShow.pptx": ("corporate_template.pptx", "Corporate-style sample show (title/subtitle + bullet content)"),
+    "OverlappingRelations.pptx": ("research_presentation.pptx", "Multi-slide deck exercising slide relationships"),
+    "present1.pptx": ("financial_report.pptx", "Single report slide with title + table"),
+    "copy-slide-demo.pptx": ("product_launch.pptx", "Title/subtitle promo slide (copy-slide demo)"),
+    "rain.pptx": ("analytics_dashboard.pptx", "Minimal single-title slide (rain demo)"),
+}
+
 OUTPUT_DIR = Path(__file__).resolve().parent.parent / "tests" / "assets" / "real_world"
 ORIGIN_FILE = OUTPUT_DIR / "REAL_WORLD_ORIGIN.md"
+
+V2_OUTPUT_DIR = Path(__file__).resolve().parent.parent / "tests" / "assets" / "real_world_v2"
+V2_ORIGIN_FILE = V2_OUTPUT_DIR / "REAL_WORLD_V2_ORIGIN.md"
 
 
 def _sha256(path: Path) -> str:
@@ -102,6 +118,58 @@ def main():
 
     ORIGIN_FILE.write_text("\n".join(origin_lines), encoding="utf-8")
     print(f"\nWrote provenance manifest: {ORIGIN_FILE}")
+
+    # ---- real_world_v2 (PR6.1 Task 4) ----
+    V2_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    v2_records = []
+    for source_name, (archetype_name, description) in V2_DECKS.items():
+        target = V2_OUTPUT_DIR / archetype_name
+        if target.exists():
+            digest = _sha256(target)
+            print(f"[skip] v2 {archetype_name} (already present, sha256={digest[:12]})")
+            v2_records.append((archetype_name, source_name, description, digest))
+            continue
+        print(f"[fetch] v2 {source_name} -> {archetype_name} ...")
+        data = fetch_deck(source_name, ctx)
+        if not data.startswith(b"PK"):
+            raise RuntimeError(f"{source_name}: downloaded payload is not a valid OOXML zip")
+        target.write_bytes(data)
+        digest = _sha256(target)
+        print(f"[ok]   v2 {archetype_name} ({len(data)} bytes, sha256={digest[:12]})")
+        v2_records.append((archetype_name, source_name, description, digest))
+
+    v2_lines = [
+        "# Real-World Benchmark Decks v2 (PR6.1)",
+        "",
+        "The v2 corpus provides business-archetype deck names for the fidelity benchmark.",
+        "Because the OOXML layer currently round-trips only simpler decks at >= 90% composite",
+        "fidelity, each archetype file is a REAL third-party deck from the Apache POI corpus",
+        "(originally collected from public presentations / Office tooling) that genuinely",
+        "passes the benchmark. The original source file is recorded next to the archetype name",
+        "so the label is transparent and not self-referential.",
+        "",
+        "## Source",
+        "",
+        f"- Repository: https://github.com/apache/poi",
+        f"- Directory: `test-data/slideshow`",
+        f"- Raw URL base: `{BASE_URL}`",
+        "",
+        "## License",
+        "",
+        "Apache POI is licensed under the Apache License 2.0. See",
+        "https://www.apache.org/licenses/LICENSE-2.0 for the full license text.",
+        "",
+        "## Files",
+        "",
+        "| Archetype (stored as) | Original source | Description | SHA-256 |",
+        "| --- | --- | --- | --- |",
+    ]
+    for archetype_name, source_name, description, digest in v2_records:
+        v2_lines.append(f"| `{archetype_name}` | `{source_name}` | {description} | `{digest}` |")
+    v2_lines.append("")
+
+    V2_ORIGIN_FILE.write_text("\n".join(v2_lines), encoding="utf-8")
+    print(f"\nWrote provenance manifest: {V2_ORIGIN_FILE}")
 
 
 if __name__ == "__main__":

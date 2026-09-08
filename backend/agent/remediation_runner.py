@@ -17,7 +17,7 @@ from ..eval.remediation import (
     FixAction, FixActionType, DefectCategory, RemediationPlan, FidelityRemediationGenerator
 )
 from ..eval.layout_diff import LayoutDiffEngine, BoundingBox
-from ..eval.fidelity import FidelityEvaluator, RepairAcceptancePolicy
+from ..eval.fidelity import FidelityEvaluator, FidelityRegressionGuard
 from .tools import tools
 
 logger = logging.getLogger(__name__)
@@ -390,14 +390,14 @@ class RemediationRunner:
             after_score = FidelityEvaluator.evaluate_slides(baseline_slide, curr_slide)
 
             # PR6.1 Regression guard: accept only if the composite total does not drop AND
-            # no sub-dimension regresses beyond policy limits. This prevents a repair that
-            # raises one sub-score (e.g. font) while regressing another (e.g. geometry) from
-            # being committed.
-            policy = RepairAcceptancePolicy()
-            accepted, reasons = policy.accepts(before_score, after_score)
+            # no sub-dimension regresses beyond its per-metric limit (geometry 5 / text,
+            # style, visual 10). This prevents a repair that raises one sub-score (e.g.
+            # font) while regressing another (e.g. geometry) from being committed.
+            guard = FidelityRegressionGuard()
+            accepted, reasons = guard.accepts(before_score, after_score)
             if not accepted:
                 logger.warning(
-                    "Fidelity repair rejected by RepairAcceptancePolicy for slide %s: %s",
+                    "Fidelity repair rejected by FidelityRegressionGuard for slide %s: %s",
                     curr_slide.id, "; ".join(reasons)
                 )
                 tx.rollback(f"Fidelity repair rejected: {'; '.join(reasons)}")

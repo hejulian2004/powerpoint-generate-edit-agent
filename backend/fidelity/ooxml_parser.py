@@ -15,6 +15,7 @@ from typing import Optional, Dict, Any, List, Tuple, Union
 from .theme_engine import ThemeEngine
 from .style_resolver import StyleResolver
 from .relationship import RelationshipGraph, REL_TYPE_IMAGE
+from .capability import CapabilityDetector, FidelityCapability
 from ..ir.models import (
     PresentationIR, SlideIR, ElementIR, ShapeElementIR, TextElementIR,
     ConnectorElementIR, ImageElementIR, TableElementIR, TableCellIR,
@@ -29,6 +30,19 @@ NS = {
     "r": "http://schemas.openxmlformats.org/officeDocument/2006/relationships",
 }
 
+_KNOWN_IMAGE_SIGNATURES = (
+    (b"\x89PNG\r\n\x1a\n", "png"),
+    (b"\xff\xd8\xff", "jpg"),
+    (b"GIF87a", "gif"),
+    (b"GIF89a", "gif"),
+    (b"BM", "bmp"),
+)
+
+
+def _looks_like_known_image(data: bytes) -> bool:
+    """Returns True when the media bytes carry a recognizable raster image signature."""
+    return any(data.startswith(sig) for sig, _ in _KNOWN_IMAGE_SIGNATURES)
+
 # 1 inch = 914400 EMU. Standard canvas: 1280 x 720 px.
 DEFAULT_EMU_WIDTH = 12192000   # 13.333 inches
 DEFAULT_EMU_HEIGHT = 6858000   # 7.5 inches
@@ -39,6 +53,10 @@ class OOXMLParser:
 
     def __init__(self, pptx_source: Union[str, bytes, io.BytesIO]):
         self.source = pptx_source
+        self._warnings: List[str] = []
+
+    def _warn(self, message: str) -> None:
+        self._warnings.append(message)
 
     def parse(self) -> PresentationIR:
         """Parses presentation package into PresentationIR."""
@@ -53,7 +71,13 @@ class OOXMLParser:
             namelist = set(zf.namelist())
 
             # 1. Parse Dimensions from ppt/presentation.xml
-            emu_w, emu_h, slide_r_ids = self._parse_presentation_xml(zf, namelist)
+            # PR6.1 failure recovery: a corrupt presentation.xml must not crash the whole
+            # import; fall back to default canvas + slide discovery and surface a warning.
+            try:
+                emu_w, emu_h, slide_r_ids = self._parse_presentation_xml(zf, namelist)
+            except Exception as e:
+                self._warn(f"presentation.xml unreadable, using defaults: {e}")
+                emu_w, emu_h, slide_r_ids = DEFAULT_EMU_WIDTH, DEFAULT_EMU_HEIGHT, []
             scale_x = 1280.0 / (emu_w / 914400.0 * 96.0) if emu_w > 0 else 1.0
             scale_y = 720.0 / (emu_h / 914400.0 * 96.0) if emu_h > 0 else 1.0
             # Direct EMU to 1280x720 canvas factors
@@ -65,7 +89,11 @@ class OOXMLParser:
             style_resolver = StyleResolver(theme_engine)
 
             # 3. Read Media assets
-            assets, asset_metadata = self._read_media(zf, namelist)
+            try:
+                assets, asset_metadata = self._read_media(zf, namelist)
+            except Exception as e:
+                self._warn(f"media assets unreadable, imported without media: {e}")
+                assets, asset_metadata = {}, {}
 
             # 4. Presentation Rels
             pres_rels = self._read_rels(zf, "ppt/_rels/presentation.xml.rels", namelist)
@@ -79,23 +107,29 @@ class OOXMLParser:
                 slide_rels = self._read_rels(zf, slide_rels_path, namelist)
 
                 slide_xml = zf.read(slide_zip_path)
-                slide_ir = self._parse_slide_xml(
-                    slide_xml=slide_xml,
-                    slide_num=s_idx,
-                    scale_x=emu_to_canvas_x,
-                    scale_y=emu_to_canvas_y,
-                    theme=theme_engine,
-                    style_resolver=style_resolver,
-                    slide_rels=slide_rels,
-                    assets=assets
-                )
-                slides.append(slide_ir)
+                try:
+                    slide_ir = self._parse_slide_xml(
+                        slide_xml=slide_xml,
+                        slide_num=s_idx,
+                        scale_x=emu_to_canvas_x,
+                        scale_y=emu_to_canvas_y,
+                        theme=theme_engine,
+                        style_resolver=style_resolver,
+                        slide_rels=slide_rels,
+                        assets=assets
+                    )
+                    slides.append(slide_ir)
+                except Exception as e:
+                    self._warn(f"slide {slide_zip_path} unreadable, skipped: {e}")
+
+            if not slide_paths:
+                self._warn("no slide parts found in presentation package")
 
             pres_title = "Converted Presentation"
             if isinstance(self.source, str):
                 pres_title = os.path.splitext(os.path.basename(self.source))[0]
 
-            return PresentationIR(
+            pres = PresentationIR(
                 title=pres_title,
                 width=1280,
                 height=720,
@@ -104,8 +138,24 @@ class OOXMLParser:
                 active_slide_id=slides[0].id if slides else None,
                 version=1,
                 assets=assets,
-                asset_metadata=asset_metadata
+                asset_metadata=asset_metadata,
+                capabilities={}
             )
+
+            # OOXML capability detection (PR6.1): surface which features the file uses and
+            # which of those the engine can only detect (chart/smartart/animation/master).
+            detected = CapabilityDetector.detect_from_ir(pres, CapabilityDetector.detect_in_open_zip(zf))
+            pres.capabilities = detected.to_dict()
+            unsupported = detected.unsupported_warnings()
+
+            # PR6.1 failure recovery: surface per-part parse failures as a partial import.
+            all_warnings = list(self._warnings) + list(unsupported)
+            pres.metadata["parser_warnings"] = all_warnings
+            if unsupported:
+                pres.metadata["capability_warnings"] = unsupported
+            pres.metadata["parse_status"] = "partial" if all_warnings else "ok"
+
+            return pres
 
     def _parse_presentation_xml(
         self, zf: zipfile.ZipFile, namelist: set
@@ -132,22 +182,26 @@ class OOXMLParser:
             if theme_path in namelist:
                 try:
                     return ThemeEngine.from_theme_xml(zf.read(theme_path))
-                except Exception:
-                    pass
+                except Exception as e:
+                    self._warn(f"theme part {theme_path} unreadable, using default theme: {e}")
         return ThemeEngine()
 
     def _read_media(
         self, zf: zipfile.ZipFile, namelist: set
-    ) -> Tuple[Dict[str, str], Dict[str, Any]]:
+    ) -> Dict[str, str]:
         assets: Dict[str, str] = {}
         metadata: Dict[str, Any] = {}
         for path in namelist:
             if path.startswith("ppt/media/"):
                 fname = os.path.basename(path)
                 data = zf.read(path)
-                b64 = base64.b64encode(data).decode("utf-8")
                 ext = fname.split(".")[-1].lower() if "." in fname else "png"
                 mime = "image/jpeg" if ext in ["jpg", "jpeg"] else "image/png"
+                # PR6.1 failure recovery: flag media that does not carry a known image
+                # signature so corrupt binary parts surface a warning instead of silent junk.
+                if not _looks_like_known_image(data):
+                    self._warn(f"media {path} has unrecognized image signature, imported as-is")
+                b64 = base64.b64encode(data).decode("utf-8")
                 assets[fname] = f"data:{mime};base64,{b64}"
                 metadata[fname] = {"mime_type": mime, "size_bytes": len(data), "filename": fname}
         return assets, metadata
@@ -157,9 +211,13 @@ class OOXMLParser:
     ) -> RelationshipGraph:
         if rels_path in namelist:
             try:
-                return RelationshipGraph.from_xml_bytes(zf.read(rels_path), rels_path)
-            except Exception:
-                pass
+                data = zf.read(rels_path)
+                # RelationshipGraph.from_xml_bytes swallows malformed XML internally, so
+                # validate well-formedness here to surface a warning on corrupt .rels parts.
+                ET.fromstring(data)
+                return RelationshipGraph.from_xml_bytes(data, rels_path)
+            except Exception as e:
+                self._warn(f"relationships {rels_path} unreadable, using empty graph: {e}")
         return RelationshipGraph(source_path=rels_path)
 
     def _find_slide_paths(
