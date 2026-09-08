@@ -265,18 +265,60 @@ from backend.slidespec import (
 
 ---
 
-## 8. Verification & Acceptance
+## 8. Layout Engine & Academic Geometry Synthesis (PR10)
+
+`LayoutEngine` maps semantic `SlideSpec` specifications into deterministic `LayoutSpec` geometry without calling downstream presentation libraries like `python-pptx`.
+
+```
+SlideSpec (Semantic visual intent, no coords)
+  -> Layout Engine / Synthesis (PR10: computes geometry & constraints)
+  -> LayoutSpec (Deterministic coordinates, typography, safe zones)
+  -> PPTX Renderer (PR11: shapes, tables, pictures, theme)
+```
+
+### Key Principles & Features
+- **Normalized 16:9 Canvas**: 1280×720 ViewBox standard with explicit safe margins (`MARGIN_LEFT=64`, `MARGIN_RIGHT=64`, `MARGIN_TOP=40`, `MARGIN_BOTTOM=40`).
+- **Layout Templates**:
+  - `TITLE_HERO`: Centered academic hero with title, author subtitle, and venue badges.
+  - `PIPELINE_ARCHITECTURE`: Split stage explanations (left) + visual diagram container (right).
+  - `BENCHMARK_COMPARISON`: Empirical evidence asset (table/figure, 60% width) + key takeaway cards (40% width).
+  - `TWO_COLUMN_CONTRAST`: Balanced side-by-side columns (e.g. baseline vs ours, problem vs solution).
+  - `KEY_TAKEAWAY_LIST`: Vertically stacked summary cards.
+  - `METRIC_CARD_GRID`: 1x3 or 2x2 multi-metric grid layouts.
+- **Formal Geometric Constraints (`constraints.py`)**: Canvas bounds enforcement, pairwise non-overlap validation, figure aspect ratio preservation, and text overflow estimation.
+- **Strict Quality Validator (`validator.py`)**: Prevents out-of-bounds positioning, collision overlaps, empty text, or missing asset links.
+- **100% Deterministic Synthesis**: 100 consecutive runs yield byte-for-byte identical coordinate hashes.
+
+### Public Layout API Facade
+
+```python
+from backend.layout import (
+    Canvas,
+    Rect,
+    ElementType,
+    TextStyle,
+    ElementStyle,
+    LayoutElement,
+    LayoutConstraint,
+    LayoutSpec,
+    DeckLayoutSpec,
+    generate_layout,
+    generate_deck_layout,
+    validate_layout,
+)
+```
+
+---
+
+## 9. Verification & Acceptance
 
 ```bash
-python -m pytest tests/paper/test_parser.py -v
+python -m pytest tests/paper tests/presentation tests/slidespec tests/layout -v
 ```
 
 Acceptance criteria validated:
-- `test_parser_title`: Paper title extracted exactly.
-- `test_parser_sections_order_and_page`: All numbered sections (1..6) and unnumbered (References) in strict reading and page order.
-- `test_parser_sections_clean_number_title`: Numeric prefixes stripped from title fields.
-- `test_parser_figure_count_and_captions`: 3 figures detected with exact IDs and captions.
-- `test_parser_figure_raster_region`: Associated raster BBoxes verified.
-- `test_parser_table_count_and_captions`: 2 tables detected with captions.
-- `test_extract_is_deterministic`: Byte-for-byte identical PaperIR across runs on the same PDF.
-- `test_paper_ir_json_roundtrip`: Full `paper_ir.json` dump/load roundtrip fidelity.
+- `tests/paper`: Structural completeness, figure/table captions, and deterministic PDF extraction (16 tests).
+- `tests/presentation`: Academic template profile slots, section ranking, and structural guards (29 tests).
+- `tests/slidespec`: Semantic IR polymorphism, visual intent mapping, and JSON roundtrip fidelity (18 tests).
+- `tests/layout`: Geometric primitives, collision avoidance, 100-run determinism, template synthesis, constraint validation, and end-to-end PDF -> LayoutSpec pipeline (23 tests).
+- **Total Suite Passing**: 86 passing tests with zero regressions.

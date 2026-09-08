@@ -54,19 +54,25 @@ This document defines the current baseline state, active developments, and futur
 - **Visual Intent Archetypes (`VisualIntent`)**: `TITLE_HERO`, `PIPELINE_ARCHITECTURE`, `BENCHMARK_COMPARISON`, `TWO_COLUMN_CONTRAST`, `METRIC_CARD_GRID`, `KEY_TAKEAWAY_LIST`.
 - **Polymorphic Content Blocks (`ContentBlock`)**: `TextBlock` (with `BlockRole` hierarchy: heading, subheading, lead summary, bullet item, caption, badge, callout), `FigureBlock`, `TableBlock`, and `BadgeBlock`.
 - **Deterministic Semantic Mapper (`mapper.py`)**: Transforms `PresentationPlan` + `PaperIR` into fully grounded `DeckSpec` with asset linkage and provenance.
-- **Complete Test Suite (`tests/slidespec/`)**: 8 tests covering polymorphic block serialization, deck roundtrip, intent mapping, and end-to-end PDF -> PaperIR -> PresentationPlan -> DeckSpec -> JSON pipeline.
+- **Complete Test Suite (`tests/slidespec/`)**: Tests covering polymorphic block serialization, deck roundtrip, intent mapping, and end-to-end PDF -> PaperIR -> PresentationPlan -> DeckSpec -> JSON pipeline.
+
+### Layout Engine & Academic Geometry Synthesis (PR10)
+- **Geometry & Layout Intermediate Representation (`LayoutSpec`, `DeckLayoutSpec`)**: Strongly-typed geometric representation with normalized 1280×720 ViewBox coordinates, explicit bounding rectangles (`Rect`), typography styles (`TextStyle`), and safe boundary zones.
+- **Template Synthesis & Spatial Solvers (`backend/layout/templates/`)**: Dedicated academic templates for `TITLE_HERO`, `PIPELINE_ARCHITECTURE`, `BENCHMARK_COMPARISON`, `TWO_COLUMN_CONTRAST`, `KEY_TAKEAWAY_LIST`, and `METRIC_CARD_GRID`.
+- **Formal Geometric Constraints System (`constraints.py`)**: Canvas bounds enforcement, pairwise non-overlap verification, figure aspect ratio integrity protection, and text overflow estimation.
+- **Strict Quality Validator (`validator.py`)**: Detects out-of-bounds coordinates, collision artifacts, empty content, and missing asset references with strict/warning report modes.
+- **100% Deterministic Execution**: Validated across 100 consecutive synthesis runs producing zero layout drift or coordinate discrepancies.
+- **Comprehensive Test Suite (`tests/layout/`)**: 23 unit and acceptance tests covering schema roundtrip, template synthesis, constraint validation, determinism, and full end-to-end PDF -> PaperIR -> PresentationPlan -> DeckSpec -> DeckLayoutSpec -> JSON pipeline.
 
 ---
 
 ## 2. In Progress
 
 ### Research Paper Presentation Agent Pipeline
-- **PR10 Layout Engine & Academic Geometry Synthesis**:
-  - Layout solver translating `SlideSpec` semantic blocks into normalized coordinates (1280×720 ViewBox standard).
-  - Academic typography rules (font scale ladders, line spacing, margins, visual hierarchy).
 - **PR11 End-to-End Paper-to-PPTX Exporter**:
   - Academic themes (blue-accent minimal, dark keynote, LaTeX-clean).
-  - Unified PDF -> PPTX generation pipeline connecting PR9 SlideSpec + PR10 Layout + PR6 Fidelity Engine.
+  - Unified PDF -> PPTX generation pipeline connecting PR10 LayoutSpec + PR6 Fidelity Engine (OOXML Shape / Picture / Table / Text rendering).
+  - Native python-pptx rendering with zero layout leakage into semantic layers.
 
 ---
 
