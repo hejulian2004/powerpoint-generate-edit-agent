@@ -32,7 +32,6 @@ export const Header: React.FC = () => {
         body: formData
       })
       if (!res.ok) throw new Error('Upload failed')
-      // Reload presentation
       const presRes = await fetch('/api/presentation')
       const presData = await presRes.json()
       usePPTStore.getState().setPresentation(presData)
@@ -52,57 +51,57 @@ export const Header: React.FC = () => {
   }
 
   return (
-    <header className="h-14 bg-slate-900 border-b border-slate-800 flex items-center justify-between px-4 select-none shrink-0 z-20">
-      {/* Brand & Document title */}
+    <header className="h-13 bg-[#0B0D13] border-b border-[#21262D] flex items-center justify-between px-4 select-none shrink-0 z-20">
+      {/* Brand & Presentation Metadata */}
       <div className="flex items-center gap-3">
-        <div className="w-8 h-8 rounded-lg bg-gradient-to-tr from-blue-600 to-indigo-500 flex items-center justify-center shadow-lg shadow-blue-500/20">
-          <Presentation className="w-4 h-4 text-white" />
+        <div className="w-7 h-7 rounded-lg bg-indigo-600/20 border border-indigo-500/30 flex items-center justify-center shadow-sm">
+          <Presentation className="w-3.5 h-3.5 text-indigo-400" />
         </div>
         <div>
           <div className="flex items-center gap-2">
-            <span className="font-semibold text-slate-100 text-sm tracking-wide">PPT-Agent-Studio</span>
-            <span className="px-1.5 py-0.5 rounded text-[10px] font-medium bg-blue-500/10 text-blue-400 border border-blue-500/20">
+            <span className="font-semibold text-slate-100 text-xs tracking-tight">PPT-Agent-Studio</span>
+            <span className="px-1.5 py-0.2 rounded text-[10px] font-mono bg-indigo-500/10 text-indigo-400 border border-indigo-500/20">
               IR v1.0
             </span>
           </div>
-          <p className="text-xs text-slate-400 truncate max-w-[240px]">
+          <p className="text-[11px] text-slate-400 truncate max-w-[260px]">
             {presentation?.title || '未命名演示文稿'}
           </p>
         </div>
       </div>
 
-      {/* Center Actions: Undo, Redo, Add Slide */}
-      <div className="flex items-center gap-1.5 bg-slate-950/60 p-1 rounded-lg border border-slate-800/80">
+      {/* Center Action Toolbar: History & New Slide */}
+      <div className="flex items-center gap-1 bg-[#161B22] p-1 rounded-xl border border-[#30363D]">
         <button
           onClick={triggerUndo}
           disabled={!canUndo}
           title="撤销 (Ctrl+Z)"
-          className="p-1.5 rounded-md hover:bg-slate-800 disabled:opacity-30 disabled:hover:bg-transparent text-slate-300 transition"
+          className="p-1.5 rounded-lg hover:bg-slate-800 disabled:opacity-30 disabled:hover:bg-transparent text-slate-300 transition"
         >
-          <Undo2 className="w-4 h-4" />
+          <Undo2 className="w-3.5 h-3.5" />
         </button>
         <button
           onClick={triggerRedo}
           disabled={!canRedo}
           title="重做 (Ctrl+Y)"
-          className="p-1.5 rounded-md hover:bg-slate-800 disabled:opacity-30 disabled:hover:bg-transparent text-slate-300 transition"
+          className="p-1.5 rounded-lg hover:bg-slate-800 disabled:opacity-30 disabled:hover:bg-transparent text-slate-300 transition"
         >
-          <Redo2 className="w-4 h-4" />
+          <Redo2 className="w-3.5 h-3.5" />
         </button>
 
-        <div className="w-[1px] h-4 bg-slate-800 mx-1" />
+        <div className="w-[1px] h-3.5 bg-slate-700 mx-1" />
 
         <button
           onClick={handleNewSlide}
-          className="flex items-center gap-1.5 px-2.5 py-1 text-xs font-medium rounded-md bg-slate-800 hover:bg-slate-700 text-slate-200 transition"
+          className="flex items-center gap-1.5 px-2.5 py-1 text-xs font-medium rounded-lg bg-[#21262D] hover:bg-[#30363D] text-slate-200 transition"
         >
-          <Plus className="w-3.5 h-3.5 text-blue-400" />
+          <Plus className="w-3.5 h-3.5 text-indigo-400" />
           <span>新建页</span>
         </button>
       </div>
 
-      {/* Right Controls: Upload, Export, Settings, WS status */}
-      <div className="flex items-center gap-2.5">
+      {/* Right Controls: Import, Export, Settings, Live Status */}
+      <div className="flex items-center gap-2">
         <input
           ref={fileInputRef}
           type="file"
@@ -112,8 +111,8 @@ export const Header: React.FC = () => {
         />
         <button
           onClick={() => fileInputRef.current?.click()}
-          title="导入 PPTX 文件"
-          className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg bg-slate-800/80 hover:bg-slate-700 text-slate-200 border border-slate-700/60 transition"
+          title="导入本地 PPTX 演示文稿"
+          className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg bg-[#161B22] hover:bg-[#21262D] text-slate-200 border border-[#30363D] transition"
         >
           <Upload className="w-3.5 h-3.5 text-slate-400" />
           <span>导入 PPTX</span>
@@ -121,7 +120,7 @@ export const Header: React.FC = () => {
 
         <button
           onClick={handleExport}
-          title="导出原生 PPTX 文件"
+          title="无损重建并导出原生 PPTX 文件"
           className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg bg-blue-600 hover:bg-blue-500 text-white shadow-sm shadow-blue-600/30 transition"
         >
           <Download className="w-3.5 h-3.5" />
@@ -131,19 +130,19 @@ export const Header: React.FC = () => {
         <button
           onClick={() => setSettingsOpen(true)}
           title="模型与服务设置"
-          className="p-2 rounded-lg text-slate-400 hover:text-slate-200 hover:bg-slate-800 transition"
+          className="p-2 rounded-lg text-slate-400 hover:text-slate-200 hover:bg-[#161B22] transition"
         >
           <Settings className="w-4 h-4" />
         </button>
 
-        <div className="flex items-center gap-1.5 pl-2 border-l border-slate-800">
+        <div className="flex items-center gap-1.5 pl-2.5 border-l border-[#21262D]">
           <Circle
-            className={`w-2.5 h-2.5 fill-current ${
-              wsConnected ? 'text-emerald-500 animate-pulse' : 'text-amber-500'
+            className={`w-2 h-2 fill-current ${
+              wsConnected ? 'text-emerald-400 animate-pulse' : 'text-amber-400'
             }`}
           />
-          <span className="text-[11px] text-slate-400 font-mono">
-            {wsConnected ? 'LIVE' : 'SYNC'}
+          <span className="text-[10px] text-slate-400 font-mono tracking-wider">
+            {wsConnected ? 'SYNCED' : 'OFFLINE'}
           </span>
         </div>
       </div>

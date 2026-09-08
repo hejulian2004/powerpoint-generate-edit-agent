@@ -1,10 +1,11 @@
 import { create } from 'zustand'
-import type { PresentationIR, SlideIR, ChatMessage } from '../types/ppt'
+import type { PresentationIR, SlideIR, ElementIR, ChatMessage } from '../types/ppt'
 
 interface PPTState {
   presentation: PresentationIR | null
   activeSlideId: string | null
   selectedElementId: string | null
+  activeRightTab: 'copilot' | 'inspector'
   messages: ChatMessage[]
   wsConnected: boolean
   isAgentThinking: boolean
@@ -13,17 +14,25 @@ interface PPTState {
   canRedo: boolean
   settingsOpen: boolean
   zoom: number
+  showGrid: boolean
 
   // Actions
   setPresentation: (pres: PresentationIR) => void
   setActiveSlideId: (id: string) => void
   setSelectedElementId: (id: string | null) => void
+  setActiveRightTab: (tab: 'copilot' | 'inspector') => void
   setSettingsOpen: (open: boolean) => void
   setZoom: (zoom: number) => void
+  setShowGrid: (show: boolean) => void
   addMessage: (msg: ChatMessage) => void
   updateLastMessage: (partial: Partial<ChatMessage>) => void
   setAgentThinking: (thinking: boolean, status?: string) => void
   
+  // Quick Canvas Tools
+  addShapeQuick: (shapeType: string) => void
+  addTextQuick: () => void
+  addConnectorQuick: () => void
+
   // API / WS
   ws: WebSocket | null
   initWebSocket: () => void
@@ -32,17 +41,19 @@ interface PPTState {
   triggerRedo: () => void
   updateElementDirect: (elemId: string, updates: Record<string, any>) => void
   getActiveSlide: () => SlideIR | null
+  getSelectedElement: () => ElementIR | null
 }
 
 export const usePPTStore = create<PPTState>((set, get) => ({
   presentation: null,
   activeSlideId: null,
   selectedElementId: null,
+  activeRightTab: 'copilot',
   messages: [
     {
       id: 'welcome',
       role: 'assistant',
-      content: '👋 你好！我是 PPT-Agent-Studio 智能助手。你可以通过自然语言指挥我创建幻灯片、添加图表卡片、修改字体色彩、规整排版布局或直接审查设计。请告诉我你的演示文稿需求！',
+      content: '我是你的 PPT 设计助理。你可以在画布上直接选取、调整图元属性，或在下方输入指令由我进行全局规划、配色升级与智能排版。',
       timestamp: Date.now()
     }
   ],
@@ -53,6 +64,7 @@ export const usePPTStore = create<PPTState>((set, get) => ({
   canRedo: false,
   settingsOpen: false,
   zoom: 1.0,
+  showGrid: false,
   ws: null,
 
   setPresentation: (pres) => set({
@@ -68,9 +80,17 @@ export const usePPTStore = create<PPTState>((set, get) => ({
     }
   },
 
-  setSelectedElementId: (id) => set({ selectedElementId: id }),
+  setSelectedElementId: (id) => {
+    set({
+      selectedElementId: id,
+      activeRightTab: id ? 'inspector' : get().activeRightTab
+    })
+  },
+
+  setActiveRightTab: (tab) => set({ activeRightTab: tab }),
   setSettingsOpen: (open) => set({ settingsOpen: open }),
   setZoom: (zoom) => set({ zoom }),
+  setShowGrid: (show) => set({ showGrid: show }),
 
   addMessage: (msg) => set((state) => ({ messages: [...state.messages, msg] })),
 
@@ -86,6 +106,24 @@ export const usePPTStore = create<PPTState>((set, get) => ({
     isAgentThinking: thinking,
     thinkingStatus: status
   }),
+
+  addShapeQuick: (shapeType = 'roundRect') => {
+    const slide = get().getActiveSlide()
+    if (!slide) return
+    get().sendChatMessage(`请在当前页添加一个 ${shapeType} 矩形卡片`)
+  },
+
+  addTextQuick: () => {
+    const slide = get().getActiveSlide()
+    if (!slide) return
+    get().sendChatMessage(`请在当前页添加一个文本标题`)
+  },
+
+  addConnectorQuick: () => {
+    const slide = get().getActiveSlide()
+    if (!slide) return
+    get().sendChatMessage(`请在当前页添加一条带箭头的连接线`)
+  },
 
   initWebSocket: () => {
     const existingWs = get().ws
@@ -105,7 +143,6 @@ export const usePPTStore = create<PPTState>((set, get) => ({
 
     ws.onclose = () => {
       set({ wsConnected: false, ws: null })
-      // Auto reconnect after 3 seconds
       setTimeout(() => {
         get().initWebSocket()
       }, 3000)
@@ -137,19 +174,19 @@ export const usePPTStore = create<PPTState>((set, get) => ({
         } else if (type === 'active_slide_changed') {
           set({ activeSlideId: data.active_slide_id })
         } else if (type === 'agent_thinking') {
-          set({ isAgentThinking: true, thinkingStatus: data.text || 'Agent 正在思考...' })
+          set({ isAgentThinking: true, thinkingStatus: data.text || 'Agent 正在规划方案...' })
         } else if (type === 'tool_executing') {
-          set({ isAgentThinking: true, thinkingStatus: `正在调用工具: ${data.tool}...` })
+          set({ isAgentThinking: true, thinkingStatus: `执行工具: ${data.tool}...` })
         } else if (type === 'tool_completed') {
-          set({ isAgentThinking: true, thinkingStatus: `完成工具调用: ${data.tool}` })
+          set({ isAgentThinking: true, thinkingStatus: `工具完成: ${data.tool}` })
         } else if (type === 'vision_loop') {
-          set({ isAgentThinking: true, thinkingStatus: data.text || 'Vision Loop 质检中...' })
+          set({ isAgentThinking: true, thinkingStatus: data.text || '视觉多模态校验中...' })
         } else if (type === 'agent_finished') {
           set({ isAgentThinking: false, thinkingStatus: '' })
           get().addMessage({
             id: `msg_${Date.now()}`,
             role: 'assistant',
-            content: data.summary || '已根据您的需求修改完成。',
+            content: data.summary || '已根据要求完成修改。',
             timestamp: Date.now(),
             toolCalls: data.tools_executed,
             visionCritique: data.vision_critique
@@ -180,12 +217,11 @@ export const usePPTStore = create<PPTState>((set, get) => ({
       timestamp: Date.now()
     })
 
-    set({ isAgentThinking: true, thinkingStatus: 'Agent 正在分析需求...' })
+    set({ isAgentThinking: true, thinkingStatus: '分析需求与视觉结构...', activeRightTab: 'copilot' })
 
     if (ws && ws.readyState === WebSocket.OPEN) {
       ws.send(JSON.stringify({ type: 'chat', message: text }))
     } else {
-      // Fallback to REST API
       fetch('/api/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -202,7 +238,6 @@ export const usePPTStore = create<PPTState>((set, get) => ({
             toolCalls: data.tools_executed,
             visionCritique: data.vision_critique
           })
-          // Reload presentation
           fetch('/api/presentation')
             .then((r) => r.json())
             .then((p) => set({ presentation: p }))
@@ -273,5 +308,12 @@ export const usePPTStore = create<PPTState>((set, get) => ({
       if (found) return found
     }
     return presentation.slides[0]
+  },
+
+  getSelectedElement: () => {
+    const slide = get().getActiveSlide()
+    const { selectedElementId } = get()
+    if (!slide || !selectedElementId) return null
+    return slide.elements.find((e) => e.id === selectedElementId) || null
   }
 }))
