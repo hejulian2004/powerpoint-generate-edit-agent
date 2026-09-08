@@ -245,25 +245,22 @@ class ShapeRenderer:
         ET.SubElement(nv_grp_pr, f"{{{NS['p']}}}cNvGrpSpPr")
         ET.SubElement(nv_grp_pr, f"{{{NS['p']}}}nvPr")
 
-        # Group shape properties
+        # Ensure valid group bounds
+        if (group.position.width <= 0 or group.position.height <= 0) and group.elements:
+            group.recompute_bounds()
+
+        gx_emu = inches_to_emu(group.position.x)
+        gy_emu = inches_to_emu(group.position.y)
+        gw_emu = max(inches_to_emu(group.position.width), 1)
+        gh_emu = max(inches_to_emu(group.position.height), 1)
+
+        # Group shape properties (DrawingML xfrm: off, ext, chOff, chExt)
         grp_sp_pr = ET.SubElement(grp_sp, f"{{{NS['p']}}}grpSpPr")
         xfrm = ET.SubElement(grp_sp_pr, f"{{{NS['a']}}}xfrm")
-        ET.SubElement(xfrm, f"{{{NS['a']}}}off", {
-            "x": str(inches_to_emu(group.position.x)),
-            "y": str(inches_to_emu(group.position.y))
-        })
-        ET.SubElement(xfrm, f"{{{NS['a']}}}ext", {
-            "cx": str(inches_to_emu(group.position.width)),
-            "cy": str(inches_to_emu(group.position.height))
-        })
-        ET.SubElement(xfrm, f"{{{NS['a']}}}chOff", {
-            "x": str(inches_to_emu(group.position.x)),
-            "y": str(inches_to_emu(group.position.y))
-        })
-        ET.SubElement(xfrm, f"{{{NS['a']}}}chExt", {
-            "cx": str(inches_to_emu(group.position.width)),
-            "cy": str(inches_to_emu(group.position.height))
-        })
+        ET.SubElement(xfrm, f"{{{NS['a']}}}off", {"x": str(gx_emu), "y": str(gy_emu)})
+        ET.SubElement(xfrm, f"{{{NS['a']}}}ext", {"cx": str(gw_emu), "cy": str(gh_emu)})
+        ET.SubElement(xfrm, f"{{{NS['a']}}}chOff", {"x": str(gx_emu), "y": str(gy_emu)})
+        ET.SubElement(xfrm, f"{{{NS['a']}}}chExt", {"cx": str(gw_emu), "cy": str(gh_emu)})
 
         for child in group.elements:
             cid = get_next_id_func()

@@ -1,5 +1,5 @@
 import { create } from 'zustand'
-import type { PresentationIR, SlideIR, ElementIR, ChatMessage } from '../types/ppt'
+import type { PresentationIR, SlideIR, ElementIR, ChatMessage, VisualRemediationEvent } from '../types/ppt'
 
 interface PPTState {
   presentation: PresentationIR | null
@@ -10,6 +10,7 @@ interface PPTState {
   wsConnected: boolean
   isAgentThinking: boolean
   thinkingStatus: string
+  visualRemediation: VisualRemediationEvent | null
   canUndo: boolean
   canRedo: boolean
   settingsOpen: boolean
@@ -60,6 +61,7 @@ export const usePPTStore = create<PPTState>((set, get) => ({
   wsConnected: false,
   isAgentThinking: false,
   thinkingStatus: '',
+  visualRemediation: null,
   canUndo: false,
   canRedo: false,
   settingsOpen: false,
@@ -179,20 +181,27 @@ export const usePPTStore = create<PPTState>((set, get) => ({
           set({ isAgentThinking: true, thinkingStatus: `执行工具: ${data.tool}...` })
         } else if (type === 'tool_completed') {
           set({ isAgentThinking: true, thinkingStatus: `工具完成: ${data.tool}` })
+        } else if (type === 'visual_remediation') {
+          set({
+            isAgentThinking: true,
+            thinkingStatus: data.text || '视觉排版自愈中...',
+            visualRemediation: data
+          })
         } else if (type === 'vision_loop') {
           set({ isAgentThinking: true, thinkingStatus: data.text || '视觉多模态校验中...' })
         } else if (type === 'agent_finished') {
-          set({ isAgentThinking: false, thinkingStatus: '' })
+          set({ isAgentThinking: false, thinkingStatus: '', visualRemediation: null })
           get().addMessage({
             id: `msg_${Date.now()}`,
             role: 'assistant',
             content: data.summary || '已根据要求完成修改。',
             timestamp: Date.now(),
             toolCalls: data.tools_executed,
-            visionCritique: data.vision_critique
+            visionCritique: data.vision_critique,
+            visualReview: data.visual_review
           })
         } else if (type === 'agent_error') {
-          set({ isAgentThinking: false, thinkingStatus: '' })
+          set({ isAgentThinking: false, thinkingStatus: '', visualRemediation: null })
           get().addMessage({
             id: `err_${Date.now()}`,
             role: 'assistant',
@@ -293,65 +302,76 @@ export const usePPTStore = create<PPTState>((set, get) => ({
 
     // Optimistic local update for instantaneous smooth feedback
     if (presentation) {
+      const updateElInArray = (elements: ElementIR[]): ElementIR[] => {
+        return elements.map((el) => {
+          if (el.id === elemId) {
+            const updatedEl: any = { ...el, ...updates }
+
+            // Style adjustments
+            if (updates.fill_color !== undefined) {
+              updatedEl.style = {
+                ...updatedEl.style,
+                fill: updates.fill_color ? { type: 'solid', color: updates.fill_color, alpha: 1.0 } : { type: 'none', alpha: 0 }
+              }
+            }
+            if (updates.border_color !== undefined || updates.border_width !== undefined) {
+              updatedEl.style = {
+                ...updatedEl.style,
+                border: {
+                  ...updatedEl.style?.border,
+                  color: updates.border_color ?? updatedEl.style?.border?.color ?? '#2D303F',
+                  width: updates.border_width ?? updatedEl.style?.border?.width ?? 1.0,
+                  style: 'solid',
+                  alpha: 1.0
+                }
+              }
+            }
+            if (updates.radius !== undefined) {
+              updatedEl.style = { ...updatedEl.style, radius: updates.radius }
+            }
+            if (updates.opacity !== undefined) {
+              updatedEl.style = { ...updatedEl.style, opacity: updates.opacity }
+            }
+
+            // Typography adjustments on text_content
+            if (updatedEl.text_content) {
+              const tc = JSON.parse(JSON.stringify(updatedEl.text_content))
+              if (updates.text !== undefined) {
+                tc.plain_text = updates.text
+                if (tc.paragraphs && tc.paragraphs[0] && tc.paragraphs[0].runs && tc.paragraphs[0].runs[0]) {
+                  tc.paragraphs[0].runs[0].text = updates.text
+                }
+              }
+              if (tc.paragraphs) {
+                tc.paragraphs.forEach((p: any) => {
+                  if (updates.align) p.align = updates.align
+                  p.runs?.forEach((r: any) => {
+                    if (!r.font) r.font = {}
+                    if (updates.font_family !== undefined) r.font.name = updates.font_family
+                    if (updates.font_size !== undefined) r.font.size = updates.font_size
+                    if (updates.font_color !== undefined) r.font.color = updates.font_color
+                    if (updates.bold !== undefined) r.font.bold = updates.bold
+                    if (updates.italic !== undefined) r.font.italic = updates.italic
+                  })
+                })
+              }
+              updatedEl.text_content = tc
+            }
+            return updatedEl
+          }
+          if (el.type === 'group' && (el as any).children) {
+            return {
+              ...el,
+              children: updateElInArray((el as any).children)
+            }
+          }
+          return el
+        })
+      }
+
       const updatedSlides = presentation.slides.map((s) => {
         if (s.id !== (activeSlideId || presentation.slides[0]?.id)) return s
-        const updatedElements = s.elements.map((el) => {
-          if (el.id !== elemId) return el
-          const updatedEl: any = { ...el, ...updates }
-
-          // Style adjustments
-          if (updates.fill_color !== undefined) {
-            updatedEl.style = {
-              ...updatedEl.style,
-              fill: updates.fill_color ? { type: 'solid', color: updates.fill_color, alpha: 1.0 } : { type: 'none', alpha: 0 }
-            }
-          }
-          if (updates.border_color !== undefined || updates.border_width !== undefined) {
-            updatedEl.style = {
-              ...updatedEl.style,
-              border: {
-                ...updatedEl.style?.border,
-                color: updates.border_color ?? updatedEl.style?.border?.color ?? '#2D303F',
-                width: updates.border_width ?? updatedEl.style?.border?.width ?? 1.0,
-                style: 'solid',
-                alpha: 1.0
-              }
-            }
-          }
-          if (updates.radius !== undefined) {
-            updatedEl.style = { ...updatedEl.style, radius: updates.radius }
-          }
-          if (updates.opacity !== undefined) {
-            updatedEl.style = { ...updatedEl.style, opacity: updates.opacity }
-          }
-
-          // Typography adjustments on text_content
-          if (updatedEl.text_content) {
-            const tc = JSON.parse(JSON.stringify(updatedEl.text_content))
-            if (updates.text !== undefined) {
-              tc.plain_text = updates.text
-              if (tc.paragraphs && tc.paragraphs[0] && tc.paragraphs[0].runs && tc.paragraphs[0].runs[0]) {
-                tc.paragraphs[0].runs[0].text = updates.text
-              }
-            }
-            if (tc.paragraphs) {
-              tc.paragraphs.forEach((p: any) => {
-                if (updates.align) p.align = updates.align
-                p.runs?.forEach((r: any) => {
-                  if (!r.font) r.font = {}
-                  if (updates.font_family !== undefined) r.font.name = updates.font_family
-                  if (updates.font_size !== undefined) r.font.size = updates.font_size
-                  if (updates.font_color !== undefined) r.font.color = updates.font_color
-                  if (updates.bold !== undefined) r.font.bold = updates.bold
-                  if (updates.italic !== undefined) r.font.italic = updates.italic
-                })
-              })
-            }
-            updatedEl.text_content = tc
-          }
-          return updatedEl
-        })
-        return { ...s, elements: updatedElements }
+        return { ...s, elements: updateElInArray(s.elements) }
       })
       set({ presentation: { ...presentation, slides: updatedSlides } })
     }
@@ -380,6 +400,18 @@ export const usePPTStore = create<PPTState>((set, get) => ({
     const slide = get().getActiveSlide()
     const { selectedElementId } = get()
     if (!slide || !selectedElementId) return null
-    return slide.elements.find((e) => e.id === selectedElementId) || null
+
+    const findInArray = (elements: ElementIR[]): ElementIR | null => {
+      for (const el of elements) {
+        if (el.id === selectedElementId) return el
+        if (el.type === 'group' && (el as any).children) {
+          const found = findInArray((el as any).children)
+          if (found) return found
+        }
+      }
+      return null
+    }
+
+    return findInArray(slide.elements)
   }
 }))

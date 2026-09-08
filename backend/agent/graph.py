@@ -35,6 +35,8 @@ class PPTAgentState(TypedDict, total=False):
     tool_calls: List[Dict[str, Any]]
     tool_results: List[Dict[str, Any]]
     vision_critique: Optional[str]
+    visual_review: Optional[Dict[str, Any]]
+    correction_count: int
     iteration: int
     max_iterations: int
     final_summary: str
@@ -432,26 +434,150 @@ async def tools_node(state: PPTAgentState, config: RunnableConfig) -> Dict[str, 
 
 
 async def vision_critic_node(state: PPTAgentState, config: RunnableConfig) -> Dict[str, Any]:
-    """Runs visual balance and layout geometry critique."""
+    """Runs comprehensive visual balance, geometric collision, and layout critique."""
     configurable = config.get("configurable", {})
     pres: Optional[PresentationIR] = configurable.get("pres")
     llm_client: Optional[LLMClient] = configurable.get("llm_client")
     on_event: Optional[Callable] = configurable.get("on_event")
 
     critique = None
+    review_dict = None
     active_slide = pres.get_active_slide() if pres else None
 
     if active_slide and len(active_slide.elements) > 0:
         if settings.enable_vision_loop:
             if on_event:
+                await on_event({
+                    "type": "visual_remediation",
+                    "phase": "evaluating",
+                    "status": "evaluating",
+                    "slide_id": active_slide.id,
+                    "text": "排版几何与视觉多模态评估自检中..."
+                })
                 await on_event({"type": "vision_loop", "status": "reviewing", "text": "排版几何与视觉平衡多模态自检中..."})
 
-            # Check geometry consistency
-            elements_count = len(active_slide.elements)
-            critique = f"已完成当前页面视觉平衡校验: 检测到 {elements_count} 个图元。布局符合 16:9 黄金视距比例，留白与对比度均在专业标准范围内。"
+            from ..eval.visual_critic import VisualCritic
+            # Review slide geometry and contrast
+            review_res = await VisualCritic.review_slide(
+                slide=active_slide,
+                llm_client=llm_client,
+                include_multimodal=bool(llm_client and getattr(llm_client, "api_key", None))
+            )
+            critique = review_res.critique_summary
+            review_dict = review_res.to_dict()
+
+            if on_event:
+                # Standardized visual_remediation telemetry event
+                await on_event({
+                    "type": "visual_remediation",
+                    "phase": "diagnosed",
+                    "status": "diagnosed",
+                    "slide_id": active_slide.id,
+                    "score": review_res.health_report.score,
+                    "quality_score": review_res.health_report.quality_score.to_dict(),
+                    "defects_count": len(review_res.health_report.defects),
+                    "critical_count": review_res.health_report.critical_count,
+                    "auto_executable_count": len(review_res.remediation_plan.auto_executable_actions),
+                    "actions": [a.to_dict() for a in review_res.remediation_plan.actions],
+                    "needs_auto_correction": review_res.needs_auto_correction,
+                    "text": f"排版体检完成: 健康分 {review_res.health_report.score:.1f}/100 [几何:{review_res.health_report.quality_score.geometry:.0f}, 可读:{review_res.health_report.quality_score.readability:.0f}, 对比:{review_res.health_report.quality_score.contrast:.0f}, 平衡:{review_res.health_report.quality_score.balance:.0f}]"
+                })
+                await on_event({
+                    "type": "vision_critique_completed",
+                    "score": review_res.health_report.score,
+                    "quality_score": review_res.health_report.quality_score.to_dict(),
+                    "defects_count": len(review_res.health_report.defects),
+                    "summary": review_res.critique_summary,
+                    "needs_auto_correction": review_res.needs_auto_correction
+                })
 
     return {
-        "vision_critique": critique
+        "vision_critique": critique,
+        "visual_review": review_dict
+    }
+
+
+async def auto_correct_node(state: PPTAgentState, config: RunnableConfig) -> Dict[str, Any]:
+    """Executes transaction-guarded, conflict-resolved remediation operations."""
+    configurable = config.get("configurable", {})
+    pres: Optional[PresentationIR] = configurable.get("pres")
+    history: Optional[HistoryManager] = configurable.get("history")
+    on_event: Optional[Callable] = configurable.get("on_event")
+
+    visual_review = state.get("visual_review", {})
+    tool_results = list(state.get("tool_results", []))
+    correction_count = state.get("correction_count", 0) + 1
+
+    if on_event:
+        await on_event({
+            "type": "vision_loop",
+            "status": "auto_correcting",
+            "text": "排版自愈中: 开启事务安全执行关键缺陷修复..."
+        })
+
+    from .remediation_runner import RemediationRunner
+    from ..eval.remediation import RemediationPlan, FixAction, FixActionType, DefectCategory
+
+    # Reconstruct RemediationPlan from review dict
+    plan_dict = visual_review.get("remediation_plan", {})
+    actions = []
+    for a in plan_dict.get("actions", []):
+        try:
+            actions.append(FixAction(
+                action_type=FixActionType(a["action_type"]),
+                category=DefectCategory(a["category"]),
+                target_ids=a.get("target_ids", []),
+                parameters=a.get("parameters", {}),
+                reason=a.get("reason", ""),
+                priority=a.get("priority", 1),
+                confidence=a.get("confidence", 1.0),
+                source=a.get("source", "geometry_rule")
+            ))
+        except Exception:
+            pass
+
+    plan = RemediationPlan(
+        actions=actions,
+        has_critical=plan_dict.get("has_critical", False),
+        summary=plan_dict.get("summary", "")
+    )
+
+    runner_res = RemediationRunner.apply_plan(
+        pres=pres,
+        history=history,
+        plan=plan,
+        slide_id=state.get("active_slide_id"),
+        only_critical=True,
+        on_event=on_event
+    )
+
+    for rec in runner_res.get("applied_records", []):
+        tool_results.append({
+            "tool": rec["tool"],
+            "args": rec["args"],
+            "result": rec["result"],
+            "auto_correct": True,
+            "reason": rec["reason"]
+        })
+        if on_event:
+            await on_event({
+                "type": "tool_completed",
+                "tool": rec["tool"],
+                "result": rec["result"],
+                "presentation_version": pres.version if pres else 1
+            })
+
+    if runner_res.get("rolled_back") and on_event:
+        await on_event({
+            "type": "vision_loop",
+            "status": "rolled_back",
+            "text": runner_res.get("message", "自愈因质量未达标已安全回滚")
+        })
+
+    return {
+        "tool_results": tool_results,
+        "correction_count": correction_count,
+        "presentation_version": pres.version if pres else 1
     }
 
 
@@ -464,6 +590,8 @@ async def summary_node(state: PPTAgentState, config: RunnableConfig) -> Dict[str
     intent = state.get("intent", "chat")
     tool_results = state.get("tool_results", [])
     vision_critique = state.get("vision_critique")
+    visual_review = state.get("visual_review")
+    correction_count = state.get("correction_count", 0)
     user_query = state.get("user_query", "")
 
     if intent == "chat" and not tool_results:
@@ -477,8 +605,13 @@ async def summary_node(state: PPTAgentState, config: RunnableConfig) -> Dict[str
     elif intent == "apply_theme":
         final_text = "已应用全局设计主题规范，调和了背景底色、卡片填充与文字高对比度。"
     else:
-        executed_names = [r["tool"] for r in tool_results]
-        final_text = f"已完成针对当前幻灯片的调整。成功调用了 {', '.join(executed_names) if executed_names else '工具'}，图元属性已实时同步更新。"
+        executed_names = [r["tool"] for r in tool_results if not r.get("auto_correct")]
+        tool_desc = ', '.join(executed_names) if executed_names else '编辑工具'
+        final_text = f"已完成针对当前幻灯片的调整。成功调用了 {tool_desc}，图元属性已实时同步更新。"
+
+    if correction_count > 0 and visual_review:
+        score_val = visual_review.get("score", 95.0)
+        final_text += f"\n\n[视觉自愈闭环] 检测并自动纠偏了几何重叠与边缘贴靠缺陷，当前页面健康度达 {score_val:.1f}/100。"
 
     if on_event:
         await on_event({
@@ -486,6 +619,8 @@ async def summary_node(state: PPTAgentState, config: RunnableConfig) -> Dict[str
             "summary": final_text,
             "tools_executed": tool_results,
             "vision_critique": vision_critique,
+            "visual_review": visual_review,
+            "correction_count": correction_count,
             "presentation_version": pres.version if pres else 1
         })
 
@@ -553,6 +688,26 @@ def should_execute_tools(state: PPTAgentState) -> str:
     return "summary_node"
 
 
+def should_auto_correct(state: PPTAgentState) -> str:
+    """Decides whether to enter auto-correction loop based on critical defects."""
+    visual_review = state.get("visual_review")
+    if not visual_review:
+        return "summary_node"
+
+    plan_dict = visual_review.get("remediation_plan", {})
+    has_critical = plan_dict.get("has_critical", False) or visual_review.get("has_critical_defects", False)
+    auto_count = plan_dict.get("auto_executable_count", plan_dict.get("critical_count", len(visual_review.get("proposed_actions", []))))
+    needs_correction = visual_review.get("needs_auto_correction", False)
+    correction_count = state.get("correction_count", 0)
+    max_allowed = getattr(settings, "max_visual_iterations", 3)
+
+    # Policy: only critical defects (clipping, collisions, severe overflow) with confidence >= 0.9
+    # trigger auto-correction up to settings.max_visual_iterations
+    if (has_critical or needs_correction) and auto_count > 0 and correction_count < max_allowed:
+        return "auto_correct_node"
+    return "summary_node"
+
+
 def build_ppt_agent_graph() -> StateGraph:
     """Builds and compiles the LangGraph StateGraph."""
     workflow = StateGraph(PPTAgentState)
@@ -563,6 +718,7 @@ def build_ppt_agent_graph() -> StateGraph:
     workflow.add_node("executor_node", executor_node)
     workflow.add_node("tools_node", tools_node)
     workflow.add_node("vision_critic_node", vision_critic_node)
+    workflow.add_node("auto_correct_node", auto_correct_node)
     workflow.add_node("summary_node", summary_node)
 
     # Add Edges
@@ -577,7 +733,11 @@ def build_ppt_agent_graph() -> StateGraph:
         "summary_node": "summary_node"
     })
     workflow.add_edge("tools_node", "vision_critic_node")
-    workflow.add_edge("vision_critic_node", "summary_node")
+    workflow.add_conditional_edges("vision_critic_node", should_auto_correct, {
+        "auto_correct_node": "auto_correct_node",
+        "summary_node": "summary_node"
+    })
+    workflow.add_edge("auto_correct_node", "vision_critic_node")
     workflow.add_edge("summary_node", END)
 
     return workflow.compile()

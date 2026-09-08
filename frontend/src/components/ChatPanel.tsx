@@ -1,7 +1,7 @@
 import React, { useState, useRef, useEffect } from 'react'
 import {
   Send, Sparkles, Wrench, Eye, CheckCircle2,
-  Bot, User, Loader2, SlidersHorizontal
+  Bot, User, Loader2, SlidersHorizontal, ShieldCheck, Activity
 } from 'lucide-react'
 import { usePPTStore } from '../store/usePPTStore'
 import { PropertyPanel } from './PropertyPanel'
@@ -21,6 +21,7 @@ export const ChatPanel: React.FC = () => {
     messages,
     isAgentThinking,
     thinkingStatus,
+    visualRemediation,
     sendChatMessage,
     activeRightTab,
     setActiveRightTab,
@@ -150,14 +151,99 @@ export const ChatPanel: React.FC = () => {
                       </p>
                     </div>
                   )}
+
+                  {/* Multidimensional Visual Quality Report */}
+                  {msg.visualReview && (
+                    <div className="w-full bg-[#11121A] border border-[#262838] rounded-xl p-3 my-1 text-xs text-[#C8CBD8]">
+                      <div className="flex items-center justify-between font-medium text-[#F1F2F6] text-[11px] mb-2 pb-1.5 border-b border-[#1D1F2C]">
+                        <div className="flex items-center gap-1.5">
+                          <ShieldCheck className="w-3.5 h-3.5 text-emerald-400" />
+                          <span>多维度视觉健康评分</span>
+                        </div>
+                        <span className="font-tabular font-semibold text-emerald-400">
+                          {msg.visualReview.score.toFixed(1)} / 100
+                        </span>
+                      </div>
+
+                      {msg.visualReview.quality_score && (
+                        <div className="grid grid-cols-4 gap-1.5 mb-2 text-center text-[10px]">
+                          <div className="bg-[#171824] rounded px-1 py-1">
+                            <div className="text-[#7A7E92]">几何 (40%)</div>
+                            <div className="font-tabular font-medium text-[#E2E4ED]">
+                              {msg.visualReview.quality_score.geometry.toFixed(0)}
+                            </div>
+                          </div>
+                          <div className="bg-[#171824] rounded px-1 py-1">
+                            <div className="text-[#7A7E92]">可读 (25%)</div>
+                            <div className="font-tabular font-medium text-[#E2E4ED]">
+                              {msg.visualReview.quality_score.readability.toFixed(0)}
+                            </div>
+                          </div>
+                          <div className="bg-[#171824] rounded px-1 py-1">
+                            <div className="text-[#7A7E92]">对比 (15%)</div>
+                            <div className="font-tabular font-medium text-[#E2E4ED]">
+                              {msg.visualReview.quality_score.contrast.toFixed(0)}
+                            </div>
+                          </div>
+                          <div className="bg-[#171824] rounded px-1 py-1">
+                            <div className="text-[#7A7E92]">平衡 (20%)</div>
+                            <div className="font-tabular font-medium text-[#E2E4ED]">
+                              {msg.visualReview.quality_score.balance.toFixed(0)}
+                            </div>
+                          </div>
+                        </div>
+                      )}
+
+                      {msg.visualReview.defects_count !== undefined && msg.visualReview.defects_count > 0 && (
+                        <div className="text-[10px] text-[#8E92A6] flex items-center gap-1">
+                          <Activity className="w-3 h-3 text-sky-400 shrink-0" />
+                          <span>
+                            检测到 {msg.visualReview.defects_count} 项排版特征
+                            {msg.visualReview.needs_auto_correction ? '，已通过闭环事务自动修复' : '，排版指标良好'}
+                          </span>
+                        </div>
+                      )}
+                    </div>
+                  )}
                 </div>
               )
             })}
 
             {isAgentThinking && (
-              <div className="flex items-center gap-2.5 bg-[#14151E] border border-[#262939] rounded-xl p-3 text-xs text-[#C8CBD8]">
-                <Loader2 className="w-3.5 h-3.5 animate-spin text-[#F1F2F6] shrink-0" />
-                <span className="truncate">{thinkingStatus || 'Agent 正在规划排版策略...'}</span>
+              <div className="bg-[#14151E] border border-[#262939] rounded-xl p-3 text-xs text-[#C8CBD8] space-y-2">
+                <div className="flex items-center gap-2.5">
+                  <Loader2 className="w-3.5 h-3.5 animate-spin text-[#F1F2F6] shrink-0" />
+                  <span className="truncate font-medium">{thinkingStatus || 'Agent 正在规划排版策略...'}</span>
+                </div>
+
+                {/* Real-time Visual Remediation Telemetry Banner */}
+                {visualRemediation && (
+                  <div className="bg-[#0F1017] border border-[#212332] rounded-lg p-2 text-[10px] text-[#9A9EB2] space-y-1.5">
+                    <div className="flex items-center justify-between">
+                      <span className="text-[9px] uppercase tracking-wider px-1.5 py-0.5 rounded bg-[#1C1E2A] text-[#C4C7D7] font-medium">
+                        {visualRemediation.phase === 'evaluating' && '体检中'}
+                        {visualRemediation.phase === 'diagnosed' && '已诊断'}
+                        {visualRemediation.phase === 'fixing' && '自愈中'}
+                        {visualRemediation.phase === 'committed' && '已提交'}
+                        {visualRemediation.phase === 'rolled_back' && '已回滚'}
+                      </span>
+                      {visualRemediation.score !== undefined && (
+                        <span className="font-tabular text-emerald-400 font-semibold">
+                          当前得分: {visualRemediation.score.toFixed(1)}
+                        </span>
+                      )}
+                    </div>
+
+                    {visualRemediation.quality_score && (
+                      <div className="flex gap-2 text-[9px] text-[#7B7F94] font-tabular">
+                        <span>几何:{visualRemediation.quality_score.geometry.toFixed(0)}</span>
+                        <span>可读:{visualRemediation.quality_score.readability.toFixed(0)}</span>
+                        <span>对比:{visualRemediation.quality_score.contrast.toFixed(0)}</span>
+                        <span>平衡:{visualRemediation.quality_score.balance.toFixed(0)}</span>
+                      </div>
+                    )}
+                  </div>
+                )}
               </div>
             )}
 

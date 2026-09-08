@@ -181,15 +181,20 @@ class PPTXBuilder:
         candidate_dirs.append(os.path.join(slide_parent, "assets"))
         candidate_dirs.append(os.path.join(os.path.dirname(slide_parent), "assets"))
 
-        for elem in slide.elements:
-            if isinstance(elem, ImageElement) and elem.src:
-                img_name = os.path.basename(elem.src)
-                for cdir in candidate_dirs:
-                    target = os.path.join(cdir, img_name)
-                    if os.path.exists(target):
-                        with open(target, "rb") as imf:
-                            media_files[img_name] = imf.read()
-                        break
+        def _collect_json_images(elements):
+            for elem in elements:
+                if isinstance(elem, ImageElement) and elem.src:
+                    img_name = os.path.basename(elem.src)
+                    for cdir in candidate_dirs:
+                        target = os.path.join(cdir, img_name)
+                        if os.path.exists(target):
+                            with open(target, "rb") as imf:
+                                media_files[img_name] = imf.read()
+                            break
+                elif isinstance(elem, GroupElement):
+                    _collect_json_images(elem.elements)
+
+        _collect_json_images(slide.elements)
 
         # Check for template theme in parent directory
         theme_raw_bytes = None
@@ -450,15 +455,21 @@ class PPTXBuilder:
         ET.SubElement(xfrm, f"{{{NS['a']}}}chOff", {"x": "0", "y": "0"})
         ET.SubElement(xfrm, f"{{{NS['a']}}}chExt", {"cx": "0", "cy": "0"})
 
-        # Collect images and assign rIds
+        # Collect images and assign rIds recursively (including inside groups)
         image_rels: Dict[str, str] = {}  # src -> rId
         rel_counter = 2
 
-        for elem in slide.elements:
-            if isinstance(elem, ImageElement) and elem.src:
-                if elem.src not in image_rels:
-                    image_rels[elem.src] = f"rIdImg{rel_counter}"
-                    rel_counter += 1
+        def _collect_slide_images(elements):
+            nonlocal rel_counter
+            for elem in elements:
+                if isinstance(elem, ImageElement) and elem.src:
+                    if elem.src not in image_rels:
+                        image_rels[elem.src] = f"rIdImg{rel_counter}"
+                        rel_counter += 1
+                elif isinstance(elem, GroupElement):
+                    _collect_slide_images(elem.elements)
+
+        _collect_slide_images(slide.elements)
 
         # Render elements
         next_shape_id = 2

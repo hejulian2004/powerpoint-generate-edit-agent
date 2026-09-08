@@ -5,7 +5,7 @@ import {
   AlignLeft, AlignCenter, AlignRight, Copy
 } from 'lucide-react'
 import { usePPTStore } from '../store/usePPTStore'
-import type { ShapeElementIR, TextElementIR, ConnectorElementIR } from '../types/ppt'
+import type { ShapeElementIR, TextElementIR, ConnectorElementIR, GroupElementIR } from '../types/ppt'
 
 const FONT_FAMILIES = [
   { label: '现代无衬线 (Inter / Segoe UI)', value: 'Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif' },
@@ -124,10 +124,12 @@ export const PropertyPanel: React.FC = () => {
   const isShape = elem.type === 'shape'
   const isText = elem.type === 'text'
   const isConn = elem.type === 'connector'
+  const isGroup = elem.type === 'group'
 
   const shapeElem = elem as ShapeElementIR
   const textElem = elem as TextElementIR
   const connElem = elem as ConnectorElementIR
+  const groupElem = elem as GroupElementIR
 
   const textContent = isText ? textElem.text_content : isShape ? shapeElem.text_content : null
   const plainText = textContent?.plain_text ?? ''
@@ -180,11 +182,11 @@ export const PropertyPanel: React.FC = () => {
       <div className="flex items-center justify-between border-b border-[#20222F] pb-3">
         <div className="flex items-center gap-2">
           <div className="w-6 h-6 rounded-md bg-[#161722] border border-[#292C3C] flex items-center justify-center text-[#E2E5F0]">
-            {isText ? <Type className="w-3 h-3" /> : <Square className="w-3 h-3" />}
+            {isText ? <Type className="w-3 h-3" /> : isGroup ? <Sliders className="w-3 h-3" /> : <Square className="w-3 h-3" />}
           </div>
           <div>
             <span className="text-xs font-semibold text-[#F1F2F6]">
-              {elem.type === 'shape' ? '几何卡片' : elem.type === 'text' ? '文本段落' : '连接导线'}
+              {elem.type === 'shape' ? '几何卡片' : elem.type === 'text' ? '文本段落' : elem.type === 'group' ? `组合容器 (${groupElem.children?.length || 0}项)` : '连接导线'}
             </span>
             <span className="font-tabular text-[11px] text-[#6E7385] ml-2">#{elem.id}</span>
           </div>

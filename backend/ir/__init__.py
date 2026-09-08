@@ -2,6 +2,8 @@
 
 from .models import (
     PresentationIR,
+    PresentationSnapshot,
+    PresentationTransaction,
     SlideIR,
     ElementIR,
     ShapeElementIR,
@@ -9,6 +11,8 @@ from .models import (
     ConnectorElementIR,
     ImageElementIR,
     TableElementIR,
+    GroupElementIR,
+    TransformIR,
     ElementStyleIR,
     FillStyle,
     BorderStyle,
@@ -26,6 +30,8 @@ from .svg_renderer import SVGRenderer
 
 __all__ = [
     "PresentationIR",
+    "PresentationSnapshot",
+    "PresentationTransaction",
     "SlideIR",
     "ElementIR",
     "ShapeElementIR",
@@ -33,6 +39,8 @@ __all__ = [
     "ConnectorElementIR",
     "ImageElementIR",
     "TableElementIR",
+    "GroupElementIR",
+    "TransformIR",
     "ElementStyleIR",
     "FillStyle",
     "BorderStyle",

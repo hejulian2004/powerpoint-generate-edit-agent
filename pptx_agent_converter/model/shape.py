@@ -57,6 +57,7 @@ class ShapeElement(BaseElement):
     line: Optional[Line] = None
     shadow: Optional[Shadow] = None
     radius: Optional[float] = None  # corner radius for roundRect or adjustment value
+    adjust_values: Dict[str, float] = field(default_factory=dict)
     text: Optional[TextBlock] = None
 
     def __post_init__(self):
@@ -84,6 +85,8 @@ class ShapeElement(BaseElement):
             res["shadow"] = self.shadow.to_dict()
         if self.radius is not None:
             res["radius"] = self.radius
+        if self.adjust_values:
+            res["adjust_values"] = self.adjust_values
         if self.text and self.text.content:
             res["text"] = self.text.to_dict()
         return res
@@ -95,15 +98,15 @@ class ShapeElement(BaseElement):
         elem_type = d.get("type", "shape")
         shape_type = d.get("shape_type", "rectangle")
         position = Position.from_dict(d.get("position", {}))
-        
+
         fill = Fill.from_dict(d.get("fill", {})) if "fill" in d else Fill(type="none")
         line = Line.from_dict(d.get("line", {})) if "line" in d else None
         shadow = Shadow.from_dict(d.get("shadow", {})) if "shadow" in d else None
-        
+
         text = None
         if "text" in d and d["text"]:
             text = TextBlock.from_dict(d["text"])
-            
+
         return cls(
             id=elem_id,
             name=elem_name,
@@ -117,6 +120,7 @@ class ShapeElement(BaseElement):
             line=line,
             shadow=shadow,
             radius=d.get("radius"),
+            adjust_values=d.get("adjust_values", {}),
             text=text
         )
 
@@ -132,6 +136,8 @@ class ConnectorElement(BaseElement):
     arrow_end: Optional[str] = "triangle"
     start_shape_id: Optional[str] = None
     end_shape_id: Optional[str] = None
+    start_site_index: Optional[int] = None
+    end_site_index: Optional[int] = None
 
     def __post_init__(self):
         self.type = "connector"
@@ -153,6 +159,10 @@ class ConnectorElement(BaseElement):
             res["start_shape_id"] = self.start_shape_id
         if self.end_shape_id:
             res["end_shape_id"] = self.end_shape_id
+        if self.start_site_index is not None:
+            res["start_site_index"] = self.start_site_index
+        if self.end_site_index is not None:
+            res["end_site_index"] = self.end_site_index
         return res
 
     @classmethod
@@ -160,7 +170,7 @@ class ConnectorElement(BaseElement):
         elem_id = str(d.get("id", ""))
         elem_name = str(d.get("name", ""))
         conn_type = d.get("connector_type", "straight")
-        
+
         # Parse start
         s = d.get("start", [0.0, 0.0])
         if isinstance(s, dict):
@@ -193,7 +203,9 @@ class ConnectorElement(BaseElement):
             arrow_start=arrow_start,
             arrow_end=arrow_end,
             start_shape_id=d.get("start_shape_id"),
-            end_shape_id=d.get("end_shape_id")
+            end_shape_id=d.get("end_shape_id"),
+            start_site_index=d.get("start_site_index"),
+            end_site_index=d.get("end_site_index")
         )
 
 
@@ -242,6 +254,85 @@ class GroupElement(BaseElement):
 
     def __post_init__(self):
         self.type = "group"
+
+    def all_children(self) -> List[Union[ShapeElement, ConnectorElement, ImageElement, 'GroupElement']]:
+        """Returns all descendants recursively."""
+        result = []
+        for child in self.elements:
+            result.append(child)
+            if isinstance(child, GroupElement):
+                result.extend(child.all_children())
+        return result
+
+    def recompute_bounds(self) -> Position:
+        """Computes and updates the bounding box from all child elements."""
+        if not self.elements:
+            return self.position
+
+        min_x = float('inf')
+        min_y = float('inf')
+        max_x = float('-inf')
+        max_y = float('-inf')
+
+        for child in self.elements:
+            if hasattr(child, "position") and child.position:
+                p = child.position
+                min_x = min(min_x, p.x)
+                min_y = min(min_y, p.y)
+                max_x = max(max_x, p.x + p.width)
+                max_y = max(max_y, p.y + p.height)
+            elif isinstance(child, ConnectorElement):
+                min_x = min(min_x, child.start[0], child.end[0])
+                min_y = min(min_y, child.start[1], child.end[1])
+                max_x = max(max_x, child.start[0], child.end[0])
+                max_y = max(max_y, child.start[1], child.end[1])
+
+        if min_x != float('inf'):
+            self.position.x = round(min_x, 4)
+            self.position.y = round(min_y, 4)
+            self.position.width = round(max(max_x - min_x, 0.01), 4)
+            self.position.height = round(max(max_y - min_y, 0.01), 4)
+        return self.position
+
+    def translate(self, dx: float, dy: float) -> None:
+        """Translates the group and all its children by dx, dy."""
+        self.position.x = round(self.position.x + dx, 4)
+        self.position.y = round(self.position.y + dy, 4)
+        for child in self.elements:
+            if isinstance(child, GroupElement):
+                child.translate(dx, dy)
+            elif hasattr(child, "position") and child.position:
+                child.position.x = round(child.position.x + dx, 4)
+                child.position.y = round(child.position.y + dy, 4)
+            elif isinstance(child, ConnectorElement):
+                child.start = (round(child.start[0] + dx, 4), round(child.start[1] + dy, 4))
+                child.end = (round(child.end[0] + dx, 4), round(child.end[1] + dy, 4))
+
+    def scale(self, sx: float, sy: float, origin_x: Optional[float] = None, origin_y: Optional[float] = None) -> None:
+        """Scales group and children relative to origin (default group position)."""
+        ox = self.position.x if origin_x is None else origin_x
+        oy = self.position.y if origin_y is None else origin_y
+
+        self.position.x = round(ox + (self.position.x - ox) * sx, 4)
+        self.position.y = round(oy + (self.position.y - oy) * sy, 4)
+        self.position.width = round(self.position.width * sx, 4)
+        self.position.height = round(self.position.height * sy, 4)
+
+        for child in self.elements:
+            if isinstance(child, GroupElement):
+                child.scale(sx, sy, origin_x=ox, origin_y=oy)
+            elif hasattr(child, "position") and child.position:
+                child.position.x = round(ox + (child.position.x - ox) * sx, 4)
+                child.position.y = round(oy + (child.position.y - oy) * sy, 4)
+                child.position.width = round(child.position.width * sx, 4)
+                child.position.height = round(child.position.height * sy, 4)
+            elif isinstance(child, ConnectorElement):
+                sx_start = round(ox + (child.start[0] - ox) * sx, 4)
+                sy_start = round(oy + (child.start[1] - oy) * sy, 4)
+                sx_end = round(ox + (child.end[0] - ox) * sx, 4)
+                sy_end = round(oy + (child.end[1] - oy) * sy, 4)
+                child.start = (sx_start, sy_start)
+                child.end = (sx_end, sy_end)
 
     def to_dict(self) -> Dict[str, Any]:
         return {

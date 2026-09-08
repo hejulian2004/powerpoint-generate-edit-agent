@@ -109,7 +109,7 @@ class SlideParser:
         )
 
     def _parse_group(self, grp_elem: ET.Element, rels: Dict[str, str], z_order: int = 0) -> GroupElement:
-        """Parses a <p:grpSp> group element recursively."""
+        """Parses a <p:grpSp> group element recursively, mapping DrawingML child coordinates."""
         nv_grp_pr = grp_elem.find("p:nvGrpSpPr", NS)
         elem_id = ""
         elem_name = ""
@@ -122,29 +122,86 @@ class SlideParser:
         grp_sp_pr = grp_elem.find("p:grpSpPr", NS)
         pos, _, _, _ = self.shape_parser.parse_position(grp_sp_pr)
 
+        # DrawingML Group Coordinate Mapping (off, ext, chOff, chExt)
+        grp_xfrm = grp_sp_pr.find("a:xfrm", NS) if grp_sp_pr is not None else None
+        ch_off = grp_xfrm.find("a:chOff", NS) if grp_xfrm is not None else None
+        ch_ext = grp_xfrm.find("a:chExt", NS) if grp_xfrm is not None else None
+
+        ch_x = emu_to_inches(int(ch_off.get("x", "0"))) if ch_off is not None and ch_off.get("x") else pos.x
+        ch_y = emu_to_inches(int(ch_off.get("y", "0"))) if ch_off is not None and ch_off.get("y") else pos.y
+        ch_w = emu_to_inches(int(ch_ext.get("cx", "0"))) if ch_ext is not None and ch_ext.get("cx") else pos.width
+        ch_h = emu_to_inches(int(ch_ext.get("cy", "0"))) if ch_ext is not None and ch_ext.get("cy") else pos.height
+
+        scale_x = (pos.width / ch_w) if ch_w > 0.0 else 1.0
+        scale_y = (pos.height / ch_h) if ch_h > 0.0 else 1.0
+
         children = []
         child_z = 0
         for child in grp_elem:
             tag = child.tag.split("}")[-1]
+            elem = None
             if tag == "sp":
-                children.append(self.shape_parser.parse_shape(child, z_order=child_z))
-                child_z += 1
+                elem = self.shape_parser.parse_shape(child, z_order=child_z)
             elif tag == "cxnSp":
-                children.append(self.shape_parser.parse_connector(child, z_order=child_z))
-                child_z += 1
+                elem = self.shape_parser.parse_connector(child, z_order=child_z)
             elif tag == "pic":
-                pic = self.media_parser.parse_picture(child, rels, z_order=child_z)
-                if pic is not None:
-                    children.append(pic)
-                    child_z += 1
+                elem = self.media_parser.parse_picture(child, rels, z_order=child_z)
             elif tag == "grpSp":
-                children.append(self._parse_group(child, rels, z_order=child_z))
+                elem = self._parse_group(child, rels, z_order=child_z)
+
+            if elem is not None:
+                self._apply_child_coordinate_transform(elem, pos, ch_x, ch_y, scale_x, scale_y)
+                children.append(elem)
                 child_z += 1
 
-        return GroupElement(
+        grp = GroupElement(
             id=elem_id,
             name=elem_name,
             z_order=z_order,
             position=pos,
             elements=children
         )
+        if (pos.width <= 0 or pos.height <= 0) and children:
+            grp.recompute_bounds()
+        return grp
+
+    def _apply_child_coordinate_transform(
+        self,
+        elem: Union[ShapeElement, ConnectorElement, ImageElement, GroupElement],
+        pos: Position,
+        ch_x: float,
+        ch_y: float,
+        scale_x: float,
+        scale_y: float
+    ) -> None:
+        """Transforms child from local (chOff, chExt) space into parent group space."""
+        # Check if child coordinate space is already 1:1 with group parent
+        is_identity = (
+            abs(pos.x - ch_x) < 1e-6 and
+            abs(pos.y - ch_y) < 1e-6 and
+            abs(scale_x - 1.0) < 1e-6 and
+            abs(scale_y - 1.0) < 1e-6
+        )
+        if is_identity:
+            return
+
+        if isinstance(elem, GroupElement):
+            old_x = elem.position.x
+            old_y = elem.position.y
+            elem.scale(scale_x, scale_y, origin_x=old_x, origin_y=old_y)
+            new_x = pos.x + (old_x - ch_x) * scale_x
+            new_y = pos.y + (old_y - ch_y) * scale_y
+            elem.translate(new_x - elem.position.x, new_y - elem.position.y)
+        elif hasattr(elem, "position") and elem.position is not None:
+            p = elem.position
+            p.x = round(pos.x + (p.x - ch_x) * scale_x, 4)
+            p.y = round(pos.y + (p.y - ch_y) * scale_y, 4)
+            p.width = round(p.width * scale_x, 4)
+            p.height = round(p.height * scale_y, 4)
+        elif isinstance(elem, ConnectorElement):
+            sx = round(pos.x + (elem.start[0] - ch_x) * scale_x, 4)
+            sy = round(pos.y + (elem.start[1] - ch_y) * scale_y, 4)
+            ex = round(pos.x + (elem.end[0] - ch_x) * scale_x, 4)
+            ey = round(pos.y + (elem.end[1] - ch_y) * scale_y, 4)
+            elem.start = (sx, sy)
+            elem.end = (ex, ey)
