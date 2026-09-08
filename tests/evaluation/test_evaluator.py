@@ -261,3 +261,27 @@ def test_evaluator_unconfigured_vlm_graceful_degradation() -> None:
     )
     assert evaluator.evaluate(None, slide) == []
 
+
+def test_empty_text_no_false_positive_overflow() -> None:
+    """Empty or whitespace-only text elements must not trigger false TEXT_OVERFLOW."""
+    slide = LayoutSpec(
+        slide_id="slide_empty_text",
+        slide_index=1,
+        visual_intent=VisualIntent.TITLE_HERO,
+        canvas=Canvas(width=1280, height=720),
+        elements=[
+            LayoutElement(
+                element_id="empty_box",
+                element_type=ElementType.TEXT,
+                geometry=Rect(x=100.0, y=100.0, width=500.0, height=15.0),
+                content="   \n  ",
+            )
+        ],
+    )
+
+    evaluator = RuleBasedEvaluator()
+    issues = evaluator.evaluate(slide_image=None, layout_spec=slide)
+    overflow_issues = [i for i in issues if i.issue_type == IssueType.TEXT_OVERFLOW]
+    assert len(overflow_issues) == 0
+
+

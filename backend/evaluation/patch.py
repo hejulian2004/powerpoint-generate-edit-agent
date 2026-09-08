@@ -9,7 +9,7 @@ from __future__ import annotations
 import copy
 from typing import List, Optional
 
-from ..layout.schema import DeckLayoutSpec, LayoutElement, LayoutSpec, Rect, TextStyle
+from ..layout.schema import DeckLayoutSpec, ElementStyle, LayoutElement, LayoutSpec, Rect, TextStyle
 from .schema import LayoutPatch, PatchOperation
 
 
@@ -27,6 +27,9 @@ def apply_patch(
     target = new_spec.get_element(patch.target_element)
     if target is None:
         return new_spec
+
+    if target.style is None:
+        target.style = ElementStyle()
 
     op = patch.operation
     params = patch.parameters

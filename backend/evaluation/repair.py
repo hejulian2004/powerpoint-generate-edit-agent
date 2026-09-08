@@ -62,9 +62,24 @@ def generate_patches_for_issues(
             seen_elements.add(target_id)
 
         elif issue.issue_type == IssueType.TEXT_OVERFLOW:
-            # First attempt font size reduction
             curr_fs = element.style.text.font_size if (element.style and element.style.text) else 18.0
-            if curr_fs > 10.0:
+            evidence = issue.evidence or {}
+            req_h = float(evidence.get("required_height", element.geometry.height * 1.5))
+            act_h = float(evidence.get("actual_height", element.geometry.height))
+
+            # If severe overflow (>1.5x), calculate proportional font reduction directly
+            if req_h > act_h * 1.5 and curr_fs > 10.0:
+                prop_fs = max(8.0, curr_fs * (act_h / req_h) * 1.1)
+                patches.append(
+                    LayoutPatch(
+                        slide_id=layout_spec.slide_id,
+                        target_element=target_id,
+                        operation=PatchOperation.CHANGE_FONT_SIZE,
+                        parameters={"font_size": round(prop_fs, 1)},
+                        description=f"Proportionally reduce font size to alleviate text overflow in '{target_id}'",
+                    )
+                )
+            elif curr_fs > 10.0:
                 patches.append(
                     LayoutPatch(
                         slide_id=layout_spec.slide_id,
@@ -76,12 +91,13 @@ def generate_patches_for_issues(
                 )
             else:
                 # If font size is already small, expand box height
+                max_allowed_h = max(act_h * 1.3, min(req_h * 1.15, layout_spec.canvas.height - element.geometry.y - 20.0))
                 patches.append(
                     LayoutPatch(
                         slide_id=layout_spec.slide_id,
                         target_element=target_id,
                         operation=PatchOperation.RESIZE,
-                        parameters={"scale_y": 1.3},
+                        parameters={"height": round(max_allowed_h, 1)},
                         description=f"Expand height of text container '{target_id}'",
                     )
                 )
@@ -113,35 +129,70 @@ def generate_patches_for_issues(
                 seen_elements.add(target_id)
 
         elif issue.issue_type == IssueType.OVERLAP:
-            # Shift element downward or clamp
             evidence = issue.evidence or {}
             inter = evidence.get("intersection", {})
-            overlap_h = float(inter.get("height", 20.0))
+            inter_w = float(inter.get("width", 20.0))
+            inter_h = float(inter.get("height", 20.0))
+
+            other_id = evidence.get("element_b") if evidence.get("element_a") == target_id else evidence.get("element_a")
+            other_el = layout_spec.get_element(other_id) if other_id else None
+
+            if inter_w < inter_h:
+                # Minimal separation along horizontal axis
+                if other_el and element.geometry.center_x < other_el.geometry.center_x:
+                    dx = -(inter_w + 8.0)
+                else:
+                    dx = (inter_w + 8.0)
+                dy = 0.0
+            else:
+                # Minimal separation along vertical axis
+                if other_el and element.geometry.center_y < other_el.geometry.center_y:
+                    # Move upward only if there is sufficient top margin, else downward
+                    dy = -(inter_h + 8.0) if element.geometry.y > (inter_h + 30.0) else (inter_h + 8.0)
+                else:
+                    dy = (inter_h + 8.0)
+                dx = 0.0
+
             patches.append(
                 LayoutPatch(
                     slide_id=layout_spec.slide_id,
                     target_element=target_id,
                     operation=PatchOperation.MOVE,
-                    parameters={"dx": 0.0, "dy": -(overlap_h + 8.0)},
-                    description=f"Shift overlapping element '{target_id}' to clear collision",
+                    parameters={"dx": round(dx, 1), "dy": round(dy, 1)},
+                    description=f"Shift overlapping element '{target_id}' along separation axis",
                 )
             )
             seen_elements.add(target_id)
 
         elif issue.issue_type == IssueType.WRONG_SCALE:
             if element.element_type == ElementType.FIGURE:
-                # Normalize aspect ratio to 16:9 or 4:3
-                target_ratio = 16.0 / 9.0
-                new_h = element.geometry.width / target_ratio
-                patches.append(
-                    LayoutPatch(
-                        slide_id=layout_spec.slide_id,
-                        target_element=target_id,
-                        operation=PatchOperation.RESIZE,
-                        parameters={"height": new_h},
-                        description=f"Adjust aspect ratio of figure '{target_id}'",
+                curr_ratio = element.geometry.aspect_ratio
+                if curr_ratio > 4.5:
+                    # Excessively wide -> expand height to normalize
+                    target_ratio = 16.0 / 9.0
+                    new_h = min(element.geometry.width / target_ratio, layout_spec.canvas.height - element.geometry.y - 20.0)
+                    patches.append(
+                        LayoutPatch(
+                            slide_id=layout_spec.slide_id,
+                            target_element=target_id,
+                            operation=PatchOperation.RESIZE,
+                            parameters={"height": round(max(element.geometry.height * 1.3, new_h), 1)},
+                            description=f"Increase height of wide figure '{target_id}'",
+                        )
                     )
-                )
+                else:
+                    # Excessively tall -> expand width to normalize
+                    target_ratio = 4.0 / 3.0
+                    new_w = min(element.geometry.height * target_ratio, layout_spec.canvas.width - element.geometry.x - 20.0)
+                    patches.append(
+                        LayoutPatch(
+                            slide_id=layout_spec.slide_id,
+                            target_element=target_id,
+                            operation=PatchOperation.RESIZE,
+                            parameters={"width": round(max(element.geometry.width * 1.3, new_w), 1)},
+                            description=f"Increase width of tall figure '{target_id}'",
+                        )
+                    )
                 seen_elements.add(target_id)
 
     return patches

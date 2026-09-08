@@ -50,8 +50,15 @@ class PowerPointBackend(ScreenshotBackend):
     def is_available(self) -> bool:
         if os.name != "nt":
             return False
-        # Check if PowerShell is available
-        return shutil.which("powershell") is not None
+        if not shutil.which("powershell"):
+            return False
+        try:
+            import winreg
+
+            with winreg.OpenKey(winreg.HKEY_CLASSES_ROOT, "PowerPoint.Application"):
+                return True
+        except OSError:
+            return False
 
     def render(
         self,

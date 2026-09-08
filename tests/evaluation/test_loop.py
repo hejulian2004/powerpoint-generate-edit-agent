@@ -223,3 +223,120 @@ def test_generate_patches_for_all_issue_types() -> None:
     assert ops["el_distorted_fig"] == "RESIZE"
     assert ops["el_dense"] == "CHANGE_FONT_SIZE"
 
+
+def test_overlap_repair_direction_and_separation_axis() -> None:
+    """Verify OVERLAP repair shifts elements along the minimal separation axis in the correct direction."""
+    from backend.evaluation.repair import generate_patches_for_issues
+
+    slide = LayoutSpec(
+        slide_id="slide_overlap_dir",
+        slide_index=1,
+        visual_intent=VisualIntent.TWO_COLUMN_CONTRAST,
+        canvas=Canvas(width=1280, height=720),
+        elements=[
+            LayoutElement(
+                element_id="col_left",
+                element_type=ElementType.TEXT,
+                geometry=Rect(x=100, y=100, width=300, height=400),
+                content="Left",
+            ),
+            LayoutElement(
+                element_id="col_right",
+                element_type=ElementType.TEXT,
+                geometry=Rect(x=380, y=100, width=300, height=400),
+                content="Right",
+            ),
+        ],
+    )
+
+    # Collision where overlap width is 20px, height is 400px (horizontal collision)
+    horiz_issue = VisualIssue(
+        slide="slide_overlap_dir",
+        issue=IssueType.OVERLAP,
+        element="col_right",
+        description="Collision with col_left",
+        evidence={
+            "element_a": "col_left",
+            "element_b": "col_right",
+            "intersection": {"width": 20.0, "height": 400.0},
+        },
+    )
+
+    patches = generate_patches_for_issues([horiz_issue], slide)
+    assert len(patches) == 1
+    assert patches[0].operation.value == "MOVE"
+    # Must shift along X axis (dx > 0 since col_right is to the right of col_left)
+    assert patches[0].parameters["dx"] > 0
+    assert patches[0].parameters["dy"] == 0.0
+
+
+def test_tall_figure_aspect_ratio_repair_expands_width() -> None:
+    """Verify that an excessively tall figure (aspect ratio < 0.25) expands width rather than collapsing height."""
+    from backend.evaluation.repair import generate_patches_for_issues
+
+    slide = LayoutSpec(
+        slide_id="slide_tall_fig",
+        slide_index=1,
+        visual_intent=VisualIntent.PIPELINE_ARCHITECTURE,
+        canvas=Canvas(width=1280, height=720),
+        elements=[
+            LayoutElement(
+                element_id="tall_fig",
+                element_type=ElementType.FIGURE,
+                geometry=Rect(x=100, y=100, width=60.0, height=400.0),  # ratio = 0.15
+                content={"figure_id": "fig_strip"},
+            )
+        ],
+    )
+
+    issue = VisualIssue(
+        slide="slide_tall_fig",
+        issue=IssueType.WRONG_SCALE,
+        element="tall_fig",
+        description="Distorted aspect ratio",
+    )
+
+    patches = generate_patches_for_issues([issue], slide)
+    assert len(patches) == 1
+    assert patches[0].operation.value == "RESIZE"
+    # Must expand width to fix ratio
+    assert "width" in patches[0].parameters
+    assert patches[0].parameters["width"] > 100.0
+
+
+def test_severe_text_overflow_proportional_reduction() -> None:
+    """Verify that severe text overflow computes proportional font size reduction directly."""
+    from backend.evaluation.repair import generate_patches_for_issues
+
+    slide = LayoutSpec(
+        slide_id="slide_severe",
+        slide_index=1,
+        visual_intent=VisualIntent.TITLE_HERO,
+        canvas=Canvas(width=1280, height=720),
+        elements=[
+            LayoutElement(
+                element_id="overflow_title",
+                element_type=ElementType.TEXT,
+                geometry=Rect(x=100, y=50, width=600, height=20),
+                style=ElementStyle(text=TextStyle(font_size=24.0)),
+                content="Long title",
+            )
+        ],
+    )
+
+    issue = VisualIssue(
+        slide="slide_severe",
+        issue=IssueType.TEXT_OVERFLOW,
+        element="overflow_title",
+        description="Text overflow",
+        evidence={"required_height": 200.0, "actual_height": 20.0},
+    )
+
+    patches = generate_patches_for_issues([issue], slide)
+    assert len(patches) == 1
+    assert patches[0].operation.value == "CHANGE_FONT_SIZE"
+    # Proportional font size reduction should jump directly to a small font size (e.g. 8.0 - 12.0) rather than just -2pt
+    assert "font_size" in patches[0].parameters
+    assert patches[0].parameters["font_size"] <= 12.0
+
+

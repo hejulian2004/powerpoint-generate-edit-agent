@@ -11,6 +11,7 @@ from __future__ import annotations
 import base64
 import io
 import json
+import logging
 import os
 from abc import ABC, abstractmethod
 from pathlib import Path
@@ -18,9 +19,12 @@ from typing import Any, Callable, Dict, List, Optional, Union
 
 from PIL import Image
 
+from ..layout.constraints import estimate_text_lines
 from ..layout.schema import DeckLayoutSpec, ElementType, LayoutElement, LayoutSpec, Rect
 from .issues import deduplicate_issues
 from .schema import IssueSeverity, IssueType, VisualIssue
+
+logger = logging.getLogger(__name__)
 
 
 class VisualEvaluator(ABC):
@@ -154,6 +158,9 @@ class RuleBasedEvaluator(VisualEvaluator):
         for el in layout_spec.elements:
             if el.element_type in (ElementType.TEXT, ElementType.BADGE):
                 content_str = self._extract_text_content(el.content)
+                if not content_str.strip():
+                    continue
+
                 char_count = len(content_str)
                 geo = el.geometry
                 box_area = max(1.0, geo.width * geo.height)
@@ -180,16 +187,16 @@ class RuleBasedEvaluator(VisualEvaluator):
                 if el.style and el.style.text and el.style.text.font_size:
                     font_size = el.style.text.font_size
 
-                char_w = max(3.0, font_size * self.char_width_ratio)
-                chars_per_line = max(1, int(geo.width / char_w))
-                # Count lines needed
-                lines_needed = 0
-                for paragraph in content_str.split("\n"):
-                    p_len = len(paragraph)
-                    lines_needed += max(1, (p_len + chars_per_line - 1) // chars_per_line)
+                padding = el.style.padding if el.style and el.style.padding else 0.0
+                lines_needed = estimate_text_lines(
+                    text=content_str,
+                    box_width=geo.width,
+                    font_size=font_size,
+                    padding=padding,
+                )
 
                 line_h = font_size * 1.25
-                required_height = lines_needed * line_h
+                required_height = lines_needed * line_h + 2 * padding
 
                 if required_height > geo.height * 1.15:
                     issues.append(
@@ -316,7 +323,8 @@ class OpenAICompatibleVisionEvaluator(VisualEvaluator):
                     response = json.loads(resp.read().decode("utf-8"))
 
             return self.parse_vlm_response(response, layout_spec.slide_id)
-        except Exception:
+        except Exception as exc:
+            logger.warning("OpenAICompatibleVisionEvaluator request failed: %s", exc)
             return []
 
     def build_request_payload(
@@ -412,5 +420,6 @@ class OpenAICompatibleVisionEvaluator(VisualEvaluator):
                     item["slide"] = default_slide_id
                 issues.append(VisualIssue.from_dict(item))
             return issues
-        except Exception:
+        except Exception as exc:
+            logger.warning("Failed to parse VLM response JSON: %s", exc)
             return []

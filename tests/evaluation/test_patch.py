@@ -206,3 +206,21 @@ def test_patch_safeguards_missing_element_and_mismatched_slide(base_slide: Layou
     res2 = apply_patch(base_slide, patch_missing_elem)
     assert res2.get_element("fig_main").geometry.x == 100.0
 
+
+def test_patch_apply_when_style_is_none(base_slide: LayoutSpec) -> None:
+    """Verify modifying style attributes when target.style is None initializes style safely."""
+    no_style_slide = base_slide.model_copy(deep=True)
+    no_style_slide.get_element("txt_title").style = None
+
+    patch = LayoutPatch(
+        slide_id="slide_test",
+        target_element="txt_title",
+        operation=PatchOperation.CHANGE_FONT_SIZE,
+        parameters={"font_size": 22.0},
+    )
+    patched = apply_patch(no_style_slide, patch)
+    elem = patched.get_element("txt_title")
+    assert elem.style is not None
+    assert elem.style.text.font_size == 22.0
+
+
