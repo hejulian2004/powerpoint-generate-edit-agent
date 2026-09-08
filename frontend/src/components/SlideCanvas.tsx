@@ -29,7 +29,7 @@ export const SlideCanvas: React.FC = () => {
 
   if (!slide) {
     return (
-      <div className="flex-1 bg-[#090B10] flex items-center justify-center text-slate-500 text-sm">
+      <div className="flex-1 bg-[#050505] flex items-center justify-center text-neutral-500 text-sm">
         暂无选中的幻灯片
       </div>
     )
@@ -101,7 +101,7 @@ export const SlideCanvas: React.FC = () => {
 
   return (
     <main
-      className="flex-1 bg-[#090B10] relative flex flex-col items-center justify-center p-8 overflow-hidden select-none"
+      className="flex-1 bg-[#050505] relative flex flex-col items-center justify-center p-8 overflow-hidden select-none"
       onMouseMove={handleMouseMove}
       onMouseUp={handleMouseUp}
     >
@@ -111,10 +111,10 @@ export const SlideCanvas: React.FC = () => {
       {/* Grid Canvas Overlay (Optional alignment grid) */}
       {showGrid && (
         <div
-          className="absolute inset-0 pointer-events-none opacity-20"
+          className="absolute inset-0 pointer-events-none opacity-25"
           style={{
             backgroundImage:
-              'linear-gradient(to right, #334155 1px, transparent 1px), linear-gradient(to bottom, #334155 1px, transparent 1px)',
+              'linear-gradient(to right, #222222 1px, transparent 1px), linear-gradient(to bottom, #222222 1px, transparent 1px)',
             backgroundSize: '40px 40px'
           }}
         />
@@ -122,7 +122,7 @@ export const SlideCanvas: React.FC = () => {
 
       {/* Subtle Studio Backdrop Pattern */}
       <div
-        className="absolute inset-0 opacity-[0.02] pointer-events-none"
+        className="absolute inset-0 opacity-[0.03] pointer-events-none"
         style={{
           backgroundImage: 'radial-gradient(#ffffff 1px, transparent 1px)',
           backgroundSize: '32px 32px'
@@ -133,7 +133,7 @@ export const SlideCanvas: React.FC = () => {
       <div
         ref={canvasRef}
         onMouseDown={handleMouseDown}
-        className="relative w-full max-w-[1120px] aspect-video rounded-xl shadow-2xl shadow-black/90 border border-slate-800/90 overflow-hidden bg-slate-900 transition-transform duration-150 cursor-default"
+        className="relative w-full max-w-[1120px] aspect-video rounded-xl shadow-2xl shadow-black border border-[#222222] overflow-hidden bg-[#0A0A0A] transition-transform duration-150 cursor-default"
         style={{
           transform: `scale(${zoom})`,
           cursor: dragState?.isDragging ? 'grabbing' : 'default'
@@ -144,28 +144,28 @@ export const SlideCanvas: React.FC = () => {
 
       {/* Bottom Floating Control Bar: Zoom & Quick Info */}
       <div className="absolute bottom-6 flex items-center gap-3 z-10">
-        <div className="flex items-center gap-1 bg-slate-900/95 backdrop-blur-md px-2.5 py-1.5 rounded-xl border border-slate-800 shadow-xl text-slate-300">
+        <div className="flex items-center gap-1 bg-[#121212]/95 backdrop-blur-md px-2.5 py-1.5 rounded-xl border border-[#222222] shadow-2xl text-neutral-300">
           <button
             onClick={() => setZoom(Math.max(zoom - 0.1, 0.5))}
-            className="p-1 rounded-lg hover:bg-slate-800 text-slate-400 hover:text-slate-200 transition"
+            className="p-1 rounded-lg hover:bg-[#1E1E1E] text-neutral-400 hover:text-white transition"
             title="缩小"
           >
             <ZoomOut className="w-3.5 h-3.5" />
           </button>
-          <span className="text-[11px] font-mono px-2 w-14 text-center text-slate-300">
+          <span className="text-[11px] font-mono px-2 w-14 text-center text-neutral-300">
             {Math.round(zoom * 100)}%
           </span>
           <button
             onClick={() => setZoom(Math.min(zoom + 0.1, 2.0))}
-            className="p-1 rounded-lg hover:bg-slate-800 text-slate-400 hover:text-slate-200 transition"
+            className="p-1 rounded-lg hover:bg-[#1E1E1E] text-neutral-400 hover:text-white transition"
             title="放大"
           >
             <ZoomIn className="w-3.5 h-3.5" />
           </button>
-          <div className="w-[1px] h-3.5 bg-slate-800 mx-1" />
+          <div className="w-[1px] h-3.5 bg-[#222222] mx-1" />
           <button
             onClick={() => setZoom(1.0)}
-            className="p-1 rounded-lg hover:bg-slate-800 text-slate-400 hover:text-slate-200 transition"
+            className="p-1 rounded-lg hover:bg-[#1E1E1E] text-neutral-400 hover:text-white transition"
             title="重置 100%"
           >
             <Maximize2 className="w-3.5 h-3.5" />
@@ -174,16 +174,16 @@ export const SlideCanvas: React.FC = () => {
 
         {/* Selected Element Pill */}
         {selectedElement && (
-          <div className="flex items-center gap-3 bg-slate-900/95 backdrop-blur-md px-3.5 py-1.5 rounded-xl border border-blue-500/40 shadow-xl text-xs text-slate-200 animate-in fade-in">
-            <span className="font-mono text-blue-400 font-medium">
+          <div className="flex items-center gap-3 bg-[#121212]/95 backdrop-blur-md px-3.5 py-1.5 rounded-xl border border-white/40 shadow-2xl text-xs text-neutral-200 animate-in fade-in">
+            <span className="font-mono text-white font-medium bg-[#1C1C1C] px-1.5 py-0.5 rounded border border-[#2A2A2A]">
               {selectedElement.type.toUpperCase()} #{selectedElement.id}
             </span>
-            <span className="text-slate-400 font-mono text-[11px]">
+            <span className="text-neutral-400 font-mono text-[11px]">
               {Math.round(selectedElement.x)}, {Math.round(selectedElement.y)} · {Math.round(selectedElement.width)}×{Math.round(selectedElement.height)}px
             </span>
             <button
               onClick={handleDeleteSelected}
-              className="p-1 rounded hover:bg-rose-500/20 text-rose-400 transition ml-1"
+              className="p-1 rounded hover:bg-neutral-800 text-neutral-400 hover:text-white transition ml-1"
               title="删除元素"
             >
               <Trash2 className="w-3.5 h-3.5" />

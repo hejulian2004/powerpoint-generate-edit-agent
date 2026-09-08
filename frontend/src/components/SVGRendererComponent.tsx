@@ -95,7 +95,7 @@ export const SVGRendererComponent: React.FC<Props> = ({ slide, isThumbnail = fal
     if (fill.type === 'gradient' && fill.gradient) {
       return `url(#${elemId ? `grad-${elemId}` : `bg-grad-${slide.id}`})`
     }
-    const color = fill.color || '#3B82F6'
+    const color = fill.color || '#2A2A2A'
     if (fill.alpha < 1.0) {
       return hexToRgba(color, fill.alpha)
     }
@@ -106,7 +106,7 @@ export const SVGRendererComponent: React.FC<Props> = ({ slide, isThumbnail = fal
     if (!border || border.style === 'none' || border.width <= 0) {
       return { stroke: 'none', strokeWidth: 0 }
     }
-    let stroke = border.color || '#1E293B'
+    let stroke = border.color || '#333333'
     if (border.alpha < 1.0) {
       stroke = hexToRgba(stroke, border.alpha)
     }
@@ -346,7 +346,7 @@ export const SVGRendererComponent: React.FC<Props> = ({ slide, isThumbnail = fal
               </>
             )}
 
-            {/* Selection Bounding Box & Handles */}
+            {/* Selection Bounding Box & Handles (Crisp Monochrome Hairline) */}
             {isSelected && (
               <g className="pointer-events-none">
                 <rect
@@ -355,15 +355,15 @@ export const SVGRendererComponent: React.FC<Props> = ({ slide, isThumbnail = fal
                   width={elem.width + 4}
                   height={elem.height + 4}
                   fill="none"
-                  stroke="#3B82F6"
-                  strokeWidth="2"
+                  stroke="#FFFFFF"
+                  strokeWidth="1.5"
                   strokeDasharray="4,3"
                 />
                 {/* 4 corner handles */}
-                <circle cx={elem.x - 2} cy={elem.y - 2} r="4" fill="#3B82F6" />
-                <circle cx={elem.x + elem.width + 2} cy={elem.y - 2} r="4" fill="#3B82F6" />
-                <circle cx={elem.x - 2} cy={elem.y + elem.height + 2} r="4" fill="#3B82F6" />
-                <circle cx={elem.x + elem.width + 2} cy={elem.y + elem.height + 2} r="4" fill="#3B82F6" />
+                <rect x={elem.x - 5} y={elem.y - 5} width="6" height="6" fill="#FFFFFF" stroke="#000000" strokeWidth="1" />
+                <rect x={elem.x + elem.width - 1} y={elem.y - 5} width="6" height="6" fill="#FFFFFF" stroke="#000000" strokeWidth="1" />
+                <rect x={elem.x - 5} y={elem.y + elem.height - 1} width="6" height="6" fill="#FFFFFF" stroke="#000000" strokeWidth="1" />
+                <rect x={elem.x + elem.width - 1} y={elem.y + elem.height - 1} width="6" height="6" fill="#FFFFFF" stroke="#000000" strokeWidth="1" />
                 {/* Coordinate badge */}
                 <rect
                   x={elem.x}
@@ -371,14 +371,14 @@ export const SVGRendererComponent: React.FC<Props> = ({ slide, isThumbnail = fal
                   width="110"
                   height="18"
                   rx="3"
-                  fill="#1E293B"
-                  stroke="#3B82F6"
+                  fill="#121212"
+                  stroke="#333333"
                   strokeWidth="1"
                 />
                 <text
                   x={elem.x + 6}
                   y={elem.y - 9}
-                  fill="#93C5FD"
+                  fill="#EDEDED"
                   fontSize="10px"
                   fontFamily="monospace"
                 >

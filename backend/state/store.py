@@ -36,7 +36,7 @@ def create_default_demo_presentation() -> PresentationIR:
         id="slide_01",
         slide_num=1,
         title="AI 驱动的 PPT 智能生成与编辑平台",
-        background=FillStyle(type="solid", color="#0B0F19", alpha=1.0),
+        background=FillStyle(type="solid", color="#0A0A0A", alpha=1.0),
         elements=[
             TextElementIR(
                 id="title_main",
@@ -47,7 +47,7 @@ def create_default_demo_presentation() -> PresentationIR:
                 height=70,
                 text_content=TextContentIR.from_plain_text(
                     "PPT-Agent-Studio 智能演示平台",
-                    font=FontIR(name="Segoe UI", size=38.0, color="#F8FAFC", bold=True),
+                    font=FontIR(name="Segoe UI", size=38.0, color="#FFFFFF", bold=True),
                     align="center"
                 )
             ),
@@ -60,7 +60,7 @@ def create_default_demo_presentation() -> PresentationIR:
                 height=40,
                 text_content=TextContentIR.from_plain_text(
                     "基于 PPT-IR 中间表示 · 双向 OOXML 原生转换 · Vision Loop 视觉自省",
-                    font=FontIR(name="Segoe UI", size=18.0, color="#94A3B8", bold=False),
+                    font=FontIR(name="Segoe UI", size=18.0, color="#A3A3A3", bold=False),
                     align="center"
                 )
             ),
@@ -74,14 +74,14 @@ def create_default_demo_presentation() -> PresentationIR:
                 width=320,
                 height=300,
                 style=dict(
-                    fill=FillStyle(type="solid", color="#1E293B", alpha=0.9),
-                    border=BorderStyle(color="#3B82F6", width=2.0),
-                    shadow=ShadowStyle(enabled=True, blur=8.0, alpha=0.3),
-                    radius=16.0
+                    fill=FillStyle(type="solid", color="#141414", alpha=1.0),
+                    border=BorderStyle(color="#2E2E2E", width=1.5),
+                    shadow=ShadowStyle(enabled=True, blur=8.0, alpha=0.4),
+                    radius=12.0
                 ),
                 text_content=TextContentIR.from_plain_text(
                     "① PPT-IR 核心抽象\n\n以 1280x720 像素基准为核心状态，解耦具体文件格式。\n支持细粒度元素增删改与补丁差异追踪。",
-                    font=FontIR(name="Segoe UI", size=16.0, color="#E2E8F0"),
+                    font=FontIR(name="Segoe UI", size=16.0, color="#D4D4D4"),
                     align="left"
                 )
             ),
@@ -95,14 +95,14 @@ def create_default_demo_presentation() -> PresentationIR:
                 width=320,
                 height=300,
                 style=dict(
-                    fill=FillStyle(type="solid", color="#1E293B", alpha=0.9),
-                    border=BorderStyle(color="#10B981", width=2.0),
-                    shadow=ShadowStyle(enabled=True, blur=8.0, alpha=0.3),
-                    radius=16.0
+                    fill=FillStyle(type="solid", color="#141414", alpha=1.0),
+                    border=BorderStyle(color="#2E2E2E", width=1.5),
+                    shadow=ShadowStyle(enabled=True, blur=8.0, alpha=0.4),
+                    radius=12.0
                 ),
                 text_content=TextContentIR.from_plain_text(
                     "② AI Agent 运行时\n\n通过自然语言驱动 Tool Calling，自动化完成图形排版、色彩搭配与文本重写。\n支持多模型协作路由与上下文记忆。",
-                    font=FontIR(name="Segoe UI", size=16.0, color="#E2E8F0"),
+                    font=FontIR(name="Segoe UI", size=16.0, color="#D4D4D4"),
                     align="left"
                 )
             ),
@@ -116,14 +116,14 @@ def create_default_demo_presentation() -> PresentationIR:
                 width=320,
                 height=300,
                 style=dict(
-                    fill=FillStyle(type="solid", color="#1E293B", alpha=0.9),
-                    border=BorderStyle(color="#8B5CF6", width=2.0),
-                    shadow=ShadowStyle(enabled=True, blur=8.0, alpha=0.3),
-                    radius=16.0
+                    fill=FillStyle(type="solid", color="#141414", alpha=1.0),
+                    border=BorderStyle(color="#2E2E2E", width=1.5),
+                    shadow=ShadowStyle(enabled=True, blur=8.0, alpha=0.4),
+                    radius=12.0
                 ),
                 text_content=TextContentIR.from_plain_text(
                     "③ 实时渲染与无损导出\n\n毫秒级 SVG 实时重绘与双向 WebSocket 推送。\n底层直连 OOXML 引擎，实现原生 .pptx 高保真导入导出。",
-                    font=FontIR(name="Segoe UI", size=16.0, color="#E2E8F0"),
+                    font=FontIR(name="Segoe UI", size=16.0, color="#D4D4D4"),
                     align="left"
                 )
             ),
@@ -135,7 +135,7 @@ def create_default_demo_presentation() -> PresentationIR:
                 end_x=480,
                 end_y=410,
                 arrow_end="triangle",
-                style=dict(border=BorderStyle(color="#60A5FA", width=2.5))
+                style=dict(border=BorderStyle(color="#525252", width=2.0))
             ),
             ConnectorElementIR(
                 id="conn_2_3",
@@ -144,7 +144,7 @@ def create_default_demo_presentation() -> PresentationIR:
                 end_x=840,
                 end_y=410,
                 arrow_end="triangle",
-                style=dict(border=BorderStyle(color="#34D399", width=2.5))
+                style=dict(border=BorderStyle(color="#525252", width=2.0))
             )
         ]
     )
@@ -154,7 +154,7 @@ def create_default_demo_presentation() -> PresentationIR:
         id="slide_02",
         slide_num=2,
         title="Agent 闭环架构与执行链路",
-        background=FillStyle(type="solid", color="#0B0F19", alpha=1.0),
+        background=FillStyle(type="solid", color="#0A0A0A", alpha=1.0),
         elements=[
             TextElementIR(
                 id="s2_title",
@@ -164,7 +164,7 @@ def create_default_demo_presentation() -> PresentationIR:
                 height=60,
                 text_content=TextContentIR.from_plain_text(
                     "Agent 循环与 Vision Loop 视觉自省",
-                    font=FontIR(name="Segoe UI", size=32.0, color="#F8FAFC", bold=True),
+                    font=FontIR(name="Segoe UI", size=32.0, color="#FFFFFF", bold=True),
                     align="left"
                 )
             ),
@@ -175,7 +175,7 @@ def create_default_demo_presentation() -> PresentationIR:
                 y=220,
                 width=220,
                 height=140,
-                style=dict(fill=FillStyle(type="solid", color="#1E293B"), border=BorderStyle(color="#38BDF8", width=1.5), radius=12.0),
+                style=dict(fill=FillStyle(type="solid", color="#141414"), border=BorderStyle(color="#333333", width=1.5), radius=12.0),
                 text_content=TextContentIR.from_plain_text("1. Observe\n感知幻灯片结构与元素", font=FontIR(color="#FFFFFF", size=16.0), align="center")
             ),
             ShapeElementIR(
@@ -185,7 +185,7 @@ def create_default_demo_presentation() -> PresentationIR:
                 y=220,
                 width=220,
                 height=140,
-                style=dict(fill=FillStyle(type="solid", color="#1E293B"), border=BorderStyle(color="#818CF8", width=1.5), radius=12.0),
+                style=dict(fill=FillStyle(type="solid", color="#141414"), border=BorderStyle(color="#333333", width=1.5), radius=12.0),
                 text_content=TextContentIR.from_plain_text("2. Think & Plan\n推理意图与规划工具集", font=FontIR(color="#FFFFFF", size=16.0), align="center")
             ),
             ShapeElementIR(
@@ -195,7 +195,7 @@ def create_default_demo_presentation() -> PresentationIR:
                 y=220,
                 width=220,
                 height=140,
-                style=dict(fill=FillStyle(type="solid", color="#1E293B"), border=BorderStyle(color="#34D399", width=1.5), radius=12.0),
+                style=dict(fill=FillStyle(type="solid", color="#141414"), border=BorderStyle(color="#333333", width=1.5), radius=12.0),
                 text_content=TextContentIR.from_plain_text("3. Tool Execute\n精确修改 PPT-IR 元素", font=FontIR(color="#FFFFFF", size=16.0), align="center")
             ),
             ShapeElementIR(
@@ -205,7 +205,7 @@ def create_default_demo_presentation() -> PresentationIR:
                 y=220,
                 width=200,
                 height=140,
-                style=dict(fill=FillStyle(type="solid", color="#1E293B"), border=BorderStyle(color="#F472B6", width=1.5), radius=12.0),
+                style=dict(fill=FillStyle(type="solid", color="#141414"), border=BorderStyle(color="#333333", width=1.5), radius=12.0),
                 text_content=TextContentIR.from_plain_text("4. Vision Review\n多模态截图质检与重调", font=FontIR(color="#FFFFFF", size=16.0), align="center")
             )
         ]

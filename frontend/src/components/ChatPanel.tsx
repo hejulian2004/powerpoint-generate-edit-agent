@@ -47,16 +47,16 @@ export const ChatPanel: React.FC = () => {
   }
 
   return (
-    <aside className="w-[380px] bg-slate-950 border-l border-slate-800/80 flex flex-col shrink-0 h-full overflow-hidden select-none">
+    <aside className="w-[380px] bg-[#0A0A0A] border-l border-[#222222] flex flex-col shrink-0 h-full overflow-hidden select-none">
       {/* Segmented Tab Switcher */}
-      <div className="h-12 px-3 border-b border-slate-800/80 flex items-center justify-between bg-slate-950 shrink-0">
-        <div className="flex bg-slate-900 p-1 rounded-xl border border-slate-800/90 text-xs font-medium w-full">
+      <div className="h-12 px-3 border-b border-[#222222] flex items-center justify-between bg-[#0A0A0A] shrink-0">
+        <div className="flex bg-[#141414] p-1 rounded-xl border border-[#222222] text-xs font-medium w-full">
           <button
             onClick={() => setActiveRightTab('copilot')}
             className={`flex-1 flex items-center justify-center gap-1.5 py-1.5 rounded-lg transition ${
               activeRightTab === 'copilot'
-                ? 'bg-blue-600 text-white shadow-sm'
-                : 'text-slate-400 hover:text-slate-200'
+                ? 'bg-white text-black font-semibold shadow-sm'
+                : 'text-neutral-400 hover:text-white'
             }`}
           >
             <Sparkles className="w-3.5 h-3.5" />
@@ -66,8 +66,8 @@ export const ChatPanel: React.FC = () => {
             onClick={() => setActiveRightTab('inspector')}
             className={`flex-1 flex items-center justify-center gap-1.5 py-1.5 rounded-lg transition ${
               activeRightTab === 'inspector'
-                ? 'bg-blue-600 text-white shadow-sm'
-                : 'text-slate-400 hover:text-slate-200'
+                ? 'bg-white text-black font-semibold shadow-sm'
+                : 'text-neutral-400 hover:text-white'
             }`}
           >
             <Sliders className="w-3.5 h-3.5" />
@@ -91,15 +91,15 @@ export const ChatPanel: React.FC = () => {
                   key={msg.id}
                   className={`flex flex-col ${isUser ? 'items-end' : 'items-start'} space-y-1.5`}
                 >
-                  <div className="flex items-center gap-1.5 text-[10px] text-slate-500 px-1">
+                  <div className="flex items-center gap-1.5 text-[10px] text-neutral-500 px-1">
                     {isUser ? (
                       <>
                         <span>你</span>
-                        <User className="w-3 h-3 text-slate-400" />
+                        <User className="w-3 h-3 text-neutral-400" />
                       </>
                     ) : (
                       <>
-                        <Bot className="w-3 h-3 text-blue-400" />
+                        <Bot className="w-3 h-3 text-neutral-300" />
                         <span>PPT Agent</span>
                       </>
                     )}
@@ -108,8 +108,8 @@ export const ChatPanel: React.FC = () => {
                   <div
                     className={`max-w-[90%] rounded-2xl px-3.5 py-2.5 text-xs leading-relaxed whitespace-pre-wrap ${
                       isUser
-                        ? 'bg-blue-600 text-white rounded-tr-none shadow-md shadow-blue-600/20'
-                        : 'bg-slate-900 text-slate-200 border border-slate-800 rounded-tl-none shadow-sm'
+                        ? 'bg-white text-black rounded-tr-none shadow-sm font-normal'
+                        : 'bg-[#141414] text-neutral-200 border border-[#262626] rounded-tl-none shadow-sm'
                     }`}
                   >
                     {msg.content}
@@ -120,14 +120,14 @@ export const ChatPanel: React.FC = () => {
                       {msg.toolCalls.map((tc, idx) => (
                         <div
                           key={idx}
-                          className="bg-slate-900/90 border border-slate-800/90 rounded-xl p-2.5 text-[11px] font-mono text-slate-300 shadow-sm"
+                          className="bg-[#121212] border border-[#262626] rounded-xl p-2.5 text-[11px] font-mono text-neutral-300 shadow-sm"
                         >
-                          <div className="flex items-center gap-1.5 text-blue-400 font-semibold mb-0.5">
-                            <Wrench className="w-3 h-3" />
+                          <div className="flex items-center gap-1.5 text-white font-semibold mb-0.5">
+                            <Wrench className="w-3 h-3 text-neutral-300" />
                             <span>{tc.tool}</span>
-                            <CheckCircle2 className="w-3 h-3 text-emerald-400 ml-auto" />
+                            <CheckCircle2 className="w-3 h-3 text-neutral-300 ml-auto" />
                           </div>
-                          <div className="text-[10px] text-slate-400 truncate font-mono">
+                          <div className="text-[10px] text-neutral-400 truncate font-mono">
                             {tc.result?.message || JSON.stringify(tc.arguments)}
                           </div>
                         </div>
@@ -136,12 +136,12 @@ export const ChatPanel: React.FC = () => {
                   )}
 
                   {msg.visionCritique && (
-                    <div className="w-full bg-indigo-950/40 border border-indigo-500/30 rounded-xl p-3 my-1 text-xs text-indigo-200">
-                      <div className="flex items-center gap-1.5 font-semibold text-indigo-400 text-[11px] mb-1">
+                    <div className="w-full bg-[#141414] border border-white/20 rounded-xl p-3 my-1 text-xs text-neutral-200">
+                      <div className="flex items-center gap-1.5 font-semibold text-white text-[11px] mb-1">
                         <Eye className="w-3.5 h-3.5" />
                         <span>Vision Loop 视觉自省</span>
                       </div>
-                      <p className="text-[11px] text-indigo-200/90 whitespace-pre-wrap leading-relaxed">
+                      <p className="text-[11px] text-neutral-300 whitespace-pre-wrap leading-relaxed">
                         {msg.visionCritique}
                       </p>
                     </div>
@@ -151,8 +151,8 @@ export const ChatPanel: React.FC = () => {
             })}
 
             {isAgentThinking && (
-              <div className="flex items-center gap-2 bg-blue-950/30 border border-blue-500/30 rounded-xl p-3 text-xs text-blue-300 animate-pulse">
-                <Loader2 className="w-3.5 h-3.5 animate-spin text-blue-400 shrink-0" />
+              <div className="flex items-center gap-2 bg-[#141414] border border-[#2E2E2E] rounded-xl p-3 text-xs text-neutral-200 animate-pulse">
+                <Loader2 className="w-3.5 h-3.5 animate-spin text-white shrink-0" />
                 <span className="truncate">{thinkingStatus || 'Agent 正在规划修改...'}</span>
               </div>
             )}
@@ -161,14 +161,14 @@ export const ChatPanel: React.FC = () => {
           </div>
 
           {/* Quick Prompt Suggestions */}
-          <div className="px-3 py-2 border-t border-slate-800/60 bg-slate-950">
+          <div className="px-3 py-2 border-t border-[#222222] bg-[#0A0A0A]">
             <div className="flex gap-1.5 overflow-x-auto pb-1 no-scrollbar">
               {QUICK_PROMPTS.map((prompt, idx) => (
                 <button
                   key={idx}
                   onClick={() => sendChatMessage(prompt)}
                   disabled={isAgentThinking}
-                  className="text-[11px] whitespace-nowrap px-2.5 py-1 rounded-lg bg-slate-900 hover:bg-slate-800 text-slate-300 border border-slate-800 hover:border-slate-700 transition disabled:opacity-40"
+                  className="text-[11px] whitespace-nowrap px-2.5 py-1 rounded-lg bg-[#141414] hover:bg-[#1E1E1E] text-neutral-300 hover:text-white border border-[#262626] hover:border-[#383838] transition disabled:opacity-40"
                 >
                   {prompt}
                 </button>
@@ -177,25 +177,25 @@ export const ChatPanel: React.FC = () => {
           </div>
 
           {/* Input Box */}
-          <form onSubmit={handleSubmit} className="p-3 border-t border-slate-800 bg-slate-950">
-            <div className="relative flex items-center bg-slate-900 rounded-xl border border-slate-800 focus-within:border-blue-500 transition">
+          <form onSubmit={handleSubmit} className="p-3 border-t border-[#222222] bg-[#0A0A0A]">
+            <div className="relative flex items-center bg-[#141414] rounded-xl border border-[#262626] focus-within:border-white transition">
               <textarea
                 value={input}
                 onChange={(e) => setInput(e.target.value)}
                 onKeyDown={handleKeyDown}
                 rows={2}
                 placeholder="给 Agent 下达排版或内容修改指令..."
-                className="w-full bg-transparent text-xs text-slate-100 placeholder-slate-500 px-3 py-2 resize-none focus:outline-none"
+                className="w-full bg-transparent text-xs text-neutral-100 placeholder-neutral-500 px-3 py-2 resize-none focus:outline-none"
               />
               <button
                 type="submit"
                 disabled={!input.trim() || isAgentThinking}
-                className="absolute right-2 bottom-2 p-1.5 rounded-lg bg-blue-600 hover:bg-blue-500 disabled:opacity-30 disabled:hover:bg-blue-600 text-white transition shadow-sm"
+                className="absolute right-2 bottom-2 p-1.5 rounded-lg bg-white hover:bg-neutral-200 disabled:opacity-20 disabled:hover:bg-white text-black transition shadow-sm"
               >
                 <Send className="w-3.5 h-3.5" />
               </button>
             </div>
-            <p className="text-[10px] text-slate-500 mt-1.5 px-1">
+            <p className="text-[10px] text-neutral-500 mt-1.5 px-1">
               按 Enter 发送 · Shift+Enter 换行
             </p>
           </form>
