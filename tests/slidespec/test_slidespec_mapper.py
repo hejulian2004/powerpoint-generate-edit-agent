@@ -134,6 +134,98 @@ def test_mapper_result_slide():
     assert len(badges) >= 1
 
 
+def test_mapper_experiment_setup_preserves_tables_and_figures():
+    """Verify that EXPERIMENT_SETUP slides preserve table and figure assets."""
+    from backend.presentation.schema import SlidePlan
+
+    setup_plan = SlidePlan(
+        index=9,
+        slide_type=SlideType.EXPERIMENT_SETUP,
+        title="Benchmark Setup",
+        objective="Explain datasets and evaluation protocol",
+        key_messages=["MVTec-AD dataset benchmark", "Standard evaluation metrics"],
+        source_sections=["5"],
+        source_figures=["figure3"],
+        source_tables=["table1"],
+    )
+    paper = extract_paper(FIXTURE_PDF)
+    slide_spec = map_slide_plan_to_slide_spec(setup_plan, paper)
+
+    assert slide_spec.visual_intent == VisualIntent.BENCHMARK_COMPARISON
+    tabs = slide_spec.get_blocks_by_kind("table")
+    figs = slide_spec.get_blocks_by_kind("figure")
+    assert len(tabs) == 1
+    assert len(figs) == 1
+    assert tabs[0].source_table_id == "table1"
+    assert figs[0].source_figure_id == "figure3"
+
+
+def test_mapper_method_detail_preserves_both_figures_and_tables():
+    """Verify METHOD_DETAIL simultaneously generates both FigureBlock and TableBlock."""
+    from backend.presentation.schema import SlidePlan
+
+    detail_plan = SlidePlan(
+        index=8,
+        slide_type=SlideType.METHOD_DETAIL,
+        title="Algorithmic Formulation",
+        objective="Explain training details and algorithm steps",
+        key_messages=["Policy loss formulation", "Hyperparameter table"],
+        source_sections=["4"],
+        source_figures=["figure2"],
+        source_tables=["table2"],
+    )
+    paper = extract_paper(FIXTURE_PDF)
+    slide_spec = map_slide_plan_to_slide_spec(detail_plan, paper)
+
+    figs = slide_spec.get_blocks_by_kind("figure")
+    tabs = slide_spec.get_blocks_by_kind("table")
+    assert len(figs) == 1
+    assert len(tabs) == 1
+    assert figs[0].source_figure_id == "figure2"
+    assert tabs[0].source_table_id == "table2"
+
+
+def test_mapper_contrast_single_message_falls_back_to_takeaway_list():
+    """Verify that contrast slides with < 2 key_messages do not produce empty right columns."""
+    from backend.presentation.schema import SlidePlan
+
+    contrast_single = SlidePlan(
+        index=4,
+        slide_type=SlideType.PROBLEM,
+        title="Single Problem",
+        objective="Core bottleneck",
+        key_messages=["Only one bottleneck"],
+        source_sections=["3"],
+    )
+    slide_spec = map_slide_plan_to_slide_spec(contrast_single)
+    assert slide_spec.visual_intent == VisualIntent.KEY_TAKEAWAY_LIST
+    text_blocks = slide_spec.get_blocks_by_kind("text")
+    for b in text_blocks:
+        assert getattr(b, "column", None) is None
+
+
+def test_mapper_title_filters_academic_presentation_fallback():
+    """Verify fallback string 'Academic Presentation' is cleanly filtered on title slides."""
+    from backend.presentation.schema import SlidePlan
+
+    title_plan = SlidePlan(
+        index=1,
+        slide_type=SlideType.TITLE,
+        title="Sample Paper",
+        objective="Title slide",
+        key_messages=[
+            "Paper: Sample Paper",
+            "Presented by: Alice, Bob",
+            "Academic Presentation",
+            "Novel self-supervised paradigm for computer vision",
+        ],
+    )
+    slide_spec = map_slide_plan_to_slide_spec(title_plan)
+    for b in slide_spec.get_blocks_by_kind("text"):
+        assert "academic presentation" not in b.content.lower()
+        assert not b.content.lower().startswith("paper:")
+
+
 def test_mapper_full_deck():
     paper = extract_paper(FIXTURE_PDF)
     plan = generate_presentation_plan(paper, profile="research_15min")

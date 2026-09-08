@@ -12,7 +12,7 @@ Decoupling Principle:
 from __future__ import annotations
 
 import re
-from typing import Any, Dict, List, Optional
+from typing import List, Optional
 
 from ..paper.schema import PaperFigure, PaperIR, PaperTable
 from ..presentation.schema import PresentationPlan, SlidePlan, SlideType
@@ -74,12 +74,11 @@ def map_slide_plan_to_slide_spec(
 
         blocks.append(BadgeBlock(text=venue, variant="primary"))
 
-        # Filter out repetitive metadata lines from key_messages (e.g. "Paper: ...", "Presented by: ...")
+        # Filter out repetitive metadata lines from key_messages
+        ignored_prefixes = ("paper:", "presented by:", "published:", "academic presentation")
         lead_messages = [
             msg for msg in slide.key_messages
-            if not msg.lower().startswith("paper:")
-            and not msg.lower().startswith("presented by:")
-            and not msg.lower().startswith("published:")
+            if not msg.strip().lower().startswith(ignored_prefixes)
         ]
         if lead_messages:
             for msg in lead_messages:
@@ -121,32 +120,34 @@ def map_slide_plan_to_slide_spec(
     elif slide_type == SlideType.METHOD_DETAIL:
         if slide.source_figures:
             visual_intent = VisualIntent.PIPELINE_ARCHITECTURE
-            for fig_id in slide.source_figures:
-                fig = _find_figure(paper, fig_id)
-                cap = (fig.caption.strip() if fig and fig.caption else "") or "Technical Component Details"
-                xref = (fig.xref_label.strip() if fig and fig.xref_label else "") or _format_default_xref(fig_id, "figure")
-                blocks.append(
-                    FigureBlock(
-                        source_figure_id=fig_id,
-                        caption=cap,
-                        xref_label=xref,
-                    )
-                )
         elif slide.source_tables:
             visual_intent = VisualIntent.BENCHMARK_COMPARISON
-            for tab_id in slide.source_tables:
-                tab = _find_table(paper, tab_id)
-                cap = (tab.caption.strip() if tab and tab.caption else "") or "Algorithmic Specifications"
-                xref = (tab.xref_label.strip() if tab and tab.xref_label else "") or _format_default_xref(tab_id, "table")
-                blocks.append(
-                    TableBlock(
-                        source_table_id=tab_id,
-                        caption=cap,
-                        xref_label=xref,
-                    )
-                )
         else:
             visual_intent = VisualIntent.KEY_TAKEAWAY_LIST
+
+        for fig_id in slide.source_figures:
+            fig = _find_figure(paper, fig_id)
+            cap = (fig.caption.strip() if fig and fig.caption else "") or "Technical Component Details"
+            xref = (fig.xref_label.strip() if fig and fig.xref_label else "") or _format_default_xref(fig_id, "figure")
+            blocks.append(
+                FigureBlock(
+                    source_figure_id=fig_id,
+                    caption=cap,
+                    xref_label=xref,
+                )
+            )
+
+        for tab_id in slide.source_tables:
+            tab = _find_table(paper, tab_id)
+            cap = (tab.caption.strip() if tab and tab.caption else "") or "Algorithmic Specifications"
+            xref = (tab.xref_label.strip() if tab and tab.xref_label else "") or _format_default_xref(tab_id, "table")
+            blocks.append(
+                TableBlock(
+                    source_table_id=tab_id,
+                    caption=cap,
+                    xref_label=xref,
+                )
+            )
 
         if slide.key_messages:
             for idx, msg in enumerate(slide.key_messages):
@@ -160,7 +161,50 @@ def map_slide_plan_to_slide_spec(
         else:
             blocks.append(TextBlock(role=BlockRole.LEAD_SUMMARY, content=slide.objective))
 
-    # 4. SlideType: RESULT
+    # 4. SlideType: EXPERIMENT_SETUP
+    elif slide_type == SlideType.EXPERIMENT_SETUP:
+        if slide.source_tables or slide.source_figures:
+            visual_intent = VisualIntent.BENCHMARK_COMPARISON
+        else:
+            visual_intent = VisualIntent.KEY_TAKEAWAY_LIST
+
+        for tab_id in slide.source_tables:
+            tab = _find_table(paper, tab_id)
+            cap = (tab.caption.strip() if tab and tab.caption else "") or "Experimental Dataset & Benchmark Setup"
+            xref = (tab.xref_label.strip() if tab and tab.xref_label else "") or _format_default_xref(tab_id, "table")
+            blocks.append(
+                TableBlock(
+                    source_table_id=tab_id,
+                    caption=cap,
+                    xref_label=xref,
+                )
+            )
+
+        for fig_id in slide.source_figures:
+            fig = _find_figure(paper, fig_id)
+            cap = (fig.caption.strip() if fig and fig.caption else "") or "Benchmark Setup Overview"
+            xref = (fig.xref_label.strip() if fig and fig.xref_label else "") or _format_default_xref(fig_id, "figure")
+            blocks.append(
+                FigureBlock(
+                    source_figure_id=fig_id,
+                    caption=cap,
+                    xref_label=xref,
+                )
+            )
+
+        if slide.key_messages:
+            for idx, msg in enumerate(slide.key_messages):
+                blocks.append(
+                    TextBlock(
+                        role=BlockRole.BULLET_ITEM,
+                        content=msg,
+                        emphasis=(idx == 0),
+                    )
+                )
+        else:
+            blocks.append(TextBlock(role=BlockRole.LEAD_SUMMARY, content=slide.objective))
+
+    # 5. SlideType: RESULT
     elif slide_type == SlideType.RESULT:
         if slide.source_tables or slide.source_figures:
             visual_intent = VisualIntent.BENCHMARK_COMPARISON
@@ -204,7 +248,7 @@ def map_slide_plan_to_slide_spec(
         else:
             blocks.append(TextBlock(role=BlockRole.LEAD_SUMMARY, content=slide.objective))
 
-    # 5. SlideType: ABLATION
+    # 6. SlideType: ABLATION
     elif slide_type == SlideType.ABLATION:
         if slide.source_tables or slide.source_figures:
             visual_intent = VisualIntent.BENCHMARK_COMPARISON
@@ -231,32 +275,47 @@ def map_slide_plan_to_slide_spec(
                         xref_label=xref,
                     )
                 )
-        else:
-            visual_intent = VisualIntent.TWO_COLUMN_CONTRAST
 
-        if slide.key_messages:
-            for msg in slide.key_messages:
-                blocks.append(TextBlock(role=BlockRole.BULLET_ITEM, content=msg))
-        else:
-            blocks.append(TextBlock(role=BlockRole.LEAD_SUMMARY, content=slide.objective))
+            if slide.key_messages:
+                for msg in slide.key_messages:
+                    blocks.append(TextBlock(role=BlockRole.BULLET_ITEM, content=msg))
+            else:
+                blocks.append(TextBlock(role=BlockRole.LEAD_SUMMARY, content=slide.objective))
 
-    # 6. SlideType: PROBLEM / MOTIVATION / RELATED_WORK (Two-Column Contrast)
+        else:
+            # Without visual assets, use TWO_COLUMN_CONTRAST only if multiple messages exist
+            if len(slide.key_messages) >= 2:
+                visual_intent = VisualIntent.TWO_COLUMN_CONTRAST
+                half = max(1, len(slide.key_messages) // 2)
+                for msg in slide.key_messages[:half]:
+                    blocks.append(TextBlock(role=BlockRole.BULLET_ITEM, content=msg, column="left"))
+                for msg in slide.key_messages[half:]:
+                    blocks.append(TextBlock(role=BlockRole.BULLET_ITEM, content=msg, column="right"))
+            else:
+                visual_intent = VisualIntent.KEY_TAKEAWAY_LIST
+                if slide.key_messages:
+                    for msg in slide.key_messages:
+                        blocks.append(TextBlock(role=BlockRole.BULLET_ITEM, content=msg))
+                else:
+                    blocks.append(TextBlock(role=BlockRole.LEAD_SUMMARY, content=slide.objective))
+
+    # 7. SlideType: PROBLEM / MOTIVATION / RELATED_WORK (Two-Column Contrast)
     elif slide_type in (SlideType.PROBLEM, SlideType.MOTIVATION, SlideType.RELATED_WORK):
-        visual_intent = VisualIntent.TWO_COLUMN_CONTRAST
-        if slide.key_messages:
-            # First item as left-column lead/challenge, remainder partitioned cleanly
+        if len(slide.key_messages) >= 2:
+            visual_intent = VisualIntent.TWO_COLUMN_CONTRAST
             half = max(1, len(slide.key_messages) // 2)
-            left_msgs = slide.key_messages[:half]
-            right_msgs = slide.key_messages[half:]
-
-            for msg in left_msgs:
+            for msg in slide.key_messages[:half]:
                 blocks.append(TextBlock(role=BlockRole.BULLET_ITEM, content=msg, column="left"))
-            for msg in right_msgs:
+            for msg in slide.key_messages[half:]:
                 blocks.append(TextBlock(role=BlockRole.BULLET_ITEM, content=msg, column="right"))
         else:
-            blocks.append(TextBlock(role=BlockRole.LEAD_SUMMARY, content=slide.objective, column="left"))
+            visual_intent = VisualIntent.KEY_TAKEAWAY_LIST
+            if slide.key_messages:
+                blocks.append(TextBlock(role=BlockRole.LEAD_SUMMARY, content=slide.key_messages[0]))
+            else:
+                blocks.append(TextBlock(role=BlockRole.LEAD_SUMMARY, content=slide.objective))
 
-    # 7. Default: BACKGROUND, EXPERIMENT_SETUP, LIMITATION, CONCLUSION
+    # 8. Default: BACKGROUND, LIMITATION, CONCLUSION
     else:
         visual_intent = VisualIntent.KEY_TAKEAWAY_LIST
         if slide.key_messages:

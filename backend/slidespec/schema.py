@@ -9,7 +9,6 @@ PresentationPlan (What to say) -> SlideSpec (Semantic Visual Contract) -> Layout
 
 from __future__ import annotations
 
-import json
 from enum import Enum
 from pathlib import Path
 from typing import Annotated, Any, Dict, List, Literal, Optional, Union
