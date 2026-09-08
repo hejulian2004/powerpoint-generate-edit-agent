@@ -1,0 +1,225 @@
+"""Tests for Visual Self-Healing Closed Loop (PR12 Test 5)."""
+
+from pathlib import Path
+
+from backend.evaluation.evaluator import RuleBasedEvaluator
+from backend.evaluation.repair import evaluate_and_repair
+from backend.evaluation.schema import IssueSeverity, IssueType, VisualIssue
+from backend.evaluation.screenshot import FallbackScreenshotBackend, ScreenshotRenderer
+from backend.layout.schema import (
+    Canvas,
+    DeckLayoutSpec,
+    ElementStyle,
+    ElementType,
+    LayoutElement,
+    LayoutSpec,
+    Rect,
+    TextStyle,
+)
+from backend.slidespec.schema import VisualIntent
+
+
+def test_self_healing_loop_healthy_deck(tmp_path: Path) -> None:
+    """Verify that a cleanly spaced deck converges on iteration 1 without unnecessary patches."""
+    healthy_deck = DeckLayoutSpec(
+        title="Healthy Presentation",
+        canvas=Canvas(width=1280, height=720),
+        slides=[
+            LayoutSpec(
+                slide_id="slide_clean",
+                slide_index=1,
+                visual_intent=VisualIntent.KEY_TAKEAWAY_LIST,
+                elements=[
+                    LayoutElement(
+                        element_id="title",
+                        element_type=ElementType.TEXT,
+                        geometry=Rect(x=80.0, y=50.0, width=900.0, height=70.0),
+                        style=ElementStyle(text=TextStyle(font_size=28.0)),
+                        content="Clean Academic Presentation Title",
+                    ),
+                    LayoutElement(
+                        element_id="body",
+                        element_type=ElementType.TEXT,
+                        geometry=Rect(x=80.0, y=160.0, width=900.0, height=350.0),
+                        style=ElementStyle(text=TextStyle(font_size=18.0)),
+                        content="Key takeaway point 1\nKey takeaway point 2\nKey takeaway point 3",
+                    ),
+                ],
+            )
+        ],
+    )
+
+    out_pptx = tmp_path / "healthy.pptx"
+    renderer = ScreenshotRenderer(backend=FallbackScreenshotBackend())
+
+    result = evaluate_and_repair(
+        deck_layout=healthy_deck,
+        output_pptx_path=out_pptx,
+        screenshot_renderer=renderer,
+        max_iterations=3,
+    )
+
+    assert result.converged is True
+    assert result.iterations_run == 1
+    assert len(result.history) == 1
+    assert len(result.history[0].patches_applied) == 0
+    assert out_pptx.is_file()
+
+
+def test_self_healing_loop_repairs_overflow_and_converges(tmp_path: Path) -> None:
+    """Test 5: LayoutSpec -> PPTX -> PNG -> Issue -> Patch -> Patched LayoutSpec."""
+    # Create a slide with canvas overflow (x=1220 on width=1280, width=150 extends past boundary)
+    flawed_deck = DeckLayoutSpec(
+        title="Flawed Deck for Self Healing",
+        canvas=Canvas(width=1280, height=720),
+        slides=[
+            LayoutSpec(
+                slide_id="slide_repair",
+                slide_index=1,
+                visual_intent=VisualIntent.PIPELINE_ARCHITECTURE,
+                elements=[
+                    LayoutElement(
+                        element_id="title_main",
+                        element_type=ElementType.TEXT,
+                        geometry=Rect(x=80.0, y=50.0, width=900.0, height=70.0),
+                        style=ElementStyle(text=TextStyle(font_size=28.0)),
+                        content="Pipeline Architecture",
+                    ),
+                    LayoutElement(
+                        element_id="overflowing_card",
+                        element_type=ElementType.TEXT,
+                        geometry=Rect(x=1200.0, y=200.0, width=160.0, height=120.0),
+                        style=ElementStyle(text=TextStyle(font_size=16.0)),
+                        content="Card pushed off canvas boundary",
+                    ),
+                ],
+            )
+        ],
+    )
+
+    out_pptx = tmp_path / "repaired.pptx"
+    shots_dir = tmp_path / "repaired_shots"
+    renderer = ScreenshotRenderer(backend=FallbackScreenshotBackend())
+
+    result = evaluate_and_repair(
+        deck_layout=flawed_deck,
+        output_pptx_path=out_pptx,
+        output_screenshots_dir=shots_dir,
+        screenshot_renderer=renderer,
+        max_iterations=3,
+    )
+
+    # Must converge
+    assert result.converged is True
+    assert result.iterations_run >= 1
+
+    # Verify that patches were applied during the process
+    total_patches = sum(len(h.patches_applied) for h in result.history)
+    assert total_patches >= 1
+    applied_ops = [p.operation.value for h in result.history for p in h.patches_applied]
+    assert "CLAMP_TO_CANVAS" in applied_ops
+
+    # Final screenshots and PPTX must exist
+    assert out_pptx.is_file()
+    assert len(result.final_screenshot_paths) >= 1
+    assert all(Path(p).is_file() for p in result.final_screenshot_paths)
+
+
+def test_self_healing_loop_respects_max_iterations_bound(tmp_path: Path) -> None:
+    """Verify that loop strictly terminates when max_iterations is reached."""
+    # Stubborn flawed deck
+    stubborn_deck = DeckLayoutSpec(
+        title="Stubborn Deck",
+        canvas=Canvas(width=1280, height=720),
+        slides=[
+            LayoutSpec(
+                slide_id="slide_stubborn",
+                slide_index=1,
+                visual_intent=VisualIntent.KEY_TAKEAWAY_LIST,
+                elements=[
+                    LayoutElement(
+                        element_id="stubborn_box",
+                        element_type=ElementType.TEXT,
+                        geometry=Rect(x=1250.0, y=100.0, width=200.0, height=50.0),
+                        content="Extreme overflow",
+                    )
+                ],
+            )
+        ],
+    )
+
+    out_pptx = tmp_path / "stubborn.pptx"
+    renderer = ScreenshotRenderer(backend=FallbackScreenshotBackend())
+
+    result = evaluate_and_repair(
+        deck_layout=stubborn_deck,
+        output_pptx_path=out_pptx,
+        screenshot_renderer=renderer,
+        max_iterations=2,
+    )
+
+    assert result.iterations_run <= 2
+    assert len(result.history) <= 2
+
+
+def test_generate_patches_for_all_issue_types() -> None:
+    """Verify generate_patches_for_issues produces appropriate patches for all defect categories."""
+    from backend.evaluation.repair import generate_patches_for_issues
+
+    slide = LayoutSpec(
+        slide_id="slide_patches_gen",
+        slide_index=1,
+        visual_intent=VisualIntent.PIPELINE_ARCHITECTURE,
+        canvas=Canvas(width=1280, height=720),
+        elements=[
+            LayoutElement(
+                element_id="el_overflow",
+                element_type=ElementType.TEXT,
+                geometry=Rect(x=1200, y=100, width=200, height=50),
+                content="Text",
+            ),
+            LayoutElement(
+                element_id="el_text_over",
+                element_type=ElementType.TEXT,
+                geometry=Rect(x=100, y=100, width=500, height=30),
+                style=ElementStyle(text=TextStyle(font_size=20.0)),
+                content="Very long text " * 10,
+            ),
+            LayoutElement(
+                element_id="el_tiny_fig",
+                element_type=ElementType.FIGURE,
+                geometry=Rect(x=100, y=300, width=100, height=80),
+                content={"figure_id": "fig_1"},
+            ),
+            LayoutElement(
+                element_id="el_distorted_fig",
+                element_type=ElementType.FIGURE,
+                geometry=Rect(x=100, y=400, width=600, height=60),
+                content={"figure_id": "fig_2"},
+            ),
+            LayoutElement(
+                element_id="el_dense",
+                element_type=ElementType.TEXT,
+                geometry=Rect(x=100, y=500, width=200, height=80),
+                content="Dense text",
+            ),
+        ],
+    )
+
+    issues = [
+        VisualIssue(slide="slide_patches_gen", issue=IssueType.OVERFLOW, element="el_overflow", description="out"),
+        VisualIssue(slide="slide_patches_gen", issue=IssueType.TEXT_OVERFLOW, element="el_text_over", description="txt"),
+        VisualIssue(slide="slide_patches_gen", issue=IssueType.TOO_SMALL, element="el_tiny_fig", description="small"),
+        VisualIssue(slide="slide_patches_gen", issue=IssueType.WRONG_SCALE, element="el_distorted_fig", description="scale"),
+        VisualIssue(slide="slide_patches_gen", issue=IssueType.TEXT_DENSITY_HIGH, element="el_dense", description="dense"),
+    ]
+
+    patches = generate_patches_for_issues(issues, slide)
+    assert len(patches) == 5
+    ops = {p.target_element: p.operation.value for p in patches}
+    assert ops["el_overflow"] == "CLAMP_TO_CANVAS"
+    assert ops["el_text_over"] == "CHANGE_FONT_SIZE"
+    assert ops["el_tiny_fig"] == "RESIZE"
+    assert ops["el_distorted_fig"] == "RESIZE"
+    assert ops["el_dense"] == "CHANGE_FONT_SIZE"
+

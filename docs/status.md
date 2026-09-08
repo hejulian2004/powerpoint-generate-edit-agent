@@ -73,13 +73,21 @@ This document defines the current baseline state, active developments, and futur
 - **Fidelity Validator & Visual Exporter (`validators.py`)**: Automated verification of slide count, shape types, text containment, and geometry fidelity with coordinate error $< 1.0\%$ (empirically $0.0\%$), plus automated slide screenshot export via PowerPoint COM.
 - **Comprehensive Acceptance Test Suite (`tests/renderer/`)**: 20 dedicated unit and pipeline acceptance tests covering text, figures, tables, themes, and full end-to-end PDF -> PaperIR -> PresentationPlan -> SlideSpec -> LayoutSpec -> PPTX export.
 
+### Visual Evaluation Loop & Layout Self-Healing Agent (PR12)
+- **Cross-Platform Screenshot Pipeline (`backend/evaluation/screenshot.py`)**: Unified `ScreenshotRenderer` supporting Windows PowerPoint COM, headless LibreOffice, and zero-dependency deterministic fallback rasterizer with stable SHA-256 hash reproducibility.
+- **Strongly Typed Visual Issue Schema (`backend/evaluation/schema.py`)**: Structured `VisualIssue` and `LayoutPatch` models supporting lossless JSON roundtrip serialization and alias interoperability (`slide`, `issue`, `element`).
+- **Deterministic Rule-Based Evaluator (`backend/evaluation/evaluator.py`)**: Detects canvas overflow violations, foreground collision overlaps, text container overflows (500 chars in 20px boxes), excessive text density, and undersized/distorted figures.
+- **Multimodal VLM Adapter (`OpenAICompatibleVisionEvaluator`)**: Extensible adapter connecting to vision-language models with prompt synthesis and JSON response extraction.
+- **Layout Patch Engine (`backend/evaluation/patch.py`)**: Non-destructive geometric and stylistic transformations (`MOVE`, `RESIZE`, `CHANGE_FONT_SIZE`, `CLAMP_TO_CANVAS`, `SET_COORDINATES`) operating strictly on `LayoutSpec`.
+- **Closed-Loop Self-Healing Agent (`backend/evaluation/repair.py`)**: Orchestrates the automated cycle `LayoutSpec -> PPTX -> Screenshots -> Evaluation -> Patches -> Patched LayoutSpec` with convergence guarantees and a strict `max_iterations=3` bound.
+- **Comprehensive Test Suite (`tests/evaluation/`)**: 34 dedicated unit tests covering schema roundtrip, screenshot exports, rule detection, patch applications, and closed-loop self-healing convergence.
+
 ---
 
 ## 2. In Progress
 
-### Visual Evaluation & Agent Editing (PR12 & PR13)
-- **PR12 Visual Evaluation Loop**: Multi-modal vision critique of rendered slide screenshots with automated layout self-healing.
-- **PR13 Agent Editing Interface**: Conversational and iterative presentation editing actions.
+### Interactive Presentation Editing Agent (PR13)
+- **PR13 Agent Editing Interface**: Conversational and iterative presentation editing actions transforming user intent into targeted `LayoutPatch` mutations.
 
 ---
 

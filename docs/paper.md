@@ -355,10 +355,81 @@ from backend.renderer import (
 
 ---
 
-## 10. Verification & Acceptance
+## 10. Visual Evaluation Loop & Layout Self-Healing Agent (PR12)
+
+PR12 completes the final closed-loop agent cycle:
+```
+Paper → PPT Generator → Visual Critic → Self Repair
+```
+
+```
+                 ┌──────────────────┐
+                 │  DeckLayoutSpec  │◄─────────────────────────┐
+                 └────────┬─────────┘                          │
+                          │                                    │
+                          v                                    │
+                    render_pptx                                │
+                          │                                    │
+                          v                                    │
+                 ┌──────────────────┐                          │
+                 │      PPTX        │                          │
+                 └────────┬─────────┘                          │
+                          │                                    │
+                          v                                    │
+                 ScreenshotRenderer                            │
+                          │                                    │
+                          v                                    │
+                 Slide Image PNGs                              │
+                          │                                    │
+                          v                                    │
+                   VisualEvaluator                             │
+             (Rule-based / VLM Adapter)                        │
+                          │                                    │
+                          v                                    │
+                 VisualIssue JSON                              │
+                          │                                    │
+                          v                                    │
+                 Layout Patch Engine                           │
+             (generate & apply_patches)                        │
+                          │                                    │
+                          └────────────────────────────────────┘
+```
+
+### Architectural Principles & Decoupling
+- **Independent Module**: All evaluation and repair code is housed in `backend/evaluation/`.
+- **Zero Renderer Modifications**: `backend/renderer/` remains strictly immutable.
+- **Zero SlideSpec Modifications**: Semantic IR is preserved; only concrete spatial specifications (`LayoutSpec`) are mutated.
+- **Deterministic Repair Engine**: Automatically maps detected defects to atomic non-destructive `LayoutPatch` operations (`MOVE`, `RESIZE`, `CHANGE_FONT_SIZE`, `CLAMP_TO_CANVAS`, `SET_COORDINATES`).
+- **Loop Bounded Convergence**: `evaluate_and_repair` strictly terminates within `max_iterations=3` to guarantee execution termination and avoid infinite loops.
+
+### Public Evaluation API Facade
+
+```python
+from backend.evaluation import (
+    VisualIssue,
+    IssueType,
+    IssueSeverity,
+    LayoutPatch,
+    PatchOperation,
+    SelfHealingResult,
+    ScreenshotRenderer,
+    RuleBasedEvaluator,
+    OpenAICompatibleVisionEvaluator,
+    apply_patch,
+    apply_patches,
+    apply_deck_patches,
+    generate_patches_for_issues,
+    evaluate_and_repair,
+    render_screenshots,
+)
+```
+
+---
+
+## 11. Verification & Acceptance
 
 ```bash
-python -m pytest tests/paper tests/presentation tests/slidespec tests/layout tests/renderer -v
+python -m pytest tests/paper tests/presentation tests/slidespec tests/layout tests/renderer tests/evaluation -v
 ```
 
 Acceptance criteria validated:
@@ -366,6 +437,7 @@ Acceptance criteria validated:
 - `tests/presentation`: Academic template profile slots, section ranking, and structural guards (29 tests).
 - `tests/slidespec`: Semantic IR polymorphism, visual intent mapping, and JSON roundtrip fidelity (18 tests).
 - `tests/layout`: Geometric primitives, collision avoidance, 100-run determinism, template synthesis, constraint validation, and end-to-end PDF -> LayoutSpec pipeline (23 tests).
-- `tests/renderer`: Typography formatting, figure aspect ratio, table rendering, academic theme token resolution, full pipeline PDF -> PPTX export, and geometry fidelity $< 1\%$ (20 tests).
-- **Total Suite Passing**: 113 passing tests with zero regressions.
-- **Visual Inspection**: Verified 12 exported slide screenshots (`1280×720`) from the full pipeline run on `anomaly_agent.pdf`.
+- `tests/renderer`: Typography formatting, figure aspect ratio, table rendering, academic theme token resolution, full pipeline PDF -> PPTX export, and geometry fidelity $< 1\%$ (25 tests).
+- `tests/evaluation`: Screenshot rendering and hash stability, VisualIssue JSON roundtrip, 500-char text overflow and collision detection, atomic patch applications, and closed-loop self-healing convergence (34 tests).
+- **Academic Generation Track Suite**: **152 passing tests** with zero regressions (surpassing the 140+ test milestone).
+- **Global Project Suite**: **389 passed, 7 xfailed, 0 failed**.
