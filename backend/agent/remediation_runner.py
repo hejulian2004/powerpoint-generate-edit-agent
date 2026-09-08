@@ -13,8 +13,11 @@ import logging
 from typing import Dict, Any, List, Optional
 from ..ir.models import PresentationIR, SlideIR
 from ..ir.patch import HistoryManager
-from ..eval.remediation import FixAction, FixActionType, DefectCategory, RemediationPlan
+from ..eval.remediation import (
+    FixAction, FixActionType, DefectCategory, RemediationPlan, FidelityRemediationGenerator
+)
 from ..eval.layout_diff import LayoutDiffEngine, BoundingBox
+from ..eval.fidelity import FidelityEvaluator, FidelityRegressionGuard
 from .tools import tools
 
 logger = logging.getLogger(__name__)
@@ -286,7 +289,7 @@ class RemediationRunner:
                 }
             }
 
-        elif action.action_type == FixActionType.ALIGN_ELEMENTS:
+        elif action.action_type in [FixActionType.ALIGN_ELEMENTS, FixActionType.FIX_ALIGNMENT]:
             return {
                 "tool": "align_elements",
                 "args": {
@@ -296,4 +299,124 @@ class RemediationRunner:
                 }
             }
 
+        elif action.action_type == FixActionType.FIX_GEOMETRY:
+            return {
+                "tool": "update_element",
+                "args": {
+                    "slide_id": slide_id,
+                    "element_id": p.get("element_id"),
+                    "x": p.get("x"),
+                    "y": p.get("y"),
+                    "width": p.get("width"),
+                    "height": p.get("height")
+                }
+            }
+
+        elif action.action_type == FixActionType.FIX_FONT:
+            args = {"slide_id": slide_id, "element_id": p.get("element_id")}
+            if "font_family" in p:
+                args["font_family"] = p["font_family"]
+            if "font_size" in p:
+                args["font_size"] = p["font_size"]
+            return {"tool": "format_text", "args": args}
+
+        elif action.action_type == FixActionType.FIX_COLOR:
+            args = {"slide_id": slide_id, "element_id": p.get("element_id")}
+            if "fill_color" in p:
+                args["fill_color"] = p["fill_color"]
+            if "font_color" in p:
+                args["font_color"] = p["font_color"]
+            if "border_color" in p:
+                args["border_color"] = p["border_color"]
+            return {"tool": "update_element", "args": args}
+
+        elif action.action_type == FixActionType.FIX_THEME_REF:
+            args = {"slide_id": slide_id, "element_id": p.get("element_id")}
+            if "resolved_color" in p:
+                args["fill_color"] = p["resolved_color"]
+            elif "fill_color" in p:
+                args["fill_color"] = p["fill_color"]
+            return {"tool": "update_element", "args": args}
+
         return None
+
+    @classmethod
+    def apply_fidelity_repair(
+        cls,
+        pres: PresentationIR,
+        history: HistoryManager,
+        baseline_slide: SlideIR,
+        current_slide_id: Optional[str] = None,
+        on_event: Optional[Any] = None
+    ) -> Dict[str, Any]:
+        """Evaluates fidelity against baseline, generates repairs, and applies inside atomic transaction."""
+        curr_slide = pres.get_slide(current_slide_id) if current_slide_id else pres.get_active_slide()
+        if not curr_slide:
+            return {"success": False, "error": "Slide not found"}
+
+        before_score = FidelityEvaluator.evaluate_slides(baseline_slide, curr_slide)
+        if before_score.total >= 95.0:
+            return {
+                "success": True,
+                "repaired": False,
+                "score_before": before_score.total,
+                "score_after": before_score.total,
+                "message": "Slide fidelity already satisfies threshold (>=95%)"
+            }
+
+        plan = FidelityRemediationGenerator.generate_plan(baseline_slide, curr_slide)
+        if not plan.actions:
+            return {
+                "success": True,
+                "repaired": False,
+                "score_before": before_score.total,
+                "score_after": before_score.total,
+                "message": "No actionable fidelity defects detected"
+            }
+
+        applied_records = []
+        with pres.transaction("fidelity_repair", history=history) as tx:
+            for action in plan.actions:
+                tool_call = cls._action_to_tool_call(curr_slide.id, action)
+                if not tool_call:
+                    continue
+                res = tools.execute(tool_call["tool"], tool_call["args"], pres, history)
+                applied_records.append({
+                    "action_type": action.action_type.value,
+                    "result": res,
+                    "reason": action.reason
+                })
+
+            after_score = FidelityEvaluator.evaluate_slides(baseline_slide, curr_slide)
+
+            # PR6.1 Regression guard: accept only if the composite total does not drop AND
+            # no sub-dimension regresses beyond its per-metric limit (geometry 5 / text,
+            # style, visual 10). This prevents a repair that raises one sub-score (e.g.
+            # font) while regressing another (e.g. geometry) from being committed.
+            guard = FidelityRegressionGuard()
+            accepted, reasons = guard.accepts(before_score, after_score)
+            if not accepted:
+                logger.warning(
+                    "Fidelity repair rejected by FidelityRegressionGuard for slide %s: %s",
+                    curr_slide.id, "; ".join(reasons)
+                )
+                tx.rollback(f"Fidelity repair rejected: {'; '.join(reasons)}")
+                return {
+                    "success": False,
+                    "rolled_back": True,
+                    "score_before": before_score.total,
+                    "score_after": after_score.total,
+                    "policy_reasons": reasons,
+                    "message": "Fidelity repairs failed the per-dimension regression guard and were rolled back"
+                }
+
+            tx.commit()
+
+        return {
+            "success": True,
+            "rolled_back": False,
+            "score_before": before_score.total,
+            "score_after": after_score.total,
+            "applied_count": len(applied_records),
+            "applied_records": applied_records
+        }

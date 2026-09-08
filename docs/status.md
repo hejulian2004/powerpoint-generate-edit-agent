@@ -37,8 +37,14 @@ This document defines the current baseline state, active developments, and futur
 - **Complex Shape & Group Support**:
   - Improved preservation of deeply nested group hierarchies during roundtrip serialization.
   - Enhanced connector auto-routing and sticky connection points.
-- **Visual Diff & Regression Tracking**:
-  - Automated pixel-level SVG fast comparison to measure rendering delta before and after agent edits.
+- **Fidelity Engine Hardening (PR6.1)**:
+  - OOXML capability matrix (`FidelityCapability` / `CapabilityDetector`) surfaces which features are editable vs detect-only (chart / smartart / animation / master).
+  - Partial-failure-tolerant import: corrupt theme / rels / media / slide parts produce a `partial` IR with warnings instead of crashing.
+  - Per-action risk-gated semantic resolution (`ActionRiskPolicy`): delete 0.95 / move 0.85 / resize 0.85 / style 0.75.
+  - Per-metric regression guard (`FidelityRegressionGuard`): geometry <= 5 pts, text/style/visual <= 10 pts, critical floor 85.
+  - Stable element ids (`compute_stable_id`) for replay / undo / cross-render tracking.
+  - Structured fidelity report (`FidelityReport`) with typed issues for the PR7 agent.
+  - Real-world v2 benchmark (`tests/assets/real_world_v2/`, Composite >= 90%).
 
 ---
 
@@ -49,4 +55,4 @@ This document defines the current baseline state, active developments, and futur
 - **Multi-Agent Designer Swarm**:
   - Specialized agent teams (e.g., Content Researcher, Typographer, Graphic Designer, Layout Critic) collaborating asynchronously on full presentation decks.
 - **Extended OOXML Capabilities**:
-  - Selective pass-through and editing support for tables, charts, and smart diagrams.
+  - Editable support for charts, SmartArt, and master-slide inheritance (currently detect-only; charts/SmartArt noted as known coverage boundaries in the real-world benchmark).

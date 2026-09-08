@@ -446,10 +446,41 @@ class PPTIRConverter:
             return None
 
         if isinstance(el, TableElementIR):
-            if report is not None:
-                report.skipped_elements += 1
-                report.warnings.append(f"Table element '{el.id}' is not yet supported for OOXML export")
-            return None
+            # Export Table as Group of styled cell shapes with text blocks
+            c_w = el.width / max(el.cols, 1)
+            c_h = el.height / max(el.rows, 1)
+            cell_shapes: List[Any] = []
+            for r_idx, row in enumerate(el.cells):
+                for c_idx, cell in enumerate(row):
+                    cell_fill = cls._ir_to_fill(cell.style.fill) if cell.style and cell.style.fill else Fill(type="solid", color="#FFFFFF")
+                    cell_border = cls._ir_to_line(cell.style.border) if cell.style and cell.style.border else Line(color="#D1D5DB", width=1.0)
+                    tb = cls._ir_to_text_block(cell.text_content) if cell.text_content else None
+                    cell_shapes.append(ShapeElement(
+                        id=f"{el.id}_c{r_idx}_{c_idx}",
+                        name=f"Cell_{r_idx}_{c_idx}",
+                        shape_type="rect",
+                        position=Position(
+                            x=(el.x + c_idx * c_w) / scale_x,
+                            y=(el.y + r_idx * c_h) / scale_y,
+                            width=c_w / scale_x,
+                            height=c_h / scale_y
+                        ),
+                        fill=cell_fill,
+                        line=cell_border,
+                        text=tb
+                    ))
+            res = GroupElement(
+                id=el.id,
+                name=el.name or "Table",
+                position=Position(
+                    x=el.x / scale_x,
+                    y=el.y / scale_y,
+                    width=el.width / scale_x,
+                    height=el.height / scale_y
+                ),
+                elements=cell_shapes
+            )
+            return res
 
         res: Optional[Any] = None
 

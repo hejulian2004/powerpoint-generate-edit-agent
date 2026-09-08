@@ -579,6 +579,7 @@ class PresentationIR(BaseModel):
     assets: Dict[str, str] = Field(default_factory=dict, description="asset_id -> base64 or path")
     asset_metadata: Dict[str, Any] = Field(default_factory=dict, description="asset_id -> {mime_type, width, height, hash}")
     metadata: Dict[str, Any] = Field(default_factory=dict, description="Custom metadata e.g. fix iterations, user preferences")
+    capabilities: Dict[str, bool] = Field(default_factory=dict, description="Detected OOXML feature presence (see backend.fidelity.capability)")
 
     def create_snapshot(self, history: Optional[Any] = None) -> PresentationSnapshot:
         """Creates a deep isolated snapshot of the entire presentation state and history depth."""
