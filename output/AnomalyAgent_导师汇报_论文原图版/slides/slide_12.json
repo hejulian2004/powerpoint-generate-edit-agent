@@ -1,0 +1,921 @@
+{
+    "slide_id": 12,
+    "size": {
+        "width": 13.333,
+        "height": 7.5
+    },
+    "background": {
+        "type": "solid",
+        "color": "#0B1020"
+    },
+    "elements": [
+        {
+            "id": "2",
+            "type": "shape",
+            "shape_type": "rectangle",
+            "position": {
+                "x": 0.72,
+                "y": 0.42,
+                "width": 10.5,
+                "height": 0.55
+            },
+            "fill": {
+                "type": "none"
+            },
+            "text": {
+                "content": "Critical Discussion & My Takeaways",
+                "font": {
+                    "name": "Noto Sans CJK SC",
+                    "size": 28.0,
+                    "bold": true,
+                    "italic": false,
+                    "color": "#FFFFFF"
+                },
+                "paragraph": {
+                    "align": "left",
+                    "vertical": "middle"
+                }
+            }
+        },
+        {
+            "id": "3",
+            "type": "shape",
+            "shape_type": "rectangle",
+            "position": {
+                "x": 0.74,
+                "y": 0.93,
+                "width": 10.9,
+                "height": 0.36
+            },
+            "fill": {
+                "type": "none"
+            },
+            "text": {
+                "content": "这篇工作最值得延伸的，不只是更强生成器，而是更可验证、更经济、更自治的闭环。",
+                "font": {
+                    "name": "Noto Sans CJK SC",
+                    "size": 13.0,
+                    "bold": false,
+                    "italic": false,
+                    "color": "#AAB4D3"
+                },
+                "paragraph": {
+                    "align": "left",
+                    "vertical": "middle"
+                }
+            }
+        },
+        {
+            "id": "4",
+            "type": "shape",
+            "shape_type": "roundRect",
+            "position": {
+                "x": 0.82,
+                "y": 1.63,
+                "width": 0.54,
+                "height": 0.34
+            },
+            "fill": {
+                "type": "solid",
+                "color": "#2D7FF9"
+            },
+            "line": {
+                "color": "#2D7FF9",
+                "width": 0.8
+            },
+            "radius": 0.5294
+        },
+        {
+            "id": "5",
+            "type": "shape",
+            "shape_type": "rectangle",
+            "position": {
+                "x": 0.82,
+                "y": 1.63,
+                "width": 0.54,
+                "height": 0.34
+            },
+            "fill": {
+                "type": "none"
+            },
+            "text": {
+                "content": "01",
+                "font": {
+                    "name": "Noto Sans CJK SC",
+                    "size": 9.5,
+                    "bold": true,
+                    "italic": false,
+                    "color": "#FFFFFF"
+                },
+                "paragraph": {
+                    "align": "center",
+                    "vertical": "middle"
+                }
+            }
+        },
+        {
+            "id": "6",
+            "type": "shape",
+            "shape_type": "rectangle",
+            "position": {
+                "x": 1.6,
+                "y": 1.61,
+                "width": 3.28,
+                "height": 0.36
+            },
+            "fill": {
+                "type": "none"
+            },
+            "text": {
+                "content": "Zero-shot definition",
+                "font": {
+                    "name": "Noto Sans CJK SC",
+                    "size": 16.0,
+                    "bold": true,
+                    "italic": false,
+                    "color": "#FFFFFF"
+                },
+                "paragraph": {
+                    "align": "left",
+                    "vertical": "middle"
+                }
+            }
+        },
+        {
+            "id": "7",
+            "type": "shape",
+            "shape_type": "rectangle",
+            "position": {
+                "x": 4.88,
+                "y": 1.6,
+                "width": 7.45,
+                "height": 0.52
+            },
+            "fill": {
+                "type": "none"
+            },
+            "text": {
+                "content": "训练 trajectory 使用 VisA 真实异常，更准确地说是 cross-dataset / unseen-anomaly generalization。",
+                "font": {
+                    "name": "Noto Sans CJK SC",
+                    "size": 12.2,
+                    "bold": false,
+                    "italic": false,
+                    "color": "#C6CDE2"
+                },
+                "paragraph": {
+                    "align": "left",
+                    "vertical": "middle"
+                }
+            }
+        },
+        {
+            "id": "8",
+            "type": "shape",
+            "shape_type": "line",
+            "position": {
+                "x": 1.6,
+                "y": 2.32,
+                "width": 10.73,
+                "height": 0.0
+            },
+            "fill": {
+                "type": "none"
+            },
+            "line": {
+                "color": "#303A5C",
+                "width": 0.8
+            }
+        },
+        {
+            "id": "9",
+            "type": "shape",
+            "shape_type": "roundRect",
+            "position": {
+                "x": 0.82,
+                "y": 2.66,
+                "width": 0.54,
+                "height": 0.34
+            },
+            "fill": {
+                "type": "solid",
+                "color": "#E85D75"
+            },
+            "line": {
+                "color": "#E85D75",
+                "width": 0.8
+            },
+            "radius": 0.5294
+        },
+        {
+            "id": "10",
+            "type": "shape",
+            "shape_type": "rectangle",
+            "position": {
+                "x": 0.82,
+                "y": 2.66,
+                "width": 0.54,
+                "height": 0.34
+            },
+            "fill": {
+                "type": "none"
+            },
+            "text": {
+                "content": "02",
+                "font": {
+                    "name": "Noto Sans CJK SC",
+                    "size": 9.5,
+                    "bold": true,
+                    "italic": false,
+                    "color": "#FFFFFF"
+                },
+                "paragraph": {
+                    "align": "center",
+                    "vertical": "middle"
+                }
+            }
+        },
+        {
+            "id": "11",
+            "type": "shape",
+            "shape_type": "rectangle",
+            "position": {
+                "x": 1.6,
+                "y": 2.64,
+                "width": 3.28,
+                "height": 0.36
+            },
+            "fill": {
+                "type": "none"
+            },
+            "text": {
+                "content": "Proprietary tool dependency",
+                "font": {
+                    "name": "Noto Sans CJK SC",
+                    "size": 16.0,
+                    "bold": true,
+                    "italic": false,
+                    "color": "#FFFFFF"
+                },
+                "paragraph": {
+                    "align": "left",
+                    "vertical": "middle"
+                }
+            }
+        },
+        {
+            "id": "12",
+            "type": "shape",
+            "shape_type": "rectangle",
+            "position": {
+                "x": 4.88,
+                "y": 2.63,
+                "width": 7.45,
+                "height": 0.52
+            },
+            "fill": {
+                "type": "none"
+            },
+            "text": {
+                "content": "Gemini + Google Search 带来可复现性、隐私与部署成本问题。",
+                "font": {
+                    "name": "Noto Sans CJK SC",
+                    "size": 12.2,
+                    "bold": false,
+                    "italic": false,
+                    "color": "#C6CDE2"
+                },
+                "paragraph": {
+                    "align": "left",
+                    "vertical": "middle"
+                }
+            }
+        },
+        {
+            "id": "13",
+            "type": "shape",
+            "shape_type": "line",
+            "position": {
+                "x": 1.6,
+                "y": 3.35,
+                "width": 10.73,
+                "height": 0.0
+            },
+            "fill": {
+                "type": "none"
+            },
+            "line": {
+                "color": "#303A5C",
+                "width": 0.8
+            }
+        },
+        {
+            "id": "14",
+            "type": "shape",
+            "shape_type": "roundRect",
+            "position": {
+                "x": 0.82,
+                "y": 3.69,
+                "width": 0.54,
+                "height": 0.34
+            },
+            "fill": {
+                "type": "solid",
+                "color": "#F2B84B"
+            },
+            "line": {
+                "color": "#F2B84B",
+                "width": 0.8
+            },
+            "radius": 0.5294
+        },
+        {
+            "id": "15",
+            "type": "shape",
+            "shape_type": "rectangle",
+            "position": {
+                "x": 0.82,
+                "y": 3.69,
+                "width": 0.54,
+                "height": 0.34
+            },
+            "fill": {
+                "type": "none"
+            },
+            "text": {
+                "content": "03",
+                "font": {
+                    "name": "Noto Sans CJK SC",
+                    "size": 9.5,
+                    "bold": true,
+                    "italic": false,
+                    "color": "#FFFFFF"
+                },
+                "paragraph": {
+                    "align": "center",
+                    "vertical": "middle"
+                }
+            }
+        },
+        {
+            "id": "16",
+            "type": "shape",
+            "shape_type": "rectangle",
+            "position": {
+                "x": 1.6,
+                "y": 3.67,
+                "width": 3.28,
+                "height": 0.36
+            },
+            "fill": {
+                "type": "none"
+            },
+            "text": {
+                "content": "“Verifiable” reward?",
+                "font": {
+                    "name": "Noto Sans CJK SC",
+                    "size": 16.0,
+                    "bold": true,
+                    "italic": false,
+                    "color": "#FFFFFF"
+                },
+                "paragraph": {
+                    "align": "left",
+                    "vertical": "middle"
+                }
+            }
+        },
+        {
+            "id": "17",
+            "type": "shape",
+            "shape_type": "rectangle",
+            "position": {
+                "x": 4.88,
+                "y": 3.66,
+                "width": 7.45,
+                "height": 0.52
+            },
+            "fill": {
+                "type": "none"
+            },
+            "text": {
+                "content": "核心视觉质量仍依赖 LLM-as-a-Judge，主观性与偏差值得验证。",
+                "font": {
+                    "name": "Noto Sans CJK SC",
+                    "size": 12.2,
+                    "bold": false,
+                    "italic": false,
+                    "color": "#C6CDE2"
+                },
+                "paragraph": {
+                    "align": "left",
+                    "vertical": "middle"
+                }
+            }
+        },
+        {
+            "id": "18",
+            "type": "shape",
+            "shape_type": "line",
+            "position": {
+                "x": 1.6,
+                "y": 4.38,
+                "width": 10.73,
+                "height": 0.0
+            },
+            "fill": {
+                "type": "none"
+            },
+            "line": {
+                "color": "#303A5C",
+                "width": 0.8
+            }
+        },
+        {
+            "id": "19",
+            "type": "shape",
+            "shape_type": "roundRect",
+            "position": {
+                "x": 0.82,
+                "y": 4.72,
+                "width": 0.54,
+                "height": 0.34
+            },
+            "fill": {
+                "type": "solid",
+                "color": "#29A36A"
+            },
+            "line": {
+                "color": "#29A36A",
+                "width": 0.8
+            },
+            "radius": 0.5294
+        },
+        {
+            "id": "20",
+            "type": "shape",
+            "shape_type": "rectangle",
+            "position": {
+                "x": 0.82,
+                "y": 4.72,
+                "width": 0.54,
+                "height": 0.34
+            },
+            "fill": {
+                "type": "none"
+            },
+            "text": {
+                "content": "04",
+                "font": {
+                    "name": "Noto Sans CJK SC",
+                    "size": 9.5,
+                    "bold": true,
+                    "italic": false,
+                    "color": "#FFFFFF"
+                },
+                "paragraph": {
+                    "align": "center",
+                    "vertical": "middle"
+                }
+            }
+        },
+        {
+            "id": "21",
+            "type": "shape",
+            "shape_type": "rectangle",
+            "position": {
+                "x": 1.6,
+                "y": 4.7,
+                "width": 3.28,
+                "height": 0.36
+            },
+            "fill": {
+                "type": "none"
+            },
+            "text": {
+                "content": "Adaptive routing is constrained",
+                "font": {
+                    "name": "Noto Sans CJK SC",
+                    "size": 16.0,
+                    "bold": true,
+                    "italic": false,
+                    "color": "#FFFFFF"
+                },
+                "paragraph": {
+                    "align": "left",
+                    "vertical": "middle"
+                }
+            }
+        },
+        {
+            "id": "22",
+            "type": "shape",
+            "shape_type": "rectangle",
+            "position": {
+                "x": 4.88,
+                "y": 4.69,
+                "width": 7.45,
+                "height": 0.52
+            },
+            "fill": {
+                "type": "none"
+            },
+            "text": {
+                "content": "PG-first / QE-after-IG / KR-after-low-score 等行为被 prompt + behavior reward 强塑形。",
+                "font": {
+                    "name": "Noto Sans CJK SC",
+                    "size": 12.2,
+                    "bold": false,
+                    "italic": false,
+                    "color": "#C6CDE2"
+                },
+                "paragraph": {
+                    "align": "left",
+                    "vertical": "middle"
+                }
+            }
+        },
+        {
+            "id": "23",
+            "type": "shape",
+            "shape_type": "line",
+            "position": {
+                "x": 1.6,
+                "y": 5.41,
+                "width": 10.73,
+                "height": 0.0
+            },
+            "fill": {
+                "type": "none"
+            },
+            "line": {
+                "color": "#303A5C",
+                "width": 0.8
+            }
+        },
+        {
+            "id": "24",
+            "type": "shape",
+            "shape_type": "rectangle",
+            "position": {
+                "x": 0.84,
+                "y": 5.92,
+                "width": 2.3,
+                "height": 0.34
+            },
+            "fill": {
+                "type": "none"
+            },
+            "text": {
+                "content": "Possible directions",
+                "font": {
+                    "name": "Noto Sans CJK SC",
+                    "size": 14.0,
+                    "bold": true,
+                    "italic": false,
+                    "color": "#AAB4D3"
+                },
+                "paragraph": {
+                    "align": "left",
+                    "vertical": "middle"
+                }
+            }
+        },
+        {
+            "id": "25",
+            "type": "shape",
+            "shape_type": "roundRect",
+            "position": {
+                "x": 3.0,
+                "y": 5.86,
+                "width": 2.22,
+                "height": 0.44
+            },
+            "fill": {
+                "type": "solid",
+                "color": "#263450"
+            },
+            "line": {
+                "color": "#263450",
+                "width": 0.8
+            },
+            "radius": 0.4091
+        },
+        {
+            "id": "26",
+            "type": "shape",
+            "shape_type": "rectangle",
+            "position": {
+                "x": 3.0,
+                "y": 5.86,
+                "width": 2.22,
+                "height": 0.44
+            },
+            "fill": {
+                "type": "none"
+            },
+            "text": {
+                "content": "Cost-aware tool routing",
+                "font": {
+                    "name": "Noto Sans CJK SC",
+                    "size": 10.2,
+                    "bold": true,
+                    "italic": false,
+                    "color": "#DDE5FF"
+                },
+                "paragraph": {
+                    "align": "center",
+                    "vertical": "middle"
+                }
+            }
+        },
+        {
+            "id": "27",
+            "type": "shape",
+            "shape_type": "roundRect",
+            "position": {
+                "x": 5.36,
+                "y": 5.86,
+                "width": 2.16,
+                "height": 0.44
+            },
+            "fill": {
+                "type": "solid",
+                "color": "#263450"
+            },
+            "line": {
+                "color": "#263450",
+                "width": 0.8
+            },
+            "radius": 0.4091
+        },
+        {
+            "id": "28",
+            "type": "shape",
+            "shape_type": "rectangle",
+            "position": {
+                "x": 5.36,
+                "y": 5.86,
+                "width": 2.16,
+                "height": 0.44
+            },
+            "fill": {
+                "type": "none"
+            },
+            "text": {
+                "content": "Uncertainty-driven KR",
+                "font": {
+                    "name": "Noto Sans CJK SC",
+                    "size": 10.2,
+                    "bold": true,
+                    "italic": false,
+                    "color": "#DDE5FF"
+                },
+                "paragraph": {
+                    "align": "center",
+                    "vertical": "middle"
+                }
+            }
+        },
+        {
+            "id": "29",
+            "type": "shape",
+            "shape_type": "roundRect",
+            "position": {
+                "x": 7.66,
+                "y": 5.86,
+                "width": 2.74,
+                "height": 0.44
+            },
+            "fill": {
+                "type": "solid",
+                "color": "#263450"
+            },
+            "line": {
+                "color": "#263450",
+                "width": 0.8
+            },
+            "radius": 0.4091
+        },
+        {
+            "id": "30",
+            "type": "shape",
+            "shape_type": "rectangle",
+            "position": {
+                "x": 7.66,
+                "y": 5.86,
+                "width": 2.74,
+                "height": 0.44
+            },
+            "fill": {
+                "type": "none"
+            },
+            "text": {
+                "content": "Multi-critic / verifiable reward",
+                "font": {
+                    "name": "Noto Sans CJK SC",
+                    "size": 10.2,
+                    "bold": true,
+                    "italic": false,
+                    "color": "#DDE5FF"
+                },
+                "paragraph": {
+                    "align": "center",
+                    "vertical": "middle"
+                }
+            }
+        },
+        {
+            "id": "31",
+            "type": "shape",
+            "shape_type": "roundRect",
+            "position": {
+                "x": 10.54,
+                "y": 5.86,
+                "width": 1.82,
+                "height": 0.44
+            },
+            "fill": {
+                "type": "solid",
+                "color": "#263450"
+            },
+            "line": {
+                "color": "#263450",
+                "width": 0.8
+            },
+            "radius": 0.4091
+        },
+        {
+            "id": "32",
+            "type": "shape",
+            "shape_type": "rectangle",
+            "position": {
+                "x": 10.54,
+                "y": 5.86,
+                "width": 1.82,
+                "height": 0.44
+            },
+            "fill": {
+                "type": "none"
+            },
+            "text": {
+                "content": "Hard-negative synthesis",
+                "font": {
+                    "name": "Noto Sans CJK SC",
+                    "size": 9.7,
+                    "bold": true,
+                    "italic": false,
+                    "color": "#DDE5FF"
+                },
+                "paragraph": {
+                    "align": "center",
+                    "vertical": "middle"
+                }
+            }
+        },
+        {
+            "id": "33",
+            "type": "shape",
+            "shape_type": "roundRect",
+            "position": {
+                "x": 1.1,
+                "y": 6.63,
+                "width": 11.1,
+                "height": 0.52
+            },
+            "fill": {
+                "type": "solid",
+                "color": "#1B2440"
+            },
+            "line": {
+                "color": "#DDE5FF",
+                "width": 1.0
+            },
+            "radius": 0.1923
+        },
+        {
+            "id": "34",
+            "type": "shape",
+            "shape_type": "rectangle",
+            "position": {
+                "x": 1.28,
+                "y": 6.71,
+                "width": 10.74,
+                "height": 0.36
+            },
+            "fill": {
+                "type": "none"
+            },
+            "text": {
+                "content": "Key takeaway: AnomalyAgent turns anomaly generation from a one-shot process into an iterative optimization loop.",
+                "font": {
+                    "name": "Noto Sans CJK SC",
+                    "size": 15.0,
+                    "bold": true,
+                    "italic": false,
+                    "color": "#DDE5FF"
+                },
+                "paragraph": {
+                    "align": "center",
+                    "vertical": "middle"
+                },
+                "paragraphs": [
+                    {
+                        "runs": [
+                            {
+                                "text": "Key takeaway: ",
+                                "font": {
+                                    "name": "Noto Sans CJK SC",
+                                    "size": 15.0,
+                                    "bold": true,
+                                    "italic": false,
+                                    "color": "#DDE5FF"
+                                }
+                            },
+                            {
+                                "text": "AnomalyAgent turns anomaly generation from a one-shot process into an iterative optimization loop",
+                                "font": {
+                                    "name": "Noto Sans CJK SC",
+                                    "size": 15.0,
+                                    "bold": true,
+                                    "italic": false,
+                                    "color": "#DDE5FF"
+                                }
+                            },
+                            {
+                                "text": ".",
+                                "font": {
+                                    "name": "Noto Sans CJK SC",
+                                    "size": 15.0,
+                                    "bold": true,
+                                    "italic": false,
+                                    "color": "#DDE5FF"
+                                }
+                            }
+                        ],
+                        "style": {
+                            "align": "center",
+                            "vertical": "middle"
+                        }
+                    }
+                ]
+            }
+        },
+        {
+            "id": "35",
+            "type": "shape",
+            "shape_type": "rectangle",
+            "position": {
+                "x": 0.73,
+                "y": 7.13,
+                "width": 4.0,
+                "height": 0.18
+            },
+            "fill": {
+                "type": "none"
+            },
+            "text": {
+                "content": "Su et al., arXiv:2604.07900",
+                "font": {
+                    "name": "Noto Sans CJK SC",
+                    "size": 8.0,
+                    "bold": false,
+                    "italic": false,
+                    "color": "#687392"
+                },
+                "paragraph": {
+                    "align": "left",
+                    "vertical": "middle"
+                }
+            }
+        },
+        {
+            "id": "36",
+            "type": "shape",
+            "shape_type": "rectangle",
+            "position": {
+                "x": 12.15,
+                "y": 7.13,
+                "width": 0.55,
+                "height": 0.2
+            },
+            "fill": {
+                "type": "none"
+            },
+            "text": {
+                "content": "14",
+                "font": {
+                    "name": "Noto Sans CJK SC",
+                    "size": 8.5,
+                    "bold": false,
+                    "italic": false,
+                    "color": "#687392"
+                },
+                "paragraph": {
+                    "align": "right",
+                    "vertical": "middle"
+                }
+            }
+        }
+    ]
+}

@@ -1,0 +1,1765 @@
+{
+    "slide_id": 7,
+    "size": {
+        "width": 13.333,
+        "height": 7.5
+    },
+    "background": {
+        "type": "solid",
+        "color": "#FFFFFF"
+    },
+    "elements": [
+        {
+            "id": "2",
+            "type": "shape",
+            "shape_type": "rectangle",
+            "position": {
+                "x": 0.65,
+                "y": 0.32,
+                "width": 10.9,
+                "height": 0.55
+            },
+            "fill": {
+                "type": "none"
+            },
+            "text": {
+                "content": "Three Trajectory Types + SFT",
+                "font": {
+                    "name": "Noto Sans CJK SC",
+                    "size": 26.0,
+                    "bold": true,
+                    "italic": false,
+                    "color": "#0B1020"
+                },
+                "paragraph": {
+                    "align": "left",
+                    "vertical": "middle"
+                }
+            }
+        },
+        {
+            "id": "3",
+            "type": "shape",
+            "shape_type": "rectangle",
+            "position": {
+                "x": 0.67,
+                "y": 0.85,
+                "width": 11.3,
+                "height": 0.34
+            },
+            "fill": {
+                "type": "none"
+            },
+            "text": {
+                "content": "SFT learns format and basic tool-use patterns; RL learns decision quality.",
+                "font": {
+                    "name": "Noto Sans CJK SC",
+                    "size": 10.5,
+                    "bold": false,
+                    "italic": false,
+                    "color": "#5B6479"
+                },
+                "paragraph": {
+                    "align": "left",
+                    "vertical": "middle"
+                }
+            }
+        },
+        {
+            "id": "4",
+            "type": "shape",
+            "shape_type": "line",
+            "position": {
+                "x": 0.65,
+                "y": 1.17,
+                "width": 12.0,
+                "height": 0.0
+            },
+            "fill": {
+                "type": "none"
+            },
+            "line": {
+                "color": "#D8DDEA",
+                "width": 1.1
+            }
+        },
+        {
+            "id": "5",
+            "type": "shape",
+            "shape_type": "roundRect",
+            "position": {
+                "x": 0.7,
+                "y": 1.42,
+                "width": 0.82,
+                "height": 0.33
+            },
+            "fill": {
+                "type": "solid",
+                "color": "#29A36A"
+            },
+            "line": {
+                "color": "#29A36A",
+                "width": 0.8
+            },
+            "radius": 0.5454
+        },
+        {
+            "id": "6",
+            "type": "shape",
+            "shape_type": "rectangle",
+            "position": {
+                "x": 0.7,
+                "y": 1.42,
+                "width": 0.82,
+                "height": 0.33
+            },
+            "fill": {
+                "type": "none"
+            },
+            "text": {
+                "content": "SFT",
+                "font": {
+                    "name": "Noto Sans CJK SC",
+                    "size": 9.5,
+                    "bold": true,
+                    "italic": false,
+                    "color": "#FFFFFF"
+                },
+                "paragraph": {
+                    "align": "center",
+                    "vertical": "middle"
+                }
+            }
+        },
+        {
+            "id": "7",
+            "type": "shape",
+            "shape_type": "roundRect",
+            "position": {
+                "x": 0.75,
+                "y": 1.95,
+                "width": 3.45,
+                "height": 2.35
+            },
+            "fill": {
+                "type": "solid",
+                "color": "#FAFBFD"
+            },
+            "line": {
+                "color": "#D8DDEA",
+                "width": 1.0
+            },
+            "radius": 0.0425
+        },
+        {
+            "id": "8",
+            "type": "shape",
+            "shape_type": "roundRect",
+            "position": {
+                "x": 0.97,
+                "y": 2.16,
+                "width": 0.98,
+                "height": 0.34
+            },
+            "fill": {
+                "type": "solid",
+                "color": "#29A36A"
+            },
+            "line": {
+                "color": "#29A36A",
+                "width": 0.8
+            },
+            "radius": 0.5294
+        },
+        {
+            "id": "9",
+            "type": "shape",
+            "shape_type": "rectangle",
+            "position": {
+                "x": 0.97,
+                "y": 2.16,
+                "width": 0.98,
+                "height": 0.34
+            },
+            "fill": {
+                "type": "none"
+            },
+            "text": {
+                "content": "Single",
+                "font": {
+                    "name": "Noto Sans CJK SC",
+                    "size": 10.5,
+                    "bold": true,
+                    "italic": false,
+                    "color": "#FFFFFF"
+                },
+                "paragraph": {
+                    "align": "center",
+                    "vertical": "middle"
+                }
+            }
+        },
+        {
+            "id": "10",
+            "type": "shape",
+            "shape_type": "rectangle",
+            "position": {
+                "x": 2.15,
+                "y": 2.16,
+                "width": 1.72,
+                "height": 0.34
+            },
+            "fill": {
+                "type": "none"
+            },
+            "text": {
+                "content": "一次生成即通过",
+                "font": {
+                    "name": "Noto Sans CJK SC",
+                    "size": 10.5,
+                    "bold": false,
+                    "italic": false,
+                    "color": "#5B6479"
+                },
+                "paragraph": {
+                    "align": "right",
+                    "vertical": "middle"
+                }
+            }
+        },
+        {
+            "id": "11",
+            "type": "shape",
+            "shape_type": "roundRect",
+            "position": {
+                "x": 1.0,
+                "y": 3.05,
+                "width": 0.48,
+                "height": 0.42
+            },
+            "fill": {
+                "type": "solid",
+                "color": "#F6F7FB"
+            },
+            "line": {
+                "color": "#D8DDEA",
+                "width": 0.8
+            },
+            "radius": 0.2381
+        },
+        {
+            "id": "12",
+            "type": "shape",
+            "shape_type": "rectangle",
+            "position": {
+                "x": 1.0,
+                "y": 3.05,
+                "width": 0.48,
+                "height": 0.42
+            },
+            "fill": {
+                "type": "none"
+            },
+            "text": {
+                "content": "PG",
+                "font": {
+                    "name": "Noto Sans CJK SC",
+                    "size": 8.8,
+                    "bold": true,
+                    "italic": false,
+                    "color": "#15203B"
+                },
+                "paragraph": {
+                    "align": "center",
+                    "vertical": "middle"
+                }
+            }
+        },
+        {
+            "id": "13",
+            "type": "shape",
+            "shape_type": "line",
+            "position": {
+                "x": 1.5,
+                "y": 3.26,
+                "width": 0.07,
+                "height": 0.0
+            },
+            "fill": {
+                "type": "none"
+            },
+            "line": {
+                "color": "#5B6479",
+                "width": 1.1,
+                "arrow_start": "triangle"
+            }
+        },
+        {
+            "id": "14",
+            "type": "shape",
+            "shape_type": "roundRect",
+            "position": {
+                "x": 1.59,
+                "y": 3.05,
+                "width": 0.48,
+                "height": 0.42
+            },
+            "fill": {
+                "type": "solid",
+                "color": "#EAF2FF"
+            },
+            "line": {
+                "color": "#D8DDEA",
+                "width": 0.8
+            },
+            "radius": 0.2381
+        },
+        {
+            "id": "15",
+            "type": "shape",
+            "shape_type": "rectangle",
+            "position": {
+                "x": 1.59,
+                "y": 3.05,
+                "width": 0.48,
+                "height": 0.42
+            },
+            "fill": {
+                "type": "none"
+            },
+            "text": {
+                "content": "IG",
+                "font": {
+                    "name": "Noto Sans CJK SC",
+                    "size": 8.8,
+                    "bold": true,
+                    "italic": false,
+                    "color": "#15203B"
+                },
+                "paragraph": {
+                    "align": "center",
+                    "vertical": "middle"
+                }
+            }
+        },
+        {
+            "id": "16",
+            "type": "shape",
+            "shape_type": "line",
+            "position": {
+                "x": 2.09,
+                "y": 3.26,
+                "width": 0.07,
+                "height": 0.0
+            },
+            "fill": {
+                "type": "none"
+            },
+            "line": {
+                "color": "#5B6479",
+                "width": 1.1,
+                "arrow_start": "triangle"
+            }
+        },
+        {
+            "id": "17",
+            "type": "shape",
+            "shape_type": "roundRect",
+            "position": {
+                "x": 2.18,
+                "y": 3.05,
+                "width": 0.48,
+                "height": 0.42
+            },
+            "fill": {
+                "type": "solid",
+                "color": "#F6F7FB"
+            },
+            "line": {
+                "color": "#D8DDEA",
+                "width": 0.8
+            },
+            "radius": 0.2381
+        },
+        {
+            "id": "18",
+            "type": "shape",
+            "shape_type": "rectangle",
+            "position": {
+                "x": 2.18,
+                "y": 3.05,
+                "width": 0.48,
+                "height": 0.42
+            },
+            "fill": {
+                "type": "none"
+            },
+            "text": {
+                "content": "QE",
+                "font": {
+                    "name": "Noto Sans CJK SC",
+                    "size": 8.8,
+                    "bold": true,
+                    "italic": false,
+                    "color": "#15203B"
+                },
+                "paragraph": {
+                    "align": "center",
+                    "vertical": "middle"
+                }
+            }
+        },
+        {
+            "id": "19",
+            "type": "shape",
+            "shape_type": "line",
+            "position": {
+                "x": 2.68,
+                "y": 3.26,
+                "width": 0.07,
+                "height": 0.0
+            },
+            "fill": {
+                "type": "none"
+            },
+            "line": {
+                "color": "#5B6479",
+                "width": 1.1,
+                "arrow_start": "triangle"
+            }
+        },
+        {
+            "id": "20",
+            "type": "shape",
+            "shape_type": "roundRect",
+            "position": {
+                "x": 2.77,
+                "y": 3.05,
+                "width": 0.48,
+                "height": 0.42
+            },
+            "fill": {
+                "type": "solid",
+                "color": "#F6F7FB"
+            },
+            "line": {
+                "color": "#D8DDEA",
+                "width": 0.8
+            },
+            "radius": 0.2381
+        },
+        {
+            "id": "21",
+            "type": "shape",
+            "shape_type": "rectangle",
+            "position": {
+                "x": 2.77,
+                "y": 3.05,
+                "width": 0.48,
+                "height": 0.42
+            },
+            "fill": {
+                "type": "none"
+            },
+            "text": {
+                "content": "MG",
+                "font": {
+                    "name": "Noto Sans CJK SC",
+                    "size": 8.8,
+                    "bold": true,
+                    "italic": false,
+                    "color": "#15203B"
+                },
+                "paragraph": {
+                    "align": "center",
+                    "vertical": "middle"
+                }
+            }
+        },
+        {
+            "id": "22",
+            "type": "shape",
+            "shape_type": "roundRect",
+            "position": {
+                "x": 4.44,
+                "y": 1.95,
+                "width": 3.45,
+                "height": 2.35
+            },
+            "fill": {
+                "type": "solid",
+                "color": "#FAFBFD"
+            },
+            "line": {
+                "color": "#D8DDEA",
+                "width": 1.0
+            },
+            "radius": 0.0425
+        },
+        {
+            "id": "23",
+            "type": "shape",
+            "shape_type": "roundRect",
+            "position": {
+                "x": 4.66,
+                "y": 2.16,
+                "width": 0.98,
+                "height": 0.34
+            },
+            "fill": {
+                "type": "solid",
+                "color": "#2D7FF9"
+            },
+            "line": {
+                "color": "#2D7FF9",
+                "width": 0.8
+            },
+            "radius": 0.5294
+        },
+        {
+            "id": "24",
+            "type": "shape",
+            "shape_type": "rectangle",
+            "position": {
+                "x": 4.66,
+                "y": 2.16,
+                "width": 0.98,
+                "height": 0.34
+            },
+            "fill": {
+                "type": "none"
+            },
+            "text": {
+                "content": "Dual",
+                "font": {
+                    "name": "Noto Sans CJK SC",
+                    "size": 10.5,
+                    "bold": true,
+                    "italic": false,
+                    "color": "#FFFFFF"
+                },
+                "paragraph": {
+                    "align": "center",
+                    "vertical": "middle"
+                }
+            }
+        },
+        {
+            "id": "25",
+            "type": "shape",
+            "shape_type": "rectangle",
+            "position": {
+                "x": 5.84,
+                "y": 2.16,
+                "width": 1.72,
+                "height": 0.34
+            },
+            "fill": {
+                "type": "none"
+            },
+            "text": {
+                "content": "一次失败后修正",
+                "font": {
+                    "name": "Noto Sans CJK SC",
+                    "size": 10.5,
+                    "bold": false,
+                    "italic": false,
+                    "color": "#5B6479"
+                },
+                "paragraph": {
+                    "align": "right",
+                    "vertical": "middle"
+                }
+            }
+        },
+        {
+            "id": "26",
+            "type": "shape",
+            "shape_type": "roundRect",
+            "position": {
+                "x": 4.69,
+                "y": 3.05,
+                "width": 0.48,
+                "height": 0.42
+            },
+            "fill": {
+                "type": "solid",
+                "color": "#F6F7FB"
+            },
+            "line": {
+                "color": "#D8DDEA",
+                "width": 0.8
+            },
+            "radius": 0.2381
+        },
+        {
+            "id": "27",
+            "type": "shape",
+            "shape_type": "rectangle",
+            "position": {
+                "x": 4.69,
+                "y": 3.05,
+                "width": 0.48,
+                "height": 0.42
+            },
+            "fill": {
+                "type": "none"
+            },
+            "text": {
+                "content": "PG",
+                "font": {
+                    "name": "Noto Sans CJK SC",
+                    "size": 8.8,
+                    "bold": true,
+                    "italic": false,
+                    "color": "#15203B"
+                },
+                "paragraph": {
+                    "align": "center",
+                    "vertical": "middle"
+                }
+            }
+        },
+        {
+            "id": "28",
+            "type": "shape",
+            "shape_type": "line",
+            "position": {
+                "x": 5.19,
+                "y": 3.26,
+                "width": 0.07,
+                "height": 0.0
+            },
+            "fill": {
+                "type": "none"
+            },
+            "line": {
+                "color": "#5B6479",
+                "width": 1.1,
+                "arrow_start": "triangle"
+            }
+        },
+        {
+            "id": "29",
+            "type": "shape",
+            "shape_type": "roundRect",
+            "position": {
+                "x": 5.28,
+                "y": 3.05,
+                "width": 0.48,
+                "height": 0.42
+            },
+            "fill": {
+                "type": "solid",
+                "color": "#EAF2FF"
+            },
+            "line": {
+                "color": "#D8DDEA",
+                "width": 0.8
+            },
+            "radius": 0.2381
+        },
+        {
+            "id": "30",
+            "type": "shape",
+            "shape_type": "rectangle",
+            "position": {
+                "x": 5.28,
+                "y": 3.05,
+                "width": 0.48,
+                "height": 0.42
+            },
+            "fill": {
+                "type": "none"
+            },
+            "text": {
+                "content": "IG",
+                "font": {
+                    "name": "Noto Sans CJK SC",
+                    "size": 8.8,
+                    "bold": true,
+                    "italic": false,
+                    "color": "#15203B"
+                },
+                "paragraph": {
+                    "align": "center",
+                    "vertical": "middle"
+                }
+            }
+        },
+        {
+            "id": "31",
+            "type": "shape",
+            "shape_type": "line",
+            "position": {
+                "x": 5.78,
+                "y": 3.26,
+                "width": 0.07,
+                "height": 0.0
+            },
+            "fill": {
+                "type": "none"
+            },
+            "line": {
+                "color": "#5B6479",
+                "width": 1.1,
+                "arrow_start": "triangle"
+            }
+        },
+        {
+            "id": "32",
+            "type": "shape",
+            "shape_type": "roundRect",
+            "position": {
+                "x": 5.87,
+                "y": 3.05,
+                "width": 0.48,
+                "height": 0.42
+            },
+            "fill": {
+                "type": "solid",
+                "color": "#F6F7FB"
+            },
+            "line": {
+                "color": "#D8DDEA",
+                "width": 0.8
+            },
+            "radius": 0.2381
+        },
+        {
+            "id": "33",
+            "type": "shape",
+            "shape_type": "rectangle",
+            "position": {
+                "x": 5.87,
+                "y": 3.05,
+                "width": 0.48,
+                "height": 0.42
+            },
+            "fill": {
+                "type": "none"
+            },
+            "text": {
+                "content": "QE",
+                "font": {
+                    "name": "Noto Sans CJK SC",
+                    "size": 8.8,
+                    "bold": true,
+                    "italic": false,
+                    "color": "#15203B"
+                },
+                "paragraph": {
+                    "align": "center",
+                    "vertical": "middle"
+                }
+            }
+        },
+        {
+            "id": "34",
+            "type": "shape",
+            "shape_type": "line",
+            "position": {
+                "x": 6.37,
+                "y": 3.26,
+                "width": 0.07,
+                "height": 0.0
+            },
+            "fill": {
+                "type": "none"
+            },
+            "line": {
+                "color": "#5B6479",
+                "width": 1.1,
+                "arrow_start": "triangle"
+            }
+        },
+        {
+            "id": "35",
+            "type": "shape",
+            "shape_type": "roundRect",
+            "position": {
+                "x": 6.46,
+                "y": 3.05,
+                "width": 0.55,
+                "height": 0.42
+            },
+            "fill": {
+                "type": "solid",
+                "color": "#E8F6EF"
+            },
+            "line": {
+                "color": "#29A36A",
+                "width": 0.8
+            },
+            "radius": 0.2381
+        },
+        {
+            "id": "36",
+            "type": "shape",
+            "shape_type": "rectangle",
+            "position": {
+                "x": 6.46,
+                "y": 3.05,
+                "width": 0.55,
+                "height": 0.42
+            },
+            "fill": {
+                "type": "none"
+            },
+            "text": {
+                "content": "KR?",
+                "font": {
+                    "name": "Noto Sans CJK SC",
+                    "size": 8.8,
+                    "bold": true,
+                    "italic": false,
+                    "color": "#29A36A"
+                },
+                "paragraph": {
+                    "align": "center",
+                    "vertical": "middle"
+                }
+            }
+        },
+        {
+            "id": "37",
+            "type": "shape",
+            "shape_type": "line",
+            "position": {
+                "x": 6.722,
+                "y": 3.514,
+                "width": 0.07,
+                "height": 0.0
+            },
+            "rotation": 90.0,
+            "fill": {
+                "type": "none"
+            },
+            "line": {
+                "color": "#5B6479",
+                "width": 1.1,
+                "arrow_start": "triangle"
+            }
+        },
+        {
+            "id": "38",
+            "type": "shape",
+            "shape_type": "roundRect",
+            "position": {
+                "x": 5.905,
+                "y": 3.549,
+                "width": 0.48,
+                "height": 0.42
+            },
+            "fill": {
+                "type": "solid",
+                "color": "#EAF2FF"
+            },
+            "line": {
+                "color": "#D8DDEA",
+                "width": 0.8
+            },
+            "radius": 0.2381
+        },
+        {
+            "id": "39",
+            "type": "shape",
+            "shape_type": "rectangle",
+            "position": {
+                "x": 5.905,
+                "y": 3.549,
+                "width": 0.48,
+                "height": 0.42
+            },
+            "fill": {
+                "type": "none"
+            },
+            "text": {
+                "content": "IG",
+                "font": {
+                    "name": "Noto Sans CJK SC",
+                    "size": 8.8,
+                    "bold": true,
+                    "italic": false,
+                    "color": "#15203B"
+                },
+                "paragraph": {
+                    "align": "center",
+                    "vertical": "middle"
+                }
+            }
+        },
+        {
+            "id": "40",
+            "type": "shape",
+            "shape_type": "line",
+            "position": {
+                "x": 6.4,
+                "y": 3.76,
+                "width": 0.07,
+                "height": 0.0
+            },
+            "rotation": 180.0,
+            "fill": {
+                "type": "none"
+            },
+            "line": {
+                "color": "#5B6479",
+                "width": 1.1,
+                "arrow_start": "triangle"
+            }
+        },
+        {
+            "id": "41",
+            "type": "shape",
+            "shape_type": "roundRect",
+            "position": {
+                "x": 6.495,
+                "y": 3.549,
+                "width": 0.48,
+                "height": 0.42
+            },
+            "fill": {
+                "type": "solid",
+                "color": "#F6F7FB"
+            },
+            "line": {
+                "color": "#D8DDEA",
+                "width": 0.8
+            },
+            "radius": 0.2381
+        },
+        {
+            "id": "42",
+            "type": "shape",
+            "shape_type": "rectangle",
+            "position": {
+                "x": 6.483,
+                "y": 3.549,
+                "width": 0.48,
+                "height": 0.42
+            },
+            "fill": {
+                "type": "none"
+            },
+            "text": {
+                "content": "QE",
+                "font": {
+                    "name": "Noto Sans CJK SC",
+                    "size": 8.8,
+                    "bold": true,
+                    "italic": false,
+                    "color": "#15203B"
+                },
+                "paragraph": {
+                    "align": "center",
+                    "vertical": "middle"
+                }
+            }
+        },
+        {
+            "id": "43",
+            "type": "shape",
+            "shape_type": "line",
+            "position": {
+                "x": 8.275,
+                "y": 3.293,
+                "width": 0.07,
+                "height": 0.0
+            },
+            "fill": {
+                "type": "none"
+            },
+            "line": {
+                "color": "#5B6479",
+                "width": 1.1,
+                "arrow_start": "triangle"
+            }
+        },
+        {
+            "id": "44",
+            "type": "shape",
+            "shape_type": "roundRect",
+            "position": {
+                "x": 8.365,
+                "y": 3.083,
+                "width": 0.48,
+                "height": 0.42
+            },
+            "fill": {
+                "type": "solid",
+                "color": "#F6F7FB"
+            },
+            "line": {
+                "color": "#D8DDEA",
+                "width": 0.8
+            },
+            "radius": 0.2381
+        },
+        {
+            "id": "45",
+            "type": "shape",
+            "shape_type": "rectangle",
+            "position": {
+                "x": 8.365,
+                "y": 3.083,
+                "width": 0.48,
+                "height": 0.42
+            },
+            "fill": {
+                "type": "none"
+            },
+            "text": {
+                "content": "MG",
+                "font": {
+                    "name": "Noto Sans CJK SC",
+                    "size": 8.8,
+                    "bold": true,
+                    "italic": false,
+                    "color": "#15203B"
+                },
+                "paragraph": {
+                    "align": "center",
+                    "vertical": "middle"
+                }
+            }
+        },
+        {
+            "id": "46",
+            "type": "shape",
+            "shape_type": "roundRect",
+            "position": {
+                "x": 8.195,
+                "y": 1.983,
+                "width": 3.45,
+                "height": 2.35
+            },
+            "fill": {
+                "type": "solid",
+                "color": "#FAFBFD"
+            },
+            "line": {
+                "color": "#D8DDEA",
+                "width": 1.0
+            },
+            "radius": 0.0425
+        },
+        {
+            "id": "47",
+            "type": "shape",
+            "shape_type": "roundRect",
+            "position": {
+                "x": 8.415,
+                "y": 2.193,
+                "width": 0.98,
+                "height": 0.34
+            },
+            "fill": {
+                "type": "solid",
+                "color": "#6C5CE7"
+            },
+            "line": {
+                "color": "#6C5CE7",
+                "width": 0.8
+            },
+            "radius": 0.5294
+        },
+        {
+            "id": "48",
+            "type": "shape",
+            "shape_type": "rectangle",
+            "position": {
+                "x": 8.415,
+                "y": 2.193,
+                "width": 0.98,
+                "height": 0.34
+            },
+            "fill": {
+                "type": "none"
+            },
+            "text": {
+                "content": "Triple",
+                "font": {
+                    "name": "Noto Sans CJK SC",
+                    "size": 10.5,
+                    "bold": true,
+                    "italic": false,
+                    "color": "#FFFFFF"
+                },
+                "paragraph": {
+                    "align": "center",
+                    "vertical": "middle"
+                }
+            }
+        },
+        {
+            "id": "49",
+            "type": "shape",
+            "shape_type": "rectangle",
+            "position": {
+                "x": 9.595,
+                "y": 2.193,
+                "width": 1.72,
+                "height": 0.34
+            },
+            "fill": {
+                "type": "none"
+            },
+            "text": {
+                "content": "多轮困难样本",
+                "font": {
+                    "name": "Noto Sans CJK SC",
+                    "size": 10.5,
+                    "bold": false,
+                    "italic": false,
+                    "color": "#5B6479"
+                },
+                "paragraph": {
+                    "align": "right",
+                    "vertical": "middle"
+                }
+            }
+        },
+        {
+            "id": "50",
+            "type": "shape",
+            "shape_type": "roundRect",
+            "position": {
+                "x": 8.445,
+                "y": 3.083,
+                "width": 0.48,
+                "height": 0.42
+            },
+            "fill": {
+                "type": "solid",
+                "color": "#F6F7FB"
+            },
+            "line": {
+                "color": "#D8DDEA",
+                "width": 0.8
+            },
+            "radius": 0.2381
+        },
+        {
+            "id": "51",
+            "type": "shape",
+            "shape_type": "rectangle",
+            "position": {
+                "x": 8.445,
+                "y": 3.083,
+                "width": 0.48,
+                "height": 0.42
+            },
+            "fill": {
+                "type": "none"
+            },
+            "text": {
+                "content": "PG",
+                "font": {
+                    "name": "Noto Sans CJK SC",
+                    "size": 8.8,
+                    "bold": true,
+                    "italic": false,
+                    "color": "#15203B"
+                },
+                "paragraph": {
+                    "align": "center",
+                    "vertical": "middle"
+                }
+            }
+        },
+        {
+            "id": "52",
+            "type": "shape",
+            "shape_type": "line",
+            "position": {
+                "x": 8.945,
+                "y": 3.293,
+                "width": 0.07,
+                "height": 0.0
+            },
+            "fill": {
+                "type": "none"
+            },
+            "line": {
+                "color": "#5B6479",
+                "width": 1.1,
+                "arrow_start": "triangle"
+            }
+        },
+        {
+            "id": "53",
+            "type": "shape",
+            "shape_type": "roundRect",
+            "position": {
+                "x": 9.035,
+                "y": 3.083,
+                "width": 0.48,
+                "height": 0.42
+            },
+            "fill": {
+                "type": "solid",
+                "color": "#EAF2FF"
+            },
+            "line": {
+                "color": "#D8DDEA",
+                "width": 0.8
+            },
+            "radius": 0.2381
+        },
+        {
+            "id": "54",
+            "type": "shape",
+            "shape_type": "rectangle",
+            "position": {
+                "x": 9.035,
+                "y": 3.083,
+                "width": 0.48,
+                "height": 0.42
+            },
+            "fill": {
+                "type": "none"
+            },
+            "text": {
+                "content": "IG",
+                "font": {
+                    "name": "Noto Sans CJK SC",
+                    "size": 8.8,
+                    "bold": true,
+                    "italic": false,
+                    "color": "#15203B"
+                },
+                "paragraph": {
+                    "align": "center",
+                    "vertical": "middle"
+                }
+            }
+        },
+        {
+            "id": "55",
+            "type": "shape",
+            "shape_type": "line",
+            "position": {
+                "x": 9.535,
+                "y": 3.293,
+                "width": 0.07,
+                "height": 0.0
+            },
+            "fill": {
+                "type": "none"
+            },
+            "line": {
+                "color": "#5B6479",
+                "width": 1.1,
+                "arrow_start": "triangle"
+            }
+        },
+        {
+            "id": "56",
+            "type": "shape",
+            "shape_type": "roundRect",
+            "position": {
+                "x": 9.625,
+                "y": 3.083,
+                "width": 0.48,
+                "height": 0.42
+            },
+            "fill": {
+                "type": "solid",
+                "color": "#F6F7FB"
+            },
+            "line": {
+                "color": "#D8DDEA",
+                "width": 0.8
+            },
+            "radius": 0.2381
+        },
+        {
+            "id": "57",
+            "type": "shape",
+            "shape_type": "rectangle",
+            "position": {
+                "x": 9.625,
+                "y": 3.083,
+                "width": 0.48,
+                "height": 0.42
+            },
+            "fill": {
+                "type": "none"
+            },
+            "text": {
+                "content": "QE",
+                "font": {
+                    "name": "Noto Sans CJK SC",
+                    "size": 8.8,
+                    "bold": true,
+                    "italic": false,
+                    "color": "#15203B"
+                },
+                "paragraph": {
+                    "align": "center",
+                    "vertical": "middle"
+                }
+            }
+        },
+        {
+            "id": "58",
+            "type": "shape",
+            "shape_type": "line",
+            "position": {
+                "x": 10.125,
+                "y": 3.293,
+                "width": 0.07,
+                "height": 0.0
+            },
+            "fill": {
+                "type": "none"
+            },
+            "line": {
+                "color": "#5B6479",
+                "width": 1.1,
+                "arrow_start": "triangle"
+            }
+        },
+        {
+            "id": "59",
+            "type": "shape",
+            "shape_type": "roundRect",
+            "position": {
+                "x": 10.215,
+                "y": 3.083,
+                "width": 0.48,
+                "height": 0.42
+            },
+            "fill": {
+                "type": "solid",
+                "color": "#E8F6EF"
+            },
+            "line": {
+                "color": "#29A36A",
+                "width": 0.8
+            },
+            "radius": 0.2381
+        },
+        {
+            "id": "60",
+            "type": "shape",
+            "shape_type": "rectangle",
+            "position": {
+                "x": 10.215,
+                "y": 3.083,
+                "width": 0.48,
+                "height": 0.42
+            },
+            "fill": {
+                "type": "none"
+            },
+            "text": {
+                "content": "KR",
+                "font": {
+                    "name": "Noto Sans CJK SC",
+                    "size": 8.8,
+                    "bold": true,
+                    "italic": false,
+                    "color": "#29A36A"
+                },
+                "paragraph": {
+                    "align": "center",
+                    "vertical": "middle"
+                }
+            }
+        },
+        {
+            "id": "61",
+            "type": "shape",
+            "shape_type": "line",
+            "position": {
+                "x": 10.715,
+                "y": 3.293,
+                "width": 0.07,
+                "height": 0.0
+            },
+            "fill": {
+                "type": "none"
+            },
+            "line": {
+                "color": "#5B6479",
+                "width": 1.1,
+                "arrow_start": "triangle"
+            }
+        },
+        {
+            "id": "62",
+            "type": "shape",
+            "shape_type": "roundRect",
+            "position": {
+                "x": 10.805,
+                "y": 3.083,
+                "width": 0.48,
+                "height": 0.42
+            },
+            "fill": {
+                "type": "solid",
+                "color": "#EAF2FF"
+            },
+            "line": {
+                "color": "#D8DDEA",
+                "width": 0.8
+            },
+            "radius": 0.2381
+        },
+        {
+            "id": "63",
+            "type": "shape",
+            "shape_type": "rectangle",
+            "position": {
+                "x": 10.805,
+                "y": 3.083,
+                "width": 0.48,
+                "height": 0.42
+            },
+            "fill": {
+                "type": "none"
+            },
+            "text": {
+                "content": "IG",
+                "font": {
+                    "name": "Noto Sans CJK SC",
+                    "size": 8.8,
+                    "bold": true,
+                    "italic": false,
+                    "color": "#15203B"
+                },
+                "paragraph": {
+                    "align": "center",
+                    "vertical": "middle"
+                }
+            }
+        },
+        {
+            "id": "64",
+            "type": "shape",
+            "shape_type": "line",
+            "position": {
+                "x": 11.031,
+                "y": 3.565,
+                "width": 0.07,
+                "height": 0.0
+            },
+            "rotation": 90.0,
+            "fill": {
+                "type": "none"
+            },
+            "line": {
+                "color": "#5B6479",
+                "width": 1.1,
+                "arrow_start": "triangle"
+            }
+        },
+        {
+            "id": "65",
+            "type": "shape",
+            "shape_type": "roundRect",
+            "position": {
+                "x": 9.056,
+                "y": 3.6,
+                "width": 0.48,
+                "height": 0.42
+            },
+            "fill": {
+                "type": "solid",
+                "color": "#F6F7FB"
+            },
+            "line": {
+                "color": "#D8DDEA",
+                "width": 0.8
+            },
+            "radius": 0.2381
+        },
+        {
+            "id": "66",
+            "type": "shape",
+            "shape_type": "rectangle",
+            "position": {
+                "x": 9.056,
+                "y": 3.6,
+                "width": 0.48,
+                "height": 0.42
+            },
+            "fill": {
+                "type": "none"
+            },
+            "text": {
+                "content": "QE",
+                "font": {
+                    "name": "Noto Sans CJK SC",
+                    "size": 8.8,
+                    "bold": true,
+                    "italic": false,
+                    "color": "#15203B"
+                },
+                "paragraph": {
+                    "align": "center",
+                    "vertical": "middle"
+                }
+            }
+        },
+        {
+            "id": "67",
+            "type": "shape",
+            "shape_type": "line",
+            "position": {
+                "x": 9.556,
+                "y": 3.81,
+                "width": 0.07,
+                "height": 0.0
+            },
+            "fill": {
+                "type": "none"
+            },
+            "line": {
+                "color": "#5B6479",
+                "width": 1.1,
+                "arrow_start": "triangle"
+            }
+        },
+        {
+            "id": "68",
+            "type": "shape",
+            "shape_type": "roundRect",
+            "position": {
+                "x": 9.646,
+                "y": 3.6,
+                "width": 0.48,
+                "height": 0.42
+            },
+            "fill": {
+                "type": "solid",
+                "color": "#EAF2FF"
+            },
+            "line": {
+                "color": "#D8DDEA",
+                "width": 0.8
+            },
+            "radius": 0.2381
+        },
+        {
+            "id": "69",
+            "type": "shape",
+            "shape_type": "rectangle",
+            "position": {
+                "x": 9.646,
+                "y": 3.6,
+                "width": 0.48,
+                "height": 0.42
+            },
+            "fill": {
+                "type": "none"
+            },
+            "text": {
+                "content": "IG",
+                "font": {
+                    "name": "Noto Sans CJK SC",
+                    "size": 8.8,
+                    "bold": true,
+                    "italic": false,
+                    "color": "#15203B"
+                },
+                "paragraph": {
+                    "align": "center",
+                    "vertical": "middle"
+                }
+            }
+        },
+        {
+            "id": "70",
+            "type": "shape",
+            "shape_type": "line",
+            "position": {
+                "x": 10.146,
+                "y": 3.81,
+                "width": 0.07,
+                "height": 0.0
+            },
+            "fill": {
+                "type": "none"
+            },
+            "line": {
+                "color": "#5B6479",
+                "width": 1.1,
+                "arrow_start": "triangle"
+            }
+        },
+        {
+            "id": "71",
+            "type": "shape",
+            "shape_type": "roundRect",
+            "position": {
+                "x": 10.236,
+                "y": 3.6,
+                "width": 0.48,
+                "height": 0.42
+            },
+            "fill": {
+                "type": "solid",
+                "color": "#F6F7FB"
+            },
+            "line": {
+                "color": "#D8DDEA",
+                "width": 0.8
+            },
+            "radius": 0.2381
+        },
+        {
+            "id": "72",
+            "type": "shape",
+            "shape_type": "rectangle",
+            "position": {
+                "x": 10.236,
+                "y": 3.6,
+                "width": 0.48,
+                "height": 0.42
+            },
+            "fill": {
+                "type": "none"
+            },
+            "text": {
+                "content": "QE",
+                "font": {
+                    "name": "Noto Sans CJK SC",
+                    "size": 8.8,
+                    "bold": true,
+                    "italic": false,
+                    "color": "#15203B"
+                },
+                "paragraph": {
+                    "align": "center",
+                    "vertical": "middle"
+                }
+            }
+        },
+        {
+            "id": "73",
+            "type": "shape",
+            "shape_type": "line",
+            "position": {
+                "x": 10.736,
+                "y": 3.81,
+                "width": 0.07,
+                "height": 0.0
+            },
+            "fill": {
+                "type": "none"
+            },
+            "line": {
+                "color": "#5B6479",
+                "width": 1.1,
+                "arrow_start": "triangle"
+            }
+        },
+        {
+            "id": "74",
+            "type": "shape",
+            "shape_type": "roundRect",
+            "position": {
+                "x": 10.826,
+                "y": 3.6,
+                "width": 0.48,
+                "height": 0.42
+            },
+            "fill": {
+                "type": "solid",
+                "color": "#F6F7FB"
+            },
+            "line": {
+                "color": "#D8DDEA",
+                "width": 0.8
+            },
+            "radius": 0.2381
+        },
+        {
+            "id": "75",
+            "type": "shape",
+            "shape_type": "rectangle",
+            "position": {
+                "x": 10.826,
+                "y": 3.6,
+                "width": 0.48,
+                "height": 0.42
+            },
+            "fill": {
+                "type": "none"
+            },
+            "text": {
+                "content": "MG",
+                "font": {
+                    "name": "Noto Sans CJK SC",
+                    "size": 8.8,
+                    "bold": true,
+                    "italic": false,
+                    "color": "#15203B"
+                },
+                "paragraph": {
+                    "align": "center",
+                    "vertical": "middle"
+                }
+            }
+        },
+        {
+            "id": "81",
+            "type": "shape",
+            "shape_type": "rectangle",
+            "position": {
+                "x": 0.67,
+                "y": 7.16,
+                "width": 5.8,
+                "height": 0.18
+            },
+            "fill": {
+                "type": "none"
+            },
+            "text": {
+                "content": "Trajectory taxonomy & Eq.(1) · §3.2",
+                "font": {
+                    "name": "Noto Sans CJK SC",
+                    "size": 8.0,
+                    "bold": false,
+                    "italic": false,
+                    "color": "#8A92A8"
+                },
+                "paragraph": {
+                    "align": "left",
+                    "vertical": "middle"
+                }
+            }
+        },
+        {
+            "id": "82",
+            "type": "shape",
+            "shape_type": "rectangle",
+            "position": {
+                "x": 12.15,
+                "y": 7.13,
+                "width": 0.55,
+                "height": 0.2
+            },
+            "fill": {
+                "type": "none"
+            },
+            "text": {
+                "content": "07",
+                "font": {
+                    "name": "Noto Sans CJK SC",
+                    "size": 8.5,
+                    "bold": false,
+                    "italic": false,
+                    "color": "#8A92A8"
+                },
+                "paragraph": {
+                    "align": "right",
+                    "vertical": "middle"
+                }
+            }
+        }
+    ]
+}

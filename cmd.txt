@@ -1,0 +1,83 @@
+================================================================================
+pptx_agent_converter 使用指南与常用命令速查
+================================================================================
+
+一、虚拟环境与依赖配置 (首次使用)
+--------------------------------------------------------------------------------
+1. 激活虚拟环境 (Windows PowerShell):
+   .venv\Scripts\Activate.ps1
+
+   或者 (Windows CMD):
+   .venv\Scripts\activate.bat
+
+2. 若未激活虚拟环境，可直接使用虚拟环境中的 Python 执行命令：
+   .venv\Scripts\python.exe cli.py ...
+
+3. (可选) 安装/更新依赖：
+   .venv\Scripts\pip.exe install -r requirements.txt
+   .venv\Scripts\pip.exe install -e .
+
+
+二、核心 CLI 命令
+--------------------------------------------------------------------------------
+
+1. 【转换】解析 PPTX 为结构化 JSON、素材图片和 Python DSL:
+   python cli.py convert demo_input.pptx
+
+   # 指定输出目录 (默认输出到 output/):
+   python cli.py convert input.pptx --output output
+
+   生成产物目录：
+   output/input_name/
+   ├── presentation.json       # 演示文稿全局尺寸、主题配色与字体元数据
+   ├── slides/
+   │   ├── slide_01.json       # 各单页结构化 JSON (供 AI/Agent 读取和修改)
+   │   ├── slide_02.json
+   │   └── ...
+   ├── assets/
+   │   ├── image1.png          # PPT 中的原始图片资源
+   │   └── ...
+   └── python/
+       ├── slide_01.py         # 各单页声明式 Python DSL 代码
+       ├── slide_02.py
+       └── build.py            # DSL 独立重建脚本
+
+
+2. 【重建】根据转换后的工程目录重新生成 PPTX:
+   python cli.py build output/demo_input
+
+   # 自定义输出文件路径：
+   python cli.py build output/demo_input --output output/demo_input/my_rebuild.pptx
+
+
+3. 【单页导出】单独导出 PPTX 中的某一个页面为独立 JSON:
+   # 导出第 1 页到 single_export/ 目录：
+   python cli.py export-slide demo_input.pptx --slide 1 --output single_export
+
+   # 导出的文件为：single_export/slide_01.json
+
+
+4. 【单页重建】将修改后的单页 JSON 重建为独立的 PPTX 文件:
+   python cli.py build-slide single_export/slide_01.json --output single_rebuilt.pptx
+
+
+5. 【Python DSL 独立编译】运行由 convert 命令生成的 build.py:
+   python output/demo_input/python/build.py
+
+
+三、运行自动化测试
+--------------------------------------------------------------------------------
+执行全部单元测试（覆盖文本字体、形状特效、连线箭头方向、图片及端到端回环）：
+   pytest -v
+
+或者指定虚拟环境执行：
+   .venv\Scripts\pytest.exe -v
+
+
+四、查看帮助
+--------------------------------------------------------------------------------
+   python cli.py --help
+   python cli.py convert --help
+   python cli.py build --help
+   python cli.py export-slide --help
+   python cli.py build-slide --help

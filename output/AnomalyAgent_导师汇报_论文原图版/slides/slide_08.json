@@ -1,0 +1,965 @@
+{
+    "slide_id": 8,
+    "size": {
+        "width": 13.333,
+        "height": 7.5
+    },
+    "background": {
+        "type": "solid",
+        "color": "#FFFFFF"
+    },
+    "elements": [
+        {
+            "id": "2",
+            "type": "shape",
+            "shape_type": "rectangle",
+            "position": {
+                "x": 0.65,
+                "y": 0.32,
+                "width": 10.9,
+                "height": 0.55
+            },
+            "fill": {
+                "type": "none"
+            },
+            "text": {
+                "content": "Reward Design —— 从结果、改进和行为三个维度优化 Agent",
+                "font": {
+                    "name": "Noto Sans CJK SC",
+                    "size": 26.0,
+                    "bold": true,
+                    "italic": false,
+                    "color": "#0B1020"
+                },
+                "paragraph": {
+                    "align": "left",
+                    "vertical": "middle"
+                },
+                "paragraphs": [
+                    {
+                        "runs": [
+                            {
+                                "text": "Reward Design —— ",
+                                "font": {
+                                    "name": "Noto Sans CJK SC",
+                                    "size": 26.0,
+                                    "bold": true,
+                                    "italic": false,
+                                    "color": "#0B1020"
+                                }
+                            },
+                            {
+                                "text": "从结果、改进和行为三个维度优化 ",
+                                "font": {
+                                    "name": "Noto Sans CJK SC",
+                                    "size": 26.0,
+                                    "bold": true,
+                                    "italic": false,
+                                    "color": "#0B1020"
+                                }
+                            },
+                            {
+                                "text": "Agent",
+                                "font": {
+                                    "name": "Noto Sans CJK SC",
+                                    "size": 26.0,
+                                    "bold": true,
+                                    "italic": false,
+                                    "color": "#0B1020"
+                                }
+                            }
+                        ],
+                        "style": {
+                            "align": "left",
+                            "vertical": "middle"
+                        }
+                    }
+                ]
+            }
+        },
+        {
+            "id": "3",
+            "type": "shape",
+            "shape_type": "rectangle",
+            "position": {
+                "x": 0.67,
+                "y": 0.85,
+                "width": 11.3,
+                "height": 0.34
+            },
+            "fill": {
+                "type": "none"
+            },
+            "text": {
+                "content": "核心目标：不仅奖励“生成得好”，还奖励“每一步真的变好”和“工具调用合理”。",
+                "font": {
+                    "name": "Noto Sans CJK SC",
+                    "size": 10.5,
+                    "bold": false,
+                    "italic": false,
+                    "color": "#5B6479"
+                },
+                "paragraph": {
+                    "align": "left",
+                    "vertical": "middle"
+                }
+            }
+        },
+        {
+            "id": "4",
+            "type": "shape",
+            "shape_type": "line",
+            "position": {
+                "x": 0.65,
+                "y": 1.17,
+                "width": 12.0,
+                "height": 0.0
+            },
+            "fill": {
+                "type": "none"
+            },
+            "line": {
+                "color": "#D8DDEA",
+                "width": 1.1
+            }
+        },
+        {
+            "id": "5",
+            "type": "shape",
+            "shape_type": "roundRect",
+            "position": {
+                "x": 0.7,
+                "y": 1.42,
+                "width": 1.12,
+                "height": 0.33
+            },
+            "fill": {
+                "type": "solid",
+                "color": "#F2B84B"
+            },
+            "line": {
+                "color": "#F2B84B",
+                "width": 0.8
+            },
+            "radius": 0.5454
+        },
+        {
+            "id": "6",
+            "type": "shape",
+            "shape_type": "rectangle",
+            "position": {
+                "x": 0.7,
+                "y": 1.42,
+                "width": 1.12,
+                "height": 0.33
+            },
+            "fill": {
+                "type": "none"
+            },
+            "text": {
+                "content": "REWARD",
+                "font": {
+                    "name": "Noto Sans CJK SC",
+                    "size": 9.5,
+                    "bold": true,
+                    "italic": false,
+                    "color": "#FFFFFF"
+                },
+                "paragraph": {
+                    "align": "center",
+                    "vertical": "middle"
+                }
+            }
+        },
+        {
+            "id": "7",
+            "type": "shape",
+            "shape_type": "roundRect",
+            "position": {
+                "x": 0.76,
+                "y": 2.02,
+                "width": 3.32,
+                "height": 3.85
+            },
+            "fill": {
+                "type": "solid",
+                "color": "#EAF2FF"
+            },
+            "line": {
+                "color": "#2D7FF9",
+                "width": 1.0
+            },
+            "radius": 0.0301
+        },
+        {
+            "id": "8",
+            "type": "shape",
+            "shape_type": "roundRect",
+            "position": {
+                "x": 0.98,
+                "y": 2.26,
+                "width": 0.48,
+                "height": 0.34
+            },
+            "fill": {
+                "type": "solid",
+                "color": "#2D7FF9"
+            },
+            "line": {
+                "color": "#2D7FF9",
+                "width": 0.8
+            },
+            "radius": 0.5294
+        },
+        {
+            "id": "9",
+            "type": "shape",
+            "shape_type": "rectangle",
+            "position": {
+                "x": 0.98,
+                "y": 2.26,
+                "width": 0.48,
+                "height": 0.34
+            },
+            "fill": {
+                "type": "none"
+            },
+            "text": {
+                "content": "01",
+                "font": {
+                    "name": "Noto Sans CJK SC",
+                    "size": 9.5,
+                    "bold": true,
+                    "italic": false,
+                    "color": "#FFFFFF"
+                },
+                "paragraph": {
+                    "align": "center",
+                    "vertical": "middle"
+                }
+            }
+        },
+        {
+            "id": "10",
+            "type": "shape",
+            "shape_type": "rectangle",
+            "position": {
+                "x": 1.61,
+                "y": 2.2,
+                "width": 2.13,
+                "height": 0.42
+            },
+            "fill": {
+                "type": "none"
+            },
+            "text": {
+                "content": "Task Reward",
+                "font": {
+                    "name": "Noto Sans CJK SC",
+                    "size": 17.0,
+                    "bold": true,
+                    "italic": false,
+                    "color": "#2D7FF9"
+                },
+                "paragraph": {
+                    "align": "left",
+                    "vertical": "middle"
+                }
+            }
+        },
+        {
+            "id": "11",
+            "type": "shape",
+            "shape_type": "rectangle",
+            "position": {
+                "x": 1.0,
+                "y": 2.88,
+                "width": 2.82,
+                "height": 0.32
+            },
+            "fill": {
+                "type": "none"
+            },
+            "text": {
+                "content": "Is it authentic?",
+                "font": {
+                    "name": "Noto Sans CJK SC",
+                    "size": 10.5,
+                    "bold": true,
+                    "italic": false,
+                    "color": "#5B6479"
+                },
+                "paragraph": {
+                    "align": "center",
+                    "vertical": "middle"
+                }
+            }
+        },
+        {
+            "id": "12",
+            "type": "shape",
+            "shape_type": "roundRect",
+            "position": {
+                "x": 0.99,
+                "y": 3.38,
+                "width": 2.86,
+                "height": 0.82
+            },
+            "fill": {
+                "type": "solid",
+                "color": "#FFFFFF"
+            },
+            "line": {
+                "color": "#E1E5EF",
+                "width": 1.0
+            },
+            "radius": 0.122
+        },
+        {
+            "id": "14",
+            "type": "shape",
+            "shape_type": "rectangle",
+            "position": {
+                "x": 1.07,
+                "y": 4.53,
+                "width": 2.7,
+                "height": 0.72
+            },
+            "fill": {
+                "type": "none"
+            },
+            "text": {
+                "content": "最终图是否真实 / 缺陷位置是否合理",
+                "font": {
+                    "name": "Noto Sans CJK SC",
+                    "size": 12.1,
+                    "bold": false,
+                    "italic": false,
+                    "color": "#15203B"
+                },
+                "paragraph": {
+                    "align": "center",
+                    "vertical": "middle"
+                }
+            }
+        },
+        {
+            "id": "15",
+            "type": "shape",
+            "shape_type": "roundRect",
+            "position": {
+                "x": 4.52,
+                "y": 2.02,
+                "width": 3.32,
+                "height": 3.85
+            },
+            "fill": {
+                "type": "solid",
+                "color": "#EEEAFB"
+            },
+            "line": {
+                "color": "#6C5CE7",
+                "width": 1.0
+            },
+            "radius": 0.0301
+        },
+        {
+            "id": "16",
+            "type": "shape",
+            "shape_type": "roundRect",
+            "position": {
+                "x": 4.74,
+                "y": 2.26,
+                "width": 0.48,
+                "height": 0.34
+            },
+            "fill": {
+                "type": "solid",
+                "color": "#6C5CE7"
+            },
+            "line": {
+                "color": "#6C5CE7",
+                "width": 0.8
+            },
+            "radius": 0.5294
+        },
+        {
+            "id": "17",
+            "type": "shape",
+            "shape_type": "rectangle",
+            "position": {
+                "x": 4.74,
+                "y": 2.26,
+                "width": 0.48,
+                "height": 0.34
+            },
+            "fill": {
+                "type": "none"
+            },
+            "text": {
+                "content": "02",
+                "font": {
+                    "name": "Noto Sans CJK SC",
+                    "size": 9.5,
+                    "bold": true,
+                    "italic": false,
+                    "color": "#FFFFFF"
+                },
+                "paragraph": {
+                    "align": "center",
+                    "vertical": "middle"
+                }
+            }
+        },
+        {
+            "id": "18",
+            "type": "shape",
+            "shape_type": "rectangle",
+            "position": {
+                "x": 5.37,
+                "y": 2.2,
+                "width": 2.13,
+                "height": 0.42
+            },
+            "fill": {
+                "type": "none"
+            },
+            "text": {
+                "content": "Reflection Reward",
+                "font": {
+                    "name": "Noto Sans CJK SC",
+                    "size": 17.0,
+                    "bold": true,
+                    "italic": false,
+                    "color": "#6C5CE7"
+                },
+                "paragraph": {
+                    "align": "left",
+                    "vertical": "middle"
+                }
+            }
+        },
+        {
+            "id": "19",
+            "type": "shape",
+            "shape_type": "rectangle",
+            "position": {
+                "x": 4.76,
+                "y": 2.88,
+                "width": 2.82,
+                "height": 0.32
+            },
+            "fill": {
+                "type": "none"
+            },
+            "text": {
+                "content": "Can it improve?",
+                "font": {
+                    "name": "Noto Sans CJK SC",
+                    "size": 10.5,
+                    "bold": true,
+                    "italic": false,
+                    "color": "#5B6479"
+                },
+                "paragraph": {
+                    "align": "center",
+                    "vertical": "middle"
+                }
+            }
+        },
+        {
+            "id": "20",
+            "type": "shape",
+            "shape_type": "roundRect",
+            "position": {
+                "x": 4.75,
+                "y": 3.38,
+                "width": 2.86,
+                "height": 0.82
+            },
+            "fill": {
+                "type": "solid",
+                "color": "#FFFFFF"
+            },
+            "line": {
+                "color": "#E1E5EF",
+                "width": 1.0
+            },
+            "radius": 0.122
+        },
+        {
+            "id": "22",
+            "type": "shape",
+            "shape_type": "rectangle",
+            "position": {
+                "x": 4.83,
+                "y": 4.53,
+                "width": 2.7,
+                "height": 0.72
+            },
+            "fill": {
+                "type": "none"
+            },
+            "text": {
+                "content": "每次 refinement 是否真的让质量变好",
+                "font": {
+                    "name": "Noto Sans CJK SC",
+                    "size": 12.1,
+                    "bold": false,
+                    "italic": false,
+                    "color": "#15203B"
+                },
+                "paragraph": {
+                    "align": "center",
+                    "vertical": "middle"
+                }
+            }
+        },
+        {
+            "id": "23",
+            "type": "shape",
+            "shape_type": "roundRect",
+            "position": {
+                "x": 8.28,
+                "y": 2.02,
+                "width": 3.32,
+                "height": 3.85
+            },
+            "fill": {
+                "type": "solid",
+                "color": "#E8F6EF"
+            },
+            "line": {
+                "color": "#29A36A",
+                "width": 1.0
+            },
+            "radius": 0.0301
+        },
+        {
+            "id": "24",
+            "type": "shape",
+            "shape_type": "roundRect",
+            "position": {
+                "x": 8.5,
+                "y": 2.26,
+                "width": 0.48,
+                "height": 0.34
+            },
+            "fill": {
+                "type": "solid",
+                "color": "#29A36A"
+            },
+            "line": {
+                "color": "#29A36A",
+                "width": 0.8
+            },
+            "radius": 0.5294
+        },
+        {
+            "id": "25",
+            "type": "shape",
+            "shape_type": "rectangle",
+            "position": {
+                "x": 8.5,
+                "y": 2.26,
+                "width": 0.48,
+                "height": 0.34
+            },
+            "fill": {
+                "type": "none"
+            },
+            "text": {
+                "content": "03",
+                "font": {
+                    "name": "Noto Sans CJK SC",
+                    "size": 9.5,
+                    "bold": true,
+                    "italic": false,
+                    "color": "#FFFFFF"
+                },
+                "paragraph": {
+                    "align": "center",
+                    "vertical": "middle"
+                }
+            }
+        },
+        {
+            "id": "26",
+            "type": "shape",
+            "shape_type": "rectangle",
+            "position": {
+                "x": 9.13,
+                "y": 2.2,
+                "width": 2.13,
+                "height": 0.42
+            },
+            "fill": {
+                "type": "none"
+            },
+            "text": {
+                "content": "Behavior Reward",
+                "font": {
+                    "name": "Noto Sans CJK SC",
+                    "size": 17.0,
+                    "bold": true,
+                    "italic": false,
+                    "color": "#29A36A"
+                },
+                "paragraph": {
+                    "align": "left",
+                    "vertical": "middle"
+                }
+            }
+        },
+        {
+            "id": "27",
+            "type": "shape",
+            "shape_type": "rectangle",
+            "position": {
+                "x": 8.52,
+                "y": 2.88,
+                "width": 2.82,
+                "height": 0.32
+            },
+            "fill": {
+                "type": "none"
+            },
+            "text": {
+                "content": "Is it well executed?",
+                "font": {
+                    "name": "Noto Sans CJK SC",
+                    "size": 10.5,
+                    "bold": true,
+                    "italic": false,
+                    "color": "#5B6479"
+                },
+                "paragraph": {
+                    "align": "center",
+                    "vertical": "middle"
+                }
+            }
+        },
+        {
+            "id": "28",
+            "type": "shape",
+            "shape_type": "roundRect",
+            "position": {
+                "x": 8.51,
+                "y": 3.38,
+                "width": 2.86,
+                "height": 0.82
+            },
+            "fill": {
+                "type": "solid",
+                "color": "#FFFFFF"
+            },
+            "line": {
+                "color": "#E1E5EF",
+                "width": 1.0
+            },
+            "radius": 0.122
+        },
+        {
+            "id": "30",
+            "type": "shape",
+            "shape_type": "rectangle",
+            "position": {
+                "x": 8.59,
+                "y": 4.28,
+                "width": 2.7,
+                "height": 1.521
+            },
+            "fill": {
+                "type": "none"
+            },
+            "text": {
+                "content": "工具顺序、格式、效率是否符合预期\n是否正确执行 Agent workflow\n✓ tool transition validity\n✓ format correctness\n✓ efficient trajectory length\n✓ reasonable KR usage",
+                "font": {
+                    "name": "Noto Sans CJK SC",
+                    "size": 12.1,
+                    "bold": false,
+                    "italic": false,
+                    "color": "#15203B"
+                },
+                "paragraph": {
+                    "align": "center",
+                    "vertical": "middle"
+                },
+                "paragraphs": [
+                    {
+                        "runs": [
+                            {
+                                "text": "工具顺序、格式、效率是否符合预期",
+                                "font": {
+                                    "name": "Noto Sans CJK SC",
+                                    "size": 12.1,
+                                    "bold": false,
+                                    "italic": false,
+                                    "color": "#15203B"
+                                }
+                            }
+                        ],
+                        "style": {
+                            "align": "center",
+                            "vertical": "middle"
+                        }
+                    },
+                    {
+                        "runs": [
+                            {
+                                "text": "是否正确执行 ",
+                                "font": {
+                                    "name": "Noto Sans CJK SC",
+                                    "size": 12.1,
+                                    "bold": false,
+                                    "italic": false,
+                                    "color": "#15203B"
+                                }
+                            },
+                            {
+                                "text": "Agent workflow",
+                                "font": {
+                                    "name": "Noto Sans CJK SC",
+                                    "size": 12.1,
+                                    "bold": false,
+                                    "italic": false,
+                                    "color": "#15203B"
+                                }
+                            }
+                        ],
+                        "style": {
+                            "align": "center",
+                            "vertical": "middle"
+                        }
+                    },
+                    {
+                        "runs": [
+                            {
+                                "text": "✓ tool transition validity",
+                                "font": {
+                                    "name": "Noto Sans CJK SC",
+                                    "size": 12.1,
+                                    "bold": false,
+                                    "italic": false,
+                                    "color": "#15203B"
+                                }
+                            }
+                        ],
+                        "style": {
+                            "align": "center",
+                            "vertical": "middle"
+                        }
+                    },
+                    {
+                        "runs": [
+                            {
+                                "text": "✓ format correctness",
+                                "font": {
+                                    "name": "Noto Sans CJK SC",
+                                    "size": 12.1,
+                                    "bold": false,
+                                    "italic": false,
+                                    "color": "#15203B"
+                                }
+                            }
+                        ],
+                        "style": {
+                            "align": "center",
+                            "vertical": "middle"
+                        }
+                    },
+                    {
+                        "runs": [
+                            {
+                                "text": "✓ efficient trajectory length",
+                                "font": {
+                                    "name": "Noto Sans CJK SC",
+                                    "size": 12.1,
+                                    "bold": false,
+                                    "italic": false,
+                                    "color": "#15203B"
+                                }
+                            }
+                        ],
+                        "style": {
+                            "align": "center",
+                            "vertical": "middle"
+                        }
+                    },
+                    {
+                        "runs": [
+                            {
+                                "text": "✓ reasonable KR usage",
+                                "font": {
+                                    "name": "Noto Sans CJK SC",
+                                    "size": 12.1,
+                                    "bold": false,
+                                    "italic": false,
+                                    "color": "#15203B"
+                                }
+                            }
+                        ],
+                        "style": {
+                            "align": "center",
+                            "vertical": "middle"
+                        }
+                    }
+                ]
+            }
+        },
+        {
+            "id": "32",
+            "type": "shape",
+            "shape_type": "rectangle",
+            "position": {
+                "x": 4.95,
+                "y": 5.32,
+                "width": 0.44,
+                "height": 0.36
+            },
+            "fill": {
+                "type": "none"
+            }
+        },
+        {
+            "id": "40",
+            "type": "shape",
+            "shape_type": "roundRect",
+            "position": {
+                "x": 3.49,
+                "y": 6.31,
+                "width": 6.36,
+                "height": 0.55
+            },
+            "fill": {
+                "type": "solid",
+                "color": "#0B1020"
+            },
+            "line": {
+                "color": "#FFFFFF",
+                "width": 1.0
+            },
+            "radius": 0.1818
+        },
+        {
+            "id": "41",
+            "type": "shape",
+            "shape_type": "rectangle",
+            "position": {
+                "x": 3.67,
+                "y": 6.39,
+                "width": 6.0,
+                "height": 0.39
+            },
+            "fill": {
+                "type": "none"
+            },
+            "text": {
+                "content": "R = αR_task + βR_ref + γR_beh",
+                "font": {
+                    "name": "Noto Sans CJK SC",
+                    "size": 15.0,
+                    "bold": true,
+                    "italic": false,
+                    "color": "#FFFFFF"
+                },
+                "paragraph": {
+                    "align": "center",
+                    "vertical": "middle"
+                }
+            }
+        },
+        {
+            "id": "42",
+            "type": "shape",
+            "shape_type": "rectangle",
+            "position": {
+                "x": 0.67,
+                "y": 7.16,
+                "width": 5.8,
+                "height": 0.18
+            },
+            "fill": {
+                "type": "none"
+            },
+            "text": {
+                "content": "Reward design · Eq.(3–6), §3.3",
+                "font": {
+                    "name": "Noto Sans CJK SC",
+                    "size": 8.0,
+                    "bold": false,
+                    "italic": false,
+                    "color": "#8A92A8"
+                },
+                "paragraph": {
+                    "align": "left",
+                    "vertical": "middle"
+                }
+            }
+        },
+        {
+            "id": "43",
+            "type": "shape",
+            "shape_type": "rectangle",
+            "position": {
+                "x": 12.15,
+                "y": 7.13,
+                "width": 0.55,
+                "height": 0.2
+            },
+            "fill": {
+                "type": "none"
+            },
+            "text": {
+                "content": "10",
+                "font": {
+                    "name": "Noto Sans CJK SC",
+                    "size": 8.5,
+                    "bold": false,
+                    "italic": false,
+                    "color": "#8A92A8"
+                },
+                "paragraph": {
+                    "align": "right",
+                    "vertical": "middle"
+                }
+            }
+        },
+        {
+            "id": "45",
+            "type": "image",
+            "position": {
+                "x": 1.594,
+                "y": 3.556,
+                "width": 1.637,
+                "height": 0.428
+            },
+            "src": "assets/image4.png",
+            "original_name": "image4.png"
+        },
+        {
+            "id": "46",
+            "type": "image",
+            "position": {
+                "x": 4.921,
+                "y": 3.429,
+                "width": 2.497,
+                "height": 0.722
+            },
+            "src": "assets/image5.png",
+            "original_name": "image5.png"
+        },
+        {
+            "id": "47",
+            "type": "image",
+            "position": {
+                "x": 8.59,
+                "y": 3.499,
+                "width": 2.649,
+                "height": 0.582
+            },
+            "src": "assets/image6.png",
+            "original_name": "image6.png"
+        }
+    ]
+}

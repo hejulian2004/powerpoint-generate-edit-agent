@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pptx_agent_converter"
+version = "0.1.0"
+description = "PPTX OOXML Engineering Parser & Rebuilder for PPT Agents"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "lxml>=5.0.0",
+]
+
+[project.scripts]
+pptx-converter = "pptx_agent_converter.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["pptx_agent_converter*"]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]

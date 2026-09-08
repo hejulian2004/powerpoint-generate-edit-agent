@@ -1,0 +1,102 @@
+{
+    "presentation_name": "AnomalyAgent_导师汇报_论文原图版",
+    "size": {
+        "width": 13.333,
+        "height": 7.5
+    },
+    "slides_count": 13,
+    "theme": {
+        "name": "Office Theme",
+        "color_scheme": {
+            "dk1": "#000000",
+            "lt1": "#FFFFFF",
+            "dk2": "#44546A",
+            "lt2": "#E7E6E6",
+            "accent1": "#4472C4",
+            "accent2": "#ED7D31",
+            "accent3": "#A5A5A5",
+            "accent4": "#FFC000",
+            "accent5": "#5B9BD5",
+            "accent6": "#70AD47",
+            "hlink": "#0563C1",
+            "folHlink": "#954F72",
+            "dark1": "#000000",
+            "light1": "#FFFFFF",
+            "dark2": "#44546A",
+            "light2": "#E7E6E6"
+        },
+        "font_scheme": {
+            "major": "Noto Sans CJK SC",
+            "major_ea": "",
+            "minor": "Noto Sans CJK SC",
+            "minor_ea": ""
+        }
+    },
+    "slides": [
+        {
+            "slide_id": 1,
+            "slide_file": "slides/slide_01.json",
+            "elements_count": 25
+        },
+        {
+            "slide_id": 2,
+            "slide_file": "slides/slide_02.json",
+            "elements_count": 50
+        },
+        {
+            "slide_id": 3,
+            "slide_file": "slides/slide_03.json",
+            "elements_count": 23
+        },
+        {
+            "slide_id": 4,
+            "slide_file": "slides/slide_04.json",
+            "elements_count": 44
+        },
+        {
+            "slide_id": 5,
+            "slide_file": "slides/slide_05.json",
+            "elements_count": 8
+        },
+        {
+            "slide_id": 6,
+            "slide_file": "slides/slide_06.json",
+            "elements_count": 11
+        },
+        {
+            "slide_id": 7,
+            "slide_file": "slides/slide_07.json",
+            "elements_count": 76
+        },
+        {
+            "slide_id": 8,
+            "slide_file": "slides/slide_08.json",
+            "elements_count": 34
+        },
+        {
+            "slide_id": 9,
+            "slide_file": "slides/slide_09.json",
+            "elements_count": 8
+        },
+        {
+            "slide_id": 10,
+            "slide_file": "slides/slide_10.json",
+            "elements_count": 11
+        },
+        {
+            "slide_id": 11,
+            "slide_file": "slides/slide_11.json",
+            "elements_count": 9
+        },
+        {
+            "slide_id": 12,
+            "slide_file": "slides/slide_12.json",
+            "elements_count": 35
+        },
+        {
+            "slide_id": 13,
+            "slide_file": "slides/slide_13.json",
+            "elements_count": 33
+        }
+    ]
+}

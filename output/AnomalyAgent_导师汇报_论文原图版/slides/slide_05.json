@@ -1,0 +1,195 @@
+{
+    "slide_id": 5,
+    "size": {
+        "width": 13.333,
+        "height": 7.5
+    },
+    "background": {
+        "type": "solid",
+        "color": "#F6F7FB"
+    },
+    "elements": [
+        {
+            "id": "2",
+            "type": "shape",
+            "shape_type": "rectangle",
+            "position": {
+                "x": 0.65,
+                "y": 0.32,
+                "width": 10.9,
+                "height": 0.55
+            },
+            "fill": {
+                "type": "none"
+            },
+            "text": {
+                "content": "AnomalyAgent Architecture",
+                "font": {
+                    "name": "Noto Sans CJK SC",
+                    "size": 26.0,
+                    "bold": true,
+                    "italic": false,
+                    "color": "#0B1020"
+                },
+                "paragraph": {
+                    "align": "left",
+                    "vertical": "middle"
+                }
+            }
+        },
+        {
+            "id": "4",
+            "type": "shape",
+            "shape_type": "line",
+            "position": {
+                "x": 0.65,
+                "y": 1.17,
+                "width": 12.0,
+                "height": 0.0
+            },
+            "fill": {
+                "type": "none"
+            },
+            "line": {
+                "color": "#D8DDEA",
+                "width": 1.1
+            }
+        },
+        {
+            "id": "5",
+            "type": "shape",
+            "shape_type": "roundRect",
+            "position": {
+                "x": 0.7,
+                "y": 1.42,
+                "width": 1.55,
+                "height": 0.33
+            },
+            "fill": {
+                "type": "solid",
+                "color": "#2D7FF9"
+            },
+            "line": {
+                "color": "#2D7FF9",
+                "width": 0.8
+            },
+            "radius": 0.5454
+        },
+        {
+            "id": "6",
+            "type": "shape",
+            "shape_type": "rectangle",
+            "position": {
+                "x": 0.7,
+                "y": 1.42,
+                "width": 1.55,
+                "height": 0.33
+            },
+            "fill": {
+                "type": "none"
+            },
+            "text": {
+                "content": "PAPER FIG.2",
+                "font": {
+                    "name": "Noto Sans CJK SC",
+                    "size": 9.5,
+                    "bold": true,
+                    "italic": false,
+                    "color": "#FFFFFF"
+                },
+                "paragraph": {
+                    "align": "center",
+                    "vertical": "middle"
+                }
+            }
+        },
+        {
+            "id": "7",
+            "type": "shape",
+            "shape_type": "roundRect",
+            "position": {
+                "x": 1.395,
+                "y": 1.76,
+                "width": 10.525,
+                "height": 5.4
+            },
+            "fill": {
+                "type": "solid",
+                "color": "#FFFFFF"
+            },
+            "line": {
+                "color": "#D8DDEA",
+                "width": 1.0
+            },
+            "radius": 0.0192
+        },
+        {
+            "id": "8",
+            "type": "image",
+            "position": {
+                "x": 1.6,
+                "y": 1.91,
+                "width": 10.14,
+                "height": 5.2
+            },
+            "src": "assets/image2.png",
+            "original_name": "image2.png"
+        },
+        {
+            "id": "9",
+            "type": "shape",
+            "shape_type": "rectangle",
+            "position": {
+                "x": 0.67,
+                "y": 7.16,
+                "width": 5.8,
+                "height": 0.18
+            },
+            "fill": {
+                "type": "none"
+            },
+            "text": {
+                "content": "Paper screenshot: Fig.2 (p.2) · implementation from §4.1",
+                "font": {
+                    "name": "Noto Sans CJK SC",
+                    "size": 8.0,
+                    "bold": false,
+                    "italic": false,
+                    "color": "#8A92A8"
+                },
+                "paragraph": {
+                    "align": "left",
+                    "vertical": "middle"
+                }
+            }
+        },
+        {
+            "id": "10",
+            "type": "shape",
+            "shape_type": "rectangle",
+            "position": {
+                "x": 12.15,
+                "y": 7.13,
+                "width": 0.55,
+                "height": 0.2
+            },
+            "fill": {
+                "type": "none"
+            },
+            "text": {
+                "content": "05",
+                "font": {
+                    "name": "Noto Sans CJK SC",
+                    "size": 8.5,
+                    "bold": false,
+                    "italic": false,
+                    "color": "#8A92A8"
+                },
+                "paragraph": {
+                    "align": "right",
+                    "vertical": "middle"
+                }
+            }
+        }
+    ]
+}

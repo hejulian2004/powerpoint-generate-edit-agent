@@ -1,0 +1,1235 @@
+{
+    "slide_id": 2,
+    "size": {
+        "width": 13.333,
+        "height": 7.5
+    },
+    "background": {
+        "type": "solid",
+        "color": "#F6F7FB"
+    },
+    "elements": [
+        {
+            "id": "2",
+            "type": "shape",
+            "shape_type": "rectangle",
+            "position": {
+                "x": 0.65,
+                "y": 0.32,
+                "width": 10.9,
+                "height": 0.55
+            },
+            "fill": {
+                "type": "none"
+            },
+            "text": {
+                "content": "为什么需要异常合成？",
+                "font": {
+                    "name": "Noto Sans CJK SC",
+                    "size": 24.0,
+                    "bold": true,
+                    "italic": false,
+                    "color": "#0B1020"
+                },
+                "paragraph": {
+                    "align": "left",
+                    "vertical": "middle"
+                }
+            }
+        },
+        {
+            "id": "4",
+            "type": "shape",
+            "shape_type": "line",
+            "position": {
+                "x": 0.65,
+                "y": 1.17,
+                "width": 12.0,
+                "height": 0.0
+            },
+            "fill": {
+                "type": "none"
+            },
+            "line": {
+                "color": "#D8DDEA",
+                "width": 1.1
+            }
+        },
+        {
+            "id": "5",
+            "type": "shape",
+            "shape_type": "roundRect",
+            "position": {
+                "x": 0.7,
+                "y": 1.42,
+                "width": 1.2,
+                "height": 0.33
+            },
+            "fill": {
+                "type": "solid",
+                "color": "#E85D75"
+            },
+            "line": {
+                "color": "#E85D75",
+                "width": 0.8
+            },
+            "radius": 0.5454
+        },
+        {
+            "id": "6",
+            "type": "shape",
+            "shape_type": "rectangle",
+            "position": {
+                "x": 0.7,
+                "y": 1.42,
+                "width": 1.2,
+                "height": 0.33
+            },
+            "fill": {
+                "type": "none"
+            },
+            "text": {
+                "content": "存在的问题",
+                "font": {
+                    "name": "Noto Sans CJK SC",
+                    "size": 14.0,
+                    "bold": true,
+                    "italic": false,
+                    "color": "#FFFFFF"
+                },
+                "paragraph": {
+                    "align": "center",
+                    "vertical": "middle"
+                }
+            }
+        },
+        {
+            "id": "7",
+            "type": "shape",
+            "shape_type": "roundRect",
+            "position": {
+                "x": 0.72,
+                "y": 1.9,
+                "width": 5.75,
+                "height": 4.62
+            },
+            "fill": {
+                "type": "solid",
+                "color": "#FFFFFF"
+            },
+            "line": {
+                "color": "#D8DDEA",
+                "width": 1.0
+            },
+            "radius": 0.0216
+        },
+        {
+            "id": "8",
+            "type": "shape",
+            "shape_type": "rectangle",
+            "position": {
+                "x": 1.0,
+                "y": 2.12,
+                "width": 2.4,
+                "height": 0.38
+            },
+            "fill": {
+                "type": "none"
+            },
+            "text": {
+                "content": "现实数据分布",
+                "font": {
+                    "name": "Noto Sans CJK SC",
+                    "size": 18.0,
+                    "bold": true,
+                    "italic": false,
+                    "color": "#15203B"
+                },
+                "paragraph": {
+                    "align": "left",
+                    "vertical": "middle"
+                }
+            }
+        },
+        {
+            "id": "9",
+            "type": "shape",
+            "shape_type": "rectangle",
+            "position": {
+                "x": 1.05,
+                "y": 2.82,
+                "width": 1.25,
+                "height": 0.32
+            },
+            "fill": {
+                "type": "none"
+            },
+            "text": {
+                "content": "正常样本",
+                "font": {
+                    "name": "Noto Sans CJK SC",
+                    "size": 13.0,
+                    "bold": true,
+                    "italic": false,
+                    "color": "#29A36A"
+                },
+                "paragraph": {
+                    "align": "left",
+                    "vertical": "middle"
+                }
+            }
+        },
+        {
+            "id": "10",
+            "type": "shape",
+            "shape_type": "roundRect",
+            "position": {
+                "x": 1.07,
+                "y": 3.22,
+                "width": 0.31,
+                "height": 0.31
+            },
+            "fill": {
+                "type": "solid",
+                "color": "#D9F2E6"
+            },
+            "line": {
+                "color": "#B8E5CE",
+                "width": 0.6
+            },
+            "radius": 0.1935
+        },
+        {
+            "id": "11",
+            "type": "shape",
+            "shape_type": "roundRect",
+            "position": {
+                "x": 1.55,
+                "y": 3.22,
+                "width": 0.31,
+                "height": 0.31
+            },
+            "fill": {
+                "type": "solid",
+                "color": "#D9F2E6"
+            },
+            "line": {
+                "color": "#B8E5CE",
+                "width": 0.6
+            },
+            "radius": 0.1935
+        },
+        {
+            "id": "12",
+            "type": "shape",
+            "shape_type": "roundRect",
+            "position": {
+                "x": 2.03,
+                "y": 3.22,
+                "width": 0.31,
+                "height": 0.31
+            },
+            "fill": {
+                "type": "solid",
+                "color": "#D9F2E6"
+            },
+            "line": {
+                "color": "#B8E5CE",
+                "width": 0.6
+            },
+            "radius": 0.1935
+        },
+        {
+            "id": "13",
+            "type": "shape",
+            "shape_type": "roundRect",
+            "position": {
+                "x": 2.51,
+                "y": 3.22,
+                "width": 0.31,
+                "height": 0.31
+            },
+            "fill": {
+                "type": "solid",
+                "color": "#D9F2E6"
+            },
+            "line": {
+                "color": "#B8E5CE",
+                "width": 0.6
+            },
+            "radius": 0.1935
+        },
+        {
+            "id": "14",
+            "type": "shape",
+            "shape_type": "roundRect",
+            "position": {
+                "x": 2.99,
+                "y": 3.22,
+                "width": 0.31,
+                "height": 0.31
+            },
+            "fill": {
+                "type": "solid",
+                "color": "#D9F2E6"
+            },
+            "line": {
+                "color": "#B8E5CE",
+                "width": 0.6
+            },
+            "radius": 0.1935
+        },
+        {
+            "id": "15",
+            "type": "shape",
+            "shape_type": "roundRect",
+            "position": {
+                "x": 3.47,
+                "y": 3.22,
+                "width": 0.31,
+                "height": 0.31
+            },
+            "fill": {
+                "type": "solid",
+                "color": "#D9F2E6"
+            },
+            "line": {
+                "color": "#B8E5CE",
+                "width": 0.6
+            },
+            "radius": 0.1935
+        },
+        {
+            "id": "16",
+            "type": "shape",
+            "shape_type": "roundRect",
+            "position": {
+                "x": 3.95,
+                "y": 3.22,
+                "width": 0.31,
+                "height": 0.31
+            },
+            "fill": {
+                "type": "solid",
+                "color": "#D9F2E6"
+            },
+            "line": {
+                "color": "#B8E5CE",
+                "width": 0.6
+            },
+            "radius": 0.1935
+        },
+        {
+            "id": "17",
+            "type": "shape",
+            "shape_type": "roundRect",
+            "position": {
+                "x": 1.07,
+                "y": 3.7,
+                "width": 0.31,
+                "height": 0.31
+            },
+            "fill": {
+                "type": "solid",
+                "color": "#D9F2E6"
+            },
+            "line": {
+                "color": "#B8E5CE",
+                "width": 0.6
+            },
+            "radius": 0.1935
+        },
+        {
+            "id": "18",
+            "type": "shape",
+            "shape_type": "roundRect",
+            "position": {
+                "x": 1.55,
+                "y": 3.7,
+                "width": 0.31,
+                "height": 0.31
+            },
+            "fill": {
+                "type": "solid",
+                "color": "#D9F2E6"
+            },
+            "line": {
+                "color": "#B8E5CE",
+                "width": 0.6
+            },
+            "radius": 0.1935
+        },
+        {
+            "id": "19",
+            "type": "shape",
+            "shape_type": "roundRect",
+            "position": {
+                "x": 2.03,
+                "y": 3.7,
+                "width": 0.31,
+                "height": 0.31
+            },
+            "fill": {
+                "type": "solid",
+                "color": "#D9F2E6"
+            },
+            "line": {
+                "color": "#B8E5CE",
+                "width": 0.6
+            },
+            "radius": 0.1935
+        },
+        {
+            "id": "20",
+            "type": "shape",
+            "shape_type": "roundRect",
+            "position": {
+                "x": 2.51,
+                "y": 3.7,
+                "width": 0.31,
+                "height": 0.31
+            },
+            "fill": {
+                "type": "solid",
+                "color": "#D9F2E6"
+            },
+            "line": {
+                "color": "#B8E5CE",
+                "width": 0.6
+            },
+            "radius": 0.1935
+        },
+        {
+            "id": "21",
+            "type": "shape",
+            "shape_type": "roundRect",
+            "position": {
+                "x": 2.99,
+                "y": 3.7,
+                "width": 0.31,
+                "height": 0.31
+            },
+            "fill": {
+                "type": "solid",
+                "color": "#D9F2E6"
+            },
+            "line": {
+                "color": "#B8E5CE",
+                "width": 0.6
+            },
+            "radius": 0.1935
+        },
+        {
+            "id": "22",
+            "type": "shape",
+            "shape_type": "roundRect",
+            "position": {
+                "x": 3.47,
+                "y": 3.7,
+                "width": 0.31,
+                "height": 0.31
+            },
+            "fill": {
+                "type": "solid",
+                "color": "#D9F2E6"
+            },
+            "line": {
+                "color": "#B8E5CE",
+                "width": 0.6
+            },
+            "radius": 0.1935
+        },
+        {
+            "id": "23",
+            "type": "shape",
+            "shape_type": "roundRect",
+            "position": {
+                "x": 3.95,
+                "y": 3.7,
+                "width": 0.31,
+                "height": 0.31
+            },
+            "fill": {
+                "type": "solid",
+                "color": "#D9F2E6"
+            },
+            "line": {
+                "color": "#B8E5CE",
+                "width": 0.6
+            },
+            "radius": 0.1935
+        },
+        {
+            "id": "24",
+            "type": "shape",
+            "shape_type": "roundRect",
+            "position": {
+                "x": 1.07,
+                "y": 4.18,
+                "width": 0.31,
+                "height": 0.31
+            },
+            "fill": {
+                "type": "solid",
+                "color": "#D9F2E6"
+            },
+            "line": {
+                "color": "#B8E5CE",
+                "width": 0.6
+            },
+            "radius": 0.1935
+        },
+        {
+            "id": "25",
+            "type": "shape",
+            "shape_type": "roundRect",
+            "position": {
+                "x": 1.55,
+                "y": 4.18,
+                "width": 0.31,
+                "height": 0.31
+            },
+            "fill": {
+                "type": "solid",
+                "color": "#D9F2E6"
+            },
+            "line": {
+                "color": "#B8E5CE",
+                "width": 0.6
+            },
+            "radius": 0.1935
+        },
+        {
+            "id": "26",
+            "type": "shape",
+            "shape_type": "roundRect",
+            "position": {
+                "x": 2.03,
+                "y": 4.18,
+                "width": 0.31,
+                "height": 0.31
+            },
+            "fill": {
+                "type": "solid",
+                "color": "#D9F2E6"
+            },
+            "line": {
+                "color": "#B8E5CE",
+                "width": 0.6
+            },
+            "radius": 0.1935
+        },
+        {
+            "id": "27",
+            "type": "shape",
+            "shape_type": "roundRect",
+            "position": {
+                "x": 2.51,
+                "y": 4.18,
+                "width": 0.31,
+                "height": 0.31
+            },
+            "fill": {
+                "type": "solid",
+                "color": "#D9F2E6"
+            },
+            "line": {
+                "color": "#B8E5CE",
+                "width": 0.6
+            },
+            "radius": 0.1935
+        },
+        {
+            "id": "28",
+            "type": "shape",
+            "shape_type": "roundRect",
+            "position": {
+                "x": 2.99,
+                "y": 4.18,
+                "width": 0.31,
+                "height": 0.31
+            },
+            "fill": {
+                "type": "solid",
+                "color": "#D9F2E6"
+            },
+            "line": {
+                "color": "#B8E5CE",
+                "width": 0.6
+            },
+            "radius": 0.1935
+        },
+        {
+            "id": "29",
+            "type": "shape",
+            "shape_type": "roundRect",
+            "position": {
+                "x": 3.47,
+                "y": 4.18,
+                "width": 0.31,
+                "height": 0.31
+            },
+            "fill": {
+                "type": "solid",
+                "color": "#D9F2E6"
+            },
+            "line": {
+                "color": "#B8E5CE",
+                "width": 0.6
+            },
+            "radius": 0.1935
+        },
+        {
+            "id": "30",
+            "type": "shape",
+            "shape_type": "roundRect",
+            "position": {
+                "x": 3.95,
+                "y": 4.18,
+                "width": 0.31,
+                "height": 0.31
+            },
+            "fill": {
+                "type": "solid",
+                "color": "#D9F2E6"
+            },
+            "line": {
+                "color": "#B8E5CE",
+                "width": 0.6
+            },
+            "radius": 0.1935
+        },
+        {
+            "id": "31",
+            "type": "shape",
+            "shape_type": "roundRect",
+            "position": {
+                "x": 1.07,
+                "y": 4.66,
+                "width": 0.31,
+                "height": 0.31
+            },
+            "fill": {
+                "type": "solid",
+                "color": "#D9F2E6"
+            },
+            "line": {
+                "color": "#B8E5CE",
+                "width": 0.6
+            },
+            "radius": 0.1935
+        },
+        {
+            "id": "32",
+            "type": "shape",
+            "shape_type": "roundRect",
+            "position": {
+                "x": 1.55,
+                "y": 4.66,
+                "width": 0.31,
+                "height": 0.31
+            },
+            "fill": {
+                "type": "solid",
+                "color": "#D9F2E6"
+            },
+            "line": {
+                "color": "#B8E5CE",
+                "width": 0.6
+            },
+            "radius": 0.1935
+        },
+        {
+            "id": "33",
+            "type": "shape",
+            "shape_type": "roundRect",
+            "position": {
+                "x": 2.03,
+                "y": 4.66,
+                "width": 0.31,
+                "height": 0.31
+            },
+            "fill": {
+                "type": "solid",
+                "color": "#D9F2E6"
+            },
+            "line": {
+                "color": "#B8E5CE",
+                "width": 0.6
+            },
+            "radius": 0.1935
+        },
+        {
+            "id": "34",
+            "type": "shape",
+            "shape_type": "roundRect",
+            "position": {
+                "x": 2.51,
+                "y": 4.66,
+                "width": 0.31,
+                "height": 0.31
+            },
+            "fill": {
+                "type": "solid",
+                "color": "#D9F2E6"
+            },
+            "line": {
+                "color": "#B8E5CE",
+                "width": 0.6
+            },
+            "radius": 0.1935
+        },
+        {
+            "id": "35",
+            "type": "shape",
+            "shape_type": "roundRect",
+            "position": {
+                "x": 2.99,
+                "y": 4.66,
+                "width": 0.31,
+                "height": 0.31
+            },
+            "fill": {
+                "type": "solid",
+                "color": "#D9F2E6"
+            },
+            "line": {
+                "color": "#B8E5CE",
+                "width": 0.6
+            },
+            "radius": 0.1935
+        },
+        {
+            "id": "36",
+            "type": "shape",
+            "shape_type": "roundRect",
+            "position": {
+                "x": 3.47,
+                "y": 4.66,
+                "width": 0.31,
+                "height": 0.31
+            },
+            "fill": {
+                "type": "solid",
+                "color": "#D9F2E6"
+            },
+            "line": {
+                "color": "#B8E5CE",
+                "width": 0.6
+            },
+            "radius": 0.1935
+        },
+        {
+            "id": "37",
+            "type": "shape",
+            "shape_type": "roundRect",
+            "position": {
+                "x": 3.95,
+                "y": 4.66,
+                "width": 0.31,
+                "height": 0.31
+            },
+            "fill": {
+                "type": "solid",
+                "color": "#D9F2E6"
+            },
+            "line": {
+                "color": "#B8E5CE",
+                "width": 0.6
+            },
+            "radius": 0.1935
+        },
+        {
+            "id": "38",
+            "type": "shape",
+            "shape_type": "rectangle",
+            "position": {
+                "x": 4.35,
+                "y": 3.96,
+                "width": 1.55,
+                "height": 0.32
+            },
+            "fill": {
+                "type": "none"
+            },
+            "text": {
+                "content": "正样本多/易采集",
+                "font": {
+                    "name": "Noto Sans CJK SC",
+                    "size": 12.0,
+                    "bold": false,
+                    "italic": false,
+                    "color": "#29A36A"
+                },
+                "paragraph": {
+                    "align": "center",
+                    "vertical": "middle"
+                },
+                "paragraphs": [
+                    {
+                        "runs": [
+                            {
+                                "text": "正样本多",
+                                "font": {
+                                    "name": "Noto Sans CJK SC",
+                                    "size": 12.0,
+                                    "bold": false,
+                                    "italic": false,
+                                    "color": "#29A36A"
+                                }
+                            },
+                            {
+                                "text": "/易采集",
+                                "font": {
+                                    "name": "Noto Sans CJK SC",
+                                    "size": 12.0,
+                                    "bold": false,
+                                    "italic": false,
+                                    "color": "#29A36A"
+                                }
+                            }
+                        ],
+                        "style": {
+                            "align": "center",
+                            "vertical": "middle"
+                        }
+                    }
+                ]
+            }
+        },
+        {
+            "id": "39",
+            "type": "shape",
+            "shape_type": "rectangle",
+            "position": {
+                "x": 1.05,
+                "y": 5.12,
+                "width": 1.25,
+                "height": 0.32
+            },
+            "fill": {
+                "type": "none"
+            },
+            "text": {
+                "content": "异常样本",
+                "font": {
+                    "name": "Noto Sans CJK SC",
+                    "size": 13.0,
+                    "bold": true,
+                    "italic": false,
+                    "color": "#E85D75"
+                },
+                "paragraph": {
+                    "align": "left",
+                    "vertical": "middle"
+                }
+            }
+        },
+        {
+            "id": "40",
+            "type": "shape",
+            "shape_type": "roundRect",
+            "position": {
+                "x": 1.04,
+                "y": 5.44,
+                "width": 0.34,
+                "height": 0.34
+            },
+            "fill": {
+                "type": "solid",
+                "color": "#FADAE1"
+            },
+            "line": {
+                "color": "#F3AABC",
+                "width": 0.6
+            },
+            "radius": 0.1765
+        },
+        {
+            "id": "41",
+            "type": "shape",
+            "shape_type": "roundRect",
+            "position": {
+                "x": 1.56,
+                "y": 5.44,
+                "width": 0.34,
+                "height": 0.34
+            },
+            "fill": {
+                "type": "solid",
+                "color": "#FADAE1"
+            },
+            "line": {
+                "color": "#F3AABC",
+                "width": 0.6
+            },
+            "radius": 0.1765
+        },
+        {
+            "id": "42",
+            "type": "shape",
+            "shape_type": "roundRect",
+            "position": {
+                "x": 2.08,
+                "y": 5.44,
+                "width": 0.34,
+                "height": 0.34
+            },
+            "fill": {
+                "type": "solid",
+                "color": "#FADAE1"
+            },
+            "line": {
+                "color": "#F3AABC",
+                "width": 0.6
+            },
+            "radius": 0.1765
+        },
+        {
+            "id": "43",
+            "type": "shape",
+            "shape_type": "roundRect",
+            "position": {
+                "x": 2.6,
+                "y": 5.44,
+                "width": 0.34,
+                "height": 0.34
+            },
+            "fill": {
+                "type": "solid",
+                "color": "#FADAE1"
+            },
+            "line": {
+                "color": "#F3AABC",
+                "width": 0.6
+            },
+            "radius": 0.1765
+        },
+        {
+            "id": "44",
+            "type": "shape",
+            "shape_type": "roundRect",
+            "position": {
+                "x": 3.12,
+                "y": 5.44,
+                "width": 0.34,
+                "height": 0.34
+            },
+            "fill": {
+                "type": "solid",
+                "color": "#FADAE1"
+            },
+            "line": {
+                "color": "#F3AABC",
+                "width": 0.6
+            },
+            "radius": 0.1765
+        },
+        {
+            "id": "45",
+            "type": "shape",
+            "shape_type": "rectangle",
+            "position": {
+                "x": 3.78,
+                "y": 5.515,
+                "width": 2.601,
+                "height": 0.535
+            },
+            "fill": {
+                "type": "none"
+            },
+            "text": {
+                "content": "缺陷极少+种类多样+难采集\n导致训练数据不足",
+                "font": {
+                    "name": "Noto Sans CJK SC",
+                    "size": 12.0,
+                    "bold": false,
+                    "italic": false,
+                    "color": "#E85D75"
+                },
+                "paragraph": {
+                    "align": "center",
+                    "vertical": "middle"
+                },
+                "paragraphs": [
+                    {
+                        "runs": [
+                            {
+                                "text": "缺陷",
+                                "font": {
+                                    "name": "Noto Sans CJK SC",
+                                    "size": 12.0,
+                                    "bold": false,
+                                    "italic": false,
+                                    "color": "#E85D75"
+                                }
+                            },
+                            {
+                                "text": "极少+",
+                                "font": {
+                                    "name": "Noto Sans CJK SC",
+                                    "size": 12.0,
+                                    "bold": false,
+                                    "italic": false,
+                                    "color": "#E85D75"
+                                }
+                            },
+                            {
+                                "text": "种类多样",
+                                "font": {
+                                    "name": "Noto Sans CJK SC",
+                                    "size": 12.0,
+                                    "bold": false,
+                                    "italic": false,
+                                    "color": "#E85D75"
+                                }
+                            },
+                            {
+                                "text": "+难采集",
+                                "font": {
+                                    "name": "Noto Sans CJK SC",
+                                    "size": 12.0,
+                                    "bold": false,
+                                    "italic": false,
+                                    "color": "#E85D75"
+                                }
+                            }
+                        ],
+                        "style": {
+                            "align": "center",
+                            "vertical": "middle"
+                        }
+                    },
+                    {
+                        "runs": [
+                            {
+                                "text": "导致训练数据不足",
+                                "font": {
+                                    "name": "Noto Sans CJK SC",
+                                    "size": 12.0,
+                                    "bold": false,
+                                    "italic": false,
+                                    "color": "#E85D75"
+                                }
+                            }
+                        ],
+                        "style": {
+                            "align": "center",
+                            "vertical": "middle"
+                        }
+                    }
+                ]
+            }
+        },
+        {
+            "id": "46",
+            "type": "shape",
+            "shape_type": "roundRect",
+            "position": {
+                "x": 6.85,
+                "y": 1.9,
+                "width": 5.75,
+                "height": 4.62
+            },
+            "fill": {
+                "type": "solid",
+                "color": "#FFFFFF"
+            },
+            "line": {
+                "color": "#D8DDEA",
+                "width": 1.0
+            },
+            "radius": 0.0216
+        },
+        {
+            "id": "47",
+            "type": "shape",
+            "shape_type": "rectangle",
+            "position": {
+                "x": 6.955,
+                "y": 2.12,
+                "width": 5.666,
+                "height": 0.38
+            },
+            "fill": {
+                "type": "none"
+            },
+            "text": {
+                "content": "工业异常合成（Industrial Anomaly Synthesis）",
+                "font": {
+                    "name": "Noto Sans CJK SC",
+                    "size": 14.0,
+                    "bold": true,
+                    "italic": false,
+                    "color": "#15203B"
+                },
+                "paragraph": {
+                    "align": "left",
+                    "vertical": "middle"
+                },
+                "paragraphs": [
+                    {
+                        "runs": [
+                            {
+                                "text": "工业异常合成（",
+                                "font": {
+                                    "name": "Noto Sans CJK SC",
+                                    "size": 14.0,
+                                    "bold": true,
+                                    "italic": false,
+                                    "color": "#15203B"
+                                }
+                            },
+                            {
+                                "text": "Industrial Anomaly Synthesis）",
+                                "font": {
+                                    "name": "Noto Sans CJK SC",
+                                    "size": 14.0,
+                                    "bold": true,
+                                    "italic": false,
+                                    "color": "#15203B"
+                                }
+                            }
+                        ],
+                        "style": {
+                            "align": "left",
+                            "vertical": "middle"
+                        }
+                    }
+                ]
+            }
+        },
+        {
+            "id": "66",
+            "type": "shape",
+            "shape_type": "rectangle",
+            "position": {
+                "x": 0.67,
+                "y": 7.16,
+                "width": 5.8,
+                "height": 0.18
+            },
+            "fill": {
+                "type": "none"
+            },
+            "text": {
+                "content": "Su et al., arXiv:2604.07900 (2026)",
+                "font": {
+                    "name": "Noto Sans CJK SC",
+                    "size": 8.0,
+                    "bold": false,
+                    "italic": false,
+                    "color": "#8A92A8"
+                },
+                "paragraph": {
+                    "align": "left",
+                    "vertical": "middle"
+                }
+            }
+        },
+        {
+            "id": "67",
+            "type": "shape",
+            "shape_type": "rectangle",
+            "position": {
+                "x": 12.15,
+                "y": 7.13,
+                "width": 0.55,
+                "height": 0.2
+            },
+            "fill": {
+                "type": "none"
+            },
+            "text": {
+                "content": "02",
+                "font": {
+                    "name": "Noto Sans CJK SC",
+                    "size": 8.5,
+                    "bold": false,
+                    "italic": false,
+                    "color": "#8A92A8"
+                },
+                "paragraph": {
+                    "align": "right",
+                    "vertical": "middle"
+                }
+            }
+        },
+        {
+            "id": "75",
+            "type": "shape",
+            "shape_type": "roundRect",
+            "position": {
+                "x": 6.85,
+                "y": 1.42,
+                "width": 1.2,
+                "height": 0.33
+            },
+            "fill": {
+                "type": "solid",
+                "color": "#E85D75"
+            },
+            "line": {
+                "color": "#E85D75",
+                "width": 0.8
+            },
+            "radius": 0.5454
+        },
+        {
+            "id": "76",
+            "type": "shape",
+            "shape_type": "rectangle",
+            "position": {
+                "x": 6.85,
+                "y": 1.42,
+                "width": 1.2,
+                "height": 0.33
+            },
+            "fill": {
+                "type": "none"
+            },
+            "text": {
+                "content": "现有思路",
+                "font": {
+                    "name": "Noto Sans CJK SC",
+                    "size": 14.0,
+                    "bold": true,
+                    "italic": false,
+                    "color": "#FFFFFF"
+                },
+                "paragraph": {
+                    "align": "center",
+                    "vertical": "middle"
+                }
+            }
+        },
+        {
+            "id": "77",
+            "type": "textbox",
+            "shape_type": "rectangle",
+            "position": {
+                "x": 7.049,
+                "y": 3.482,
+                "width": 5.262,
+                "height": 0.706
+            },
+            "fill": {
+                "type": "none"
+            },
+            "text": {
+                "content": "人为合成裂纹、孔洞、破损等缺陷，再用这些合成数据训练异常检测或异常分割模型",
+                "font": {
+                    "name": "",
+                    "size": 14.0,
+                    "bold": false,
+                    "italic": false,
+                    "color": "#000000"
+                },
+                "paragraph": {
+                    "align": "left",
+                    "vertical": "middle"
+                }
+            }
+        }
+    ]
+}

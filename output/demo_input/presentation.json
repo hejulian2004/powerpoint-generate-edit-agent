@@ -1,0 +1,42 @@
+{
+    "presentation_name": "demo_input",
+    "size": {
+        "width": 13.333,
+        "height": 7.5
+    },
+    "slides_count": 1,
+    "theme": {
+        "name": "Office Theme",
+        "color_scheme": {
+            "dk1": "#000000",
+            "lt1": "#FFFFFF",
+            "dk2": "#1F497D",
+            "lt2": "#EEECE1",
+            "accent1": "#3366FF",
+            "accent2": "#C0504D",
+            "accent3": "#9BBB59",
+            "accent4": "#8064A2",
+            "accent5": "#4BACC6",
+            "accent6": "#F79646",
+            "hlink": "#0000FF",
+            "folHlink": "#800080",
+            "dark1": "#000000",
+            "light1": "#FFFFFF",
+            "dark2": "#1F497D",
+            "light2": "#EEECE1"
+        },
+        "font_scheme": {
+            "major": "Aptos",
+            "major_ea": "Aptos",
+            "minor": "Calibri",
+            "minor_ea": "Calibri"
+        }
+    },
+    "slides": [
+        {
+            "slide_id": 1,
+            "slide_file": "slides/slide_01.json",
+            "elements_count": 3
+        }
+    ]
+}

@@ -1,0 +1,272 @@
+"""Shape models for shapes, textboxes, connectors, images, and groups."""
+
+from __future__ import annotations
+from dataclasses import dataclass, field
+from typing import Optional, List, Dict, Any, Union, Tuple
+from .style import Fill, Line, Shadow
+from .text import TextBlock
+
+
+@dataclass
+class Position:
+    """Position and dimension in inches."""
+    x: float = 0.0
+    y: float = 0.0
+    width: float = 1.0
+    height: float = 1.0
+
+    def to_dict(self) -> Dict[str, float]:
+        return {
+            "x": round(self.x, 3),
+            "y": round(self.y, 3),
+            "width": round(self.width, 3),
+            "height": round(self.height, 3),
+        }
+
+    @classmethod
+    def from_dict(cls, d: Dict[str, Any]) -> Position:
+        return cls(
+            x=float(d.get("x", 0.0)),
+            y=float(d.get("y", 0.0)),
+            width=float(d.get("width", 1.0)),
+            height=float(d.get("height", 1.0)),
+        )
+
+
+@dataclass
+class BaseElement:
+    """Base class for all slide elements."""
+    id: str = ""
+    name: str = ""
+    type: str = "shape"
+    z_order: int = 0
+
+    def to_dict(self) -> Dict[str, Any]:
+        raise NotImplementedError
+
+
+@dataclass
+class ShapeElement(BaseElement):
+    """Standard geometric shape or textbox."""
+    shape_type: str = "rectangle"  # rectangle, roundRect, ellipse, diamond, arrow, line, etc.
+    position: Position = field(default_factory=Position)
+    rotation: float = 0.0
+    flip_h: bool = False
+    flip_v: bool = False
+    fill: Fill = field(default_factory=Fill)
+    line: Optional[Line] = None
+    shadow: Optional[Shadow] = None
+    radius: Optional[float] = None  # corner radius for roundRect or adjustment value
+    text: Optional[TextBlock] = None
+
+    def __post_init__(self):
+        if not self.type:
+            self.type = "shape"
+
+    def to_dict(self) -> Dict[str, Any]:
+        res: Dict[str, Any] = {
+            "id": self.id,
+            "type": self.type,
+            "shape_type": self.shape_type,
+            "position": self.position.to_dict(),
+        }
+        if self.rotation:
+            res["rotation"] = round(self.rotation, 2)
+        if self.flip_h:
+            res["flip_h"] = self.flip_h
+        if self.flip_v:
+            res["flip_v"] = self.flip_v
+        if self.fill:
+            res["fill"] = self.fill.to_dict()
+        if self.line:
+            res["line"] = self.line.to_dict()
+        if self.shadow and self.shadow.enabled:
+            res["shadow"] = self.shadow.to_dict()
+        if self.radius is not None:
+            res["radius"] = self.radius
+        if self.text and self.text.content:
+            res["text"] = self.text.to_dict()
+        return res
+
+    @classmethod
+    def from_dict(cls, d: Dict[str, Any]) -> ShapeElement:
+        elem_id = str(d.get("id", ""))
+        elem_name = str(d.get("name", ""))
+        elem_type = d.get("type", "shape")
+        shape_type = d.get("shape_type", "rectangle")
+        position = Position.from_dict(d.get("position", {}))
+        
+        fill = Fill.from_dict(d.get("fill", {})) if "fill" in d else Fill(type="none")
+        line = Line.from_dict(d.get("line", {})) if "line" in d else None
+        shadow = Shadow.from_dict(d.get("shadow", {})) if "shadow" in d else None
+        
+        text = None
+        if "text" in d and d["text"]:
+            text = TextBlock.from_dict(d["text"])
+            
+        return cls(
+            id=elem_id,
+            name=elem_name,
+            type=elem_type,
+            shape_type=shape_type,
+            position=position,
+            rotation=float(d.get("rotation", 0.0)),
+            flip_h=bool(d.get("flip_h", False)),
+            flip_v=bool(d.get("flip_v", False)),
+            fill=fill,
+            line=line,
+            shadow=shadow,
+            radius=d.get("radius"),
+            text=text
+        )
+
+
+@dataclass
+class ConnectorElement(BaseElement):
+    """Connector line connecting points or shapes."""
+    connector_type: str = "straight"  # straight, bent, curved
+    start: Tuple[float, float] = (0.0, 0.0)
+    end: Tuple[float, float] = (1.0, 1.0)
+    line: Line = field(default_factory=Line)
+    arrow_start: Optional[str] = None  # none, triangle, stealth, etc.
+    arrow_end: Optional[str] = "triangle"
+    start_shape_id: Optional[str] = None
+    end_shape_id: Optional[str] = None
+
+    def __post_init__(self):
+        self.type = "connector"
+
+    def to_dict(self) -> Dict[str, Any]:
+        res: Dict[str, Any] = {
+            "id": self.id,
+            "type": "connector",
+            "connector_type": self.connector_type,
+            "start": {"x": round(self.start[0], 3), "y": round(self.start[1], 3)},
+            "end": {"x": round(self.end[0], 3), "y": round(self.end[1], 3)},
+            "line": self.line.to_dict(),
+        }
+        if self.arrow_end and self.arrow_end != "none":
+            res["arrow"] = self.arrow_end
+        if self.arrow_start and self.arrow_start != "none":
+            res["arrow_start"] = self.arrow_start
+        if self.start_shape_id:
+            res["start_shape_id"] = self.start_shape_id
+        if self.end_shape_id:
+            res["end_shape_id"] = self.end_shape_id
+        return res
+
+    @classmethod
+    def from_dict(cls, d: Dict[str, Any]) -> ConnectorElement:
+        elem_id = str(d.get("id", ""))
+        elem_name = str(d.get("name", ""))
+        conn_type = d.get("connector_type", "straight")
+        
+        # Parse start
+        s = d.get("start", [0.0, 0.0])
+        if isinstance(s, dict):
+            start = (float(s.get("x", 0.0)), float(s.get("y", 0.0)))
+        elif isinstance(s, (list, tuple)):
+            start = (float(s[0]), float(s[1]))
+        else:
+            start = (0.0, 0.0)
+
+        # Parse end
+        e = d.get("end", [1.0, 1.0])
+        if isinstance(e, dict):
+            end = (float(e.get("x", 1.0)), float(e.get("y", 1.0)))
+        elif isinstance(e, (list, tuple)):
+            end = (float(e[0]), float(e[1]))
+        else:
+            end = (1.0, 1.0)
+
+        line = Line.from_dict(d.get("line", {})) if "line" in d else Line()
+        arrow_end = d.get("arrow", d.get("arrow_end", "triangle"))
+        arrow_start = d.get("arrow_start")
+
+        return cls(
+            id=elem_id,
+            name=elem_name,
+            connector_type=conn_type,
+            start=start,
+            end=end,
+            line=line,
+            arrow_start=arrow_start,
+            arrow_end=arrow_end,
+            start_shape_id=d.get("start_shape_id"),
+            end_shape_id=d.get("end_shape_id")
+        )
+
+
+@dataclass
+class ImageElement(BaseElement):
+    """Raster or vector image placed on the slide."""
+    position: Position = field(default_factory=Position)
+    src: str = ""                # Path relative to project root or assets/
+    original_name: str = ""      # e.g. image1.png
+    media_rel_id: str = ""       # e.g. rId2
+    rotation: float = 0.0
+
+    def __post_init__(self):
+        self.type = "image"
+
+    def to_dict(self) -> Dict[str, Any]:
+        res: Dict[str, Any] = {
+            "id": self.id,
+            "type": "image",
+            "position": self.position.to_dict(),
+            "src": self.src,
+        }
+        if self.original_name:
+            res["original_name"] = self.original_name
+        if self.rotation:
+            res["rotation"] = round(self.rotation, 2)
+        return res
+
+    @classmethod
+    def from_dict(cls, d: Dict[str, Any]) -> ImageElement:
+        return cls(
+            id=str(d.get("id", "")),
+            name=str(d.get("name", "")),
+            position=Position.from_dict(d.get("position", {})),
+            src=d.get("src", ""),
+            original_name=d.get("original_name", ""),
+            rotation=float(d.get("rotation", 0.0))
+        )
+
+
+@dataclass
+class GroupElement(BaseElement):
+    """Group of multiple elements."""
+    position: Position = field(default_factory=Position)
+    elements: List[Union[ShapeElement, ConnectorElement, ImageElement, 'GroupElement']] = field(default_factory=list)
+
+    def __post_init__(self):
+        self.type = "group"
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "id": self.id,
+            "type": "group",
+            "position": self.position.to_dict(),
+            "elements": [e.to_dict() for e in self.elements]
+        }
+
+    @classmethod
+    def from_dict(cls, d: Dict[str, Any]) -> GroupElement:
+        children = []
+        for item in d.get("elements", []):
+            t = item.get("type", "shape")
+            if t == "connector":
+                children.append(ConnectorElement.from_dict(item))
+            elif t == "image":
+                children.append(ImageElement.from_dict(item))
+            elif t == "group":
+                children.append(GroupElement.from_dict(item))
+            else:
+                children.append(ShapeElement.from_dict(item))
+        return cls(
+            id=str(d.get("id", "")),
+            name=str(d.get("name", "")),
+            position=Position.from_dict(d.get("position", {})),
+            elements=children
+        )
