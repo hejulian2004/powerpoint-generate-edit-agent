@@ -8,6 +8,7 @@ when raster assets are not directly available on disk, ensuring robust, self-hea
 from __future__ import annotations
 
 import os
+import re
 import tempfile
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
@@ -50,15 +51,20 @@ class AssetResolver:
         caption_hint: str = "",
         width: int = 800,
         height: int = 500,
+        allow_synthetic: bool = True,
     ) -> Path:
         """Resolve figure_id to an existing image file, or synthesize an academic placeholder image.
 
-        Guarantees that an image file path is always returned without crashing the renderer.
+        Guarantees that an image file path is always returned without crashing the renderer
+        when allow_synthetic=True.
         """
         clean_id = figure_id.strip()
 
         # 1. Search in explicitly provided assets_dir
         if self.assets_dir and self.assets_dir.is_dir():
+            direct_asset = self.assets_dir / clean_id
+            if direct_asset.is_file():
+                return direct_asset
             for ext in (".png", ".jpg", ".jpeg", ".webp"):
                 candidate = self.assets_dir / f"{clean_id}{ext}"
                 if candidate.is_file():
@@ -74,8 +80,13 @@ class AssetResolver:
         caption = caption_hint or (fig_obj.caption if fig_obj else "")
         label = fig_obj.xref_label if fig_obj and fig_obj.xref_label else clean_id
 
-        # 4. Generate high-quality academic placeholder image in cache_dir
-        cached_placeholder = self.cache_dir / f"{clean_id}_synth.png"
+        # 4. Check if synthetic placeholder generation is permitted
+        if not allow_synthetic:
+            raise FileNotFoundError(f"Figure asset '{figure_id}' could not be resolved on disk.")
+
+        # 5. Generate high-quality academic placeholder image in cache_dir with sanitized filename
+        safe_name = re.sub(r"[^\w\-]", "_", Path(clean_id).name or clean_id)
+        cached_placeholder = self.cache_dir / f"{safe_name}_synth.png"
         if cached_placeholder.is_file():
             return cached_placeholder
 

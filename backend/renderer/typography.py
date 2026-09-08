@@ -61,22 +61,30 @@ def resolve_element_typography(
     """
     token = theme.resolve_font_for_role(element.role, element.element_type)
     text_style: Optional[TextStyle] = element.style.text if element.style else None
+    fields_set = text_style.model_fields_set if text_style else set()
 
     # 1. Font Size
-    if text_style and text_style.font_size:
+    if "font_size" in fields_set and text_style and text_style.font_size:
         font_size = text_style.font_size
     else:
         font_size = token.size
 
     # 2. Font Family
-    if text_style and text_style.font_family:
+    if "font_family" in fields_set and text_style and text_style.font_family:
         font_family = text_style.font_family
     else:
         font_family = token.font_family
 
     # 3. Bold & Italic
-    bold = (text_style.font_weight == "bold") if text_style else token.bold
-    italic = text_style.italic if text_style else token.italic
+    if "font_weight" in fields_set and text_style:
+        bold = (text_style.font_weight == "bold")
+    else:
+        bold = token.bold
+
+    if "italic" in fields_set and text_style:
+        italic = text_style.italic
+    else:
+        italic = token.italic
 
     # 4. Color
     if text_style and text_style.color:

@@ -144,3 +144,49 @@ def test_speaker_notes_rendering(tmp_path: Path):
     prs = Presentation(str(out_file))
     notes = prs.slides[0].notes_slide.notes_text_frame.text
     assert "Welcome the audience" in notes
+
+
+def test_text_style_preserves_theme_defaults(tmp_path: Path):
+    """Ensure partial TextStyle (e.g. setting only font_size) does not clobber theme bold/italic."""
+    builder = PPTXBuilder()
+    theme = AcademicTheme()
+
+    slide_spec = LayoutSpec(
+        slide_id="slide_partial",
+        slide_index=1,
+        visual_intent=VisualIntent.PIPELINE_ARCHITECTURE,
+    )
+    builder.add_slide(slide_spec)
+
+    # Heading element with only font_size set - should preserve theme bold=True
+    heading_el = LayoutElement(
+        element_id="el_h",
+        element_type=ElementType.TEXT,
+        role=BlockRole.HEADING,
+        geometry=Rect(x=50.0, y=50.0, width=400.0, height=50.0),
+        style=ElementStyle(text=TextStyle(font_size=24.0)),
+        content="Heading Text",
+    )
+    # Caption element with only color set - should preserve theme italic=True
+    caption_el = LayoutElement(
+        element_id="el_c",
+        element_type=ElementType.TEXT,
+        role=BlockRole.CAPTION,
+        geometry=Rect(x=50.0, y=120.0, width=400.0, height=30.0),
+        style=ElementStyle(text=TextStyle(color="#64748B")),
+        content="Figure 1 Caption",
+    )
+
+    builder.add_text(heading_el, theme)
+    builder.add_text(caption_el, theme)
+
+    out_file = tmp_path / "test_partial_style.pptx"
+    builder.save(out_file)
+
+    prs = Presentation(str(out_file))
+    shapes = prs.slides[0].shapes
+    p_h = shapes[0].text_frame.paragraphs[0]
+    p_c = shapes[1].text_frame.paragraphs[0]
+
+    assert p_h.runs[0].font.bold is True
+    assert p_c.runs[0].font.italic is True

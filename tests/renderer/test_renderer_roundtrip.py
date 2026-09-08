@@ -222,3 +222,62 @@ def test_visual_screenshot_export(tmp_path: Path):
     shots = render_slide_screenshots(out_pptx, screen_dir)
     # If PowerPoint COM is available, screenshots will be produced
     assert isinstance(shots, list)
+
+
+def test_list_content_fidelity_no_warnings(tmp_path: Path):
+    """Ensure multiline list content does not trigger false-positive text warnings."""
+    bullets = ["First point on scalability", "Second point on efficiency"]
+    slide = LayoutSpec(
+        slide_id="slide_list_fidel",
+        slide_index=1,
+        visual_intent=VisualIntent.KEY_TAKEAWAY_LIST,
+        elements=[
+            LayoutElement(
+                element_id="el_takeaway_list",
+                element_type=ElementType.TEXT,
+                role=BlockRole.BULLET_ITEM,
+                geometry=Rect(x=100.0, y=100.0, width=800.0, height=200.0),
+                content=bullets,
+            )
+        ],
+    )
+    deck = DeckLayoutSpec(title="List Fidelity Deck", slides=[slide])
+    out_pptx = tmp_path / "list_fidelity.pptx"
+
+    render_pptx(deck, out_pptx)
+    report = validate_pptx_fidelity(deck, out_pptx)
+    assert report.is_valid is True
+    # Assert zero text mismatch warnings
+    text_warnings = [w for w in report.warnings if "Text mismatch" in w]
+    assert len(text_warnings) == 0
+
+
+def test_render_config_custom_properties(tmp_path: Path):
+    """Verify custom properties and allow_synthetic_assets options in RenderConfig."""
+    from backend.renderer.schema import RenderConfig
+
+    slide = LayoutSpec(
+        slide_id="slide_cfg",
+        slide_index=1,
+        visual_intent=VisualIntent.TITLE_HERO,
+        elements=[
+            LayoutElement(
+                element_id="el_title",
+                element_type=ElementType.TEXT,
+                geometry=Rect(x=50.0, y=50.0, width=500.0, height=50.0),
+                content="Title with Custom Meta",
+            )
+        ],
+    )
+    deck = DeckLayoutSpec(title="Meta Deck", slides=[slide])
+    out_pptx = tmp_path / "meta.pptx"
+
+    config = RenderConfig(
+        custom_properties={"author": "Julian He", "subject": "Academic Presentation"}
+    )
+    render_pptx(deck, out_pptx, config=config)
+
+    prs = Presentation(str(out_pptx))
+    assert prs.core_properties.title == "Meta Deck"
+    assert prs.core_properties.author == "Julian He"
+    assert prs.core_properties.subject == "Academic Presentation"

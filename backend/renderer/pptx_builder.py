@@ -283,6 +283,35 @@ class PPTXBuilder:
                 )
 
         # 2. Format Body Rows
+        # Pre-parse and normalize highlight directives
+        import re
+
+        target_coords = set()
+        target_rows = set()
+        text_matchers = []
+
+        for h in highlight_cells:
+            if not isinstance(h, str) or not h.strip():
+                continue
+            item = h.strip()
+            # Check "r1c2" or "R1C2"
+            rc_match = re.match(r"^[rR](\d+)[cC](\d+)$", item)
+            if rc_match:
+                target_coords.add((int(rc_match.group(1)), int(rc_match.group(2))))
+                continue
+            # Check "1,2"
+            if "," in item:
+                parts = item.split(",")
+                if len(parts) == 2 and parts[0].strip().isdigit() and parts[1].strip().isdigit():
+                    target_coords.add((int(parts[0].strip()), int(parts[1].strip())))
+                    continue
+            # Check single digit row index
+            if item.isdigit():
+                target_rows.add(int(item))
+                continue
+            # Substring match (e.g. "Ours")
+            text_matchers.append(item.lower())
+
         for r_idx, row in enumerate(rows):
             actual_row_idx = r_idx + row_offset
             is_alt = (r_idx % 2 == 1)
@@ -292,19 +321,13 @@ class PPTXBuilder:
                 cell_val = str(row[c_idx]) if c_idx < len(row) else ""
                 cell = table.cell(actual_row_idx, c_idx)
 
-                # Check if highlighted (coordinate match "r,c" or row match "r" or string presence)
-                cell_coord_1 = f"{r_idx},{c_idx}"
-                cell_coord_2 = f"{actual_row_idx},{c_idx}"
-                clean_highlights = [h.strip() for h in highlight_cells if isinstance(h, str) and h.strip()]
+                # Check if highlighted
                 is_highlighted = (
-                    cell_coord_1 in clean_highlights
-                    or cell_coord_2 in clean_highlights
-                    or str(r_idx) in clean_highlights
-                    or any(
-                        h.lower() in cell_val.lower()
-                        for h in clean_highlights
-                        if not h.replace(",", "").isdigit()
-                    )
+                    (r_idx, c_idx) in target_coords
+                    or (actual_row_idx, c_idx) in target_coords
+                    or r_idx in target_rows
+                    or actual_row_idx in target_rows
+                    or any(tm in cell_val.lower() for tm in text_matchers)
                 )
 
                 cell.fill.solid()

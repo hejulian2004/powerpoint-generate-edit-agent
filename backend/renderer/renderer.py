@@ -61,6 +61,14 @@ def render_pptx(
     active_resolver = asset_resolver or AssetResolver()
     builder = PPTXBuilder(canvas=deck_layout.canvas)
 
+    # Set document core properties
+    core_props = builder.prs.core_properties
+    core_props.title = deck_layout.title
+    if active_config.custom_properties:
+        for prop_name, prop_val in active_config.custom_properties.items():
+            if hasattr(core_props, prop_name) and isinstance(prop_val, str):
+                setattr(core_props, prop_name, prop_val)
+
     # 3. Render Slides in Order
     for slide_spec in deck_layout.slides:
         builder.add_slide(slide_spec)
@@ -97,6 +105,7 @@ def render_pptx(
                 img_path = active_resolver.resolve_figure(
                     figure_id=figure_id,
                     caption_hint=caption,
+                    allow_synthetic=active_config.allow_synthetic_assets,
                 )
                 builder.add_image(element, img_path, active_theme)
 

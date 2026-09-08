@@ -153,7 +153,11 @@ def validate_pptx_fidelity(
 
             # C. Content Text Fidelity check
             if el.element_type == ElementType.TEXT and el.content:
-                expected_str = str(el.content).strip()
+                if isinstance(el.content, list):
+                    expected_str = " ".join(str(x) for x in el.content)
+                else:
+                    expected_str = str(el.content).strip()
+
                 actual_text = shape.text_frame.text.strip() if shape.has_text_frame else ""
                 # Normalize spaces
                 norm_expected = " ".join(expected_str.split())
@@ -235,16 +239,24 @@ def render_slide_screenshots(
     if not in_path.is_file():
         return generated_images
 
+    def _natural_slide_sort(paths: List[Path]) -> List[Path]:
+        def _key(p: Path) -> int:
+            stem = p.stem.split("_")[-1]
+            return int(stem) if stem.isdigit() else 0
+        return sorted(paths, key=_key)
+
     # 1. Try Windows PowerPoint COM automation via PowerShell
+    safe_in_path = str(in_path).replace("'", "''")
+    safe_out_dir = str(out_dir).replace("'", "''")
     ps_script = f"""
 $ErrorActionPreference = 'Stop'
 $ppt = $null
 $pres = $null
 try {{
     $ppt = New-Object -ComObject PowerPoint.Application
-    $pres = $ppt.Presentations.Open('{in_path}', [Microsoft.Office.Core.MsoTriState]::msoTrue, [Microsoft.Office.Core.MsoTriState]::msoFalse, [Microsoft.Office.Core.MsoTriState]::msoFalse)
+    $pres = $ppt.Presentations.Open('{safe_in_path}', [Microsoft.Office.Core.MsoTriState]::msoTrue, [Microsoft.Office.Core.MsoTriState]::msoFalse, [Microsoft.Office.Core.MsoTriState]::msoFalse)
     for ($i = 1; $i -le $pres.Slides.Count; $i++) {{
-        $slidePath = Join-Path '{out_dir}' ("slide_" + $i + ".png")
+        $slidePath = Join-Path '{safe_out_dir}' ("slide_" + $i + ".png")
         $pres.Slides.Item($i).Export($slidePath, "PNG")
     }}
     Write-Host "COM_EXPORT_SUCCESS"
@@ -269,7 +281,7 @@ try {{
             timeout=40,
         )
         if "COM_EXPORT_SUCCESS" in proc.stdout:
-            pngs = sorted(out_dir.glob("slide_*.png"))
+            pngs = _natural_slide_sort(list(out_dir.glob("slide_*.png")))
             if pngs:
                 return pngs
     except Exception:
@@ -298,8 +310,8 @@ try {{
                     dest_png = out_dir / f"slide_{page_idx + 1}.png"
                     img.save(dest_png)
                     generated_images.append(dest_png)
-                return generated_images
+                return _natural_slide_sort(generated_images)
         except Exception:
             pass
 
-    return sorted(out_dir.glob("slide_*.png"))
+    return _natural_slide_sort(list(out_dir.glob("slide_*.png")))

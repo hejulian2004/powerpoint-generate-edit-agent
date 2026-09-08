@@ -87,3 +87,25 @@ def test_render_figure_with_resolver(tmp_path: Path):
     prs = Presentation(str(out_file))
     sh = prs.slides[0].shapes[0]
     assert sh.shape_type == MSO_SHAPE_TYPE.PICTURE
+
+
+def test_asset_resolver_special_chars_and_existing_extension(tmp_path: Path):
+    # 1. Existing file with extension inside assets_dir
+    assets_dir = tmp_path / "assets"
+    assets_dir.mkdir()
+    existing_img = assets_dir / "diagram.png"
+    Image.new("RGB", (200, 200), color=(50, 100, 150)).save(existing_img)
+
+    resolver = AssetResolver(assets_dir=assets_dir, cache_dir=tmp_path / "cache")
+    res_direct = resolver.resolve_figure("diagram.png")
+    assert res_direct == existing_img
+
+    # 2. Special chars in figure_id (e.g. URI style with colons / question marks)
+    res_special = resolver.resolve_figure("arxiv:2401.0001/fig?1")
+    assert res_special.is_file()
+    assert res_special.suffix == ".png"
+
+    # 3. allow_synthetic=False raises FileNotFoundError when missing
+    import pytest
+    with pytest.raises(FileNotFoundError, match="could not be resolved"):
+        resolver.resolve_figure("nonexistent_fig", allow_synthetic=False)
