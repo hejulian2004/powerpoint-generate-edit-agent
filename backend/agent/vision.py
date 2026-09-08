@@ -23,6 +23,9 @@ except ImportError:
     _playwright_available = False
 
 
+from ..eval.renderer_snapshot import SlideSnapshotRenderer
+
+
 class VisionEngine:
     """Manages screenshot generation, layout verification, and visual review loop."""
 
@@ -48,43 +51,26 @@ class VisionEngine:
         )
 
     @classmethod
-    async def capture_slide_snapshot(cls, slide: SlideIR) -> str:
+    async def capture_slide_snapshot(cls, slide: SlideIR, format: str = "png") -> str:
         """Returns base64 data URI for the slide (PNG or SVG)."""
-        svg_code = SVGRenderer.render_slide(slide)
+        if format == "svg":
+            svg_code = SlideSnapshotRenderer.render_svg(slide)
+            b64_svg = base64.b64encode(svg_code.encode("utf-8")).decode("utf-8")
+            return f"data:image/svg+xml;base64,{b64_svg}"
 
-        if _playwright_available:
-            try:
-                png_bytes = await cls._render_with_playwright(svg_code)
-                b64 = base64.b64encode(png_bytes).decode("utf-8")
-                return f"data:image/png;base64,{b64}"
-            except Exception as e:
-                logger.warning(f"Playwright snapshot failed, falling back to SVG data URI: {e}")
-
-        # Fallback: base64 encoded SVG image
-        b64_svg = base64.b64encode(svg_code.encode("utf-8")).decode("utf-8")
-        return f"data:image/svg+xml;base64,{b64_svg}"
+        # Standard deterministic PNG data URI
+        return SlideSnapshotRenderer.render_data_uri(slide)
 
     @classmethod
-    async def _render_with_playwright(cls, svg_code: str) -> bytes:
-        html_wrapper = f"""<!DOCTYPE html>
-<html>
-<head>
-  <style>
-    * {{ margin: 0; padding: 0; box-sizing: border-box; }}
-    html, body {{ width: 1280px; height: 720px; overflow: hidden; background: transparent; }}
-  </style>
-</head>
-<body>
-  {svg_code}
-</body>
-</html>"""
-        async with async_playwright() as p:
-            browser = await p.chromium.launch(headless=True)
-            page = await browser.new_page(viewport={"width": 1280, "height": 720})
-            await page.set_content(html_wrapper)
-            png_bytes = await page.screenshot(type="png")
-            await browser.close()
-            return png_bytes
+    def format_slide_element_manifest(cls, slide: SlideIR) -> str:
+        """Formats a compact structured layout manifest for LLM vision alignment."""
+        lines = [f"Slide #{slide.slide_num} (Canvas: {slide.width}x{slide.height}, Elements: {len(slide.elements)}):"]
+        for el in slide.elements:
+            desc = f"- [ID: '{el.id}'] Type: {el.type}, Rect: ({el.x:.0f}, {el.y:.0f}, {el.width:.0f}x{el.height:.0f})"
+            if hasattr(el, "text_content") and el.text_content and el.text_content.plain_text:
+                desc += f", Text: '{el.text_content.plain_text[:30]}'"
+            lines.append(desc)
+        return "\n".join(lines)
 
     @classmethod
     async def review_slide_visually(
@@ -95,12 +81,14 @@ class VisionEngine:
     ) -> str:
         """Sends visual snapshot to Vision Model for analysis."""
         snapshot_uri = await cls.capture_slide_snapshot(slide)
+        manifest = cls.format_slide_element_manifest(slide)
+        full_text_prompt = f"{prompt}\n\n【画布图元坐标清单】:\n{manifest}"
 
         messages = [
             {
                 "role": "user",
                 "content": [
-                    {"type": "text", "text": prompt},
+                    {"type": "text", "text": full_text_prompt},
                     {
                         "type": "image_url",
                         "image_url": {"url": snapshot_uri, "detail": "low"}

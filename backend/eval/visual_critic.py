@@ -29,6 +29,7 @@ class VisualReviewResult:
     multimodal_feedback: Optional[str] = None
     vision_status: Dict[str, Any] = field(default_factory=dict)
     needs_auto_correction: bool = False
+    snapshot_uri: Optional[str] = None
 
     @property
     def proposed_actions(self) -> List[Dict[str, Any]]:
@@ -58,7 +59,8 @@ class VisualReviewResult:
             "proposed_actions": self.proposed_actions,
             "multimodal_feedback": self.multimodal_feedback,
             "vision_status": self.vision_status,
-            "needs_auto_correction": self.needs_auto_correction
+            "needs_auto_correction": self.needs_auto_correction,
+            "snapshot_uri": self.snapshot_uri
         }
 
 
@@ -125,13 +127,22 @@ class VisualCritic:
                     "message": f"Vision 模型调用异常 ({str(e)})，自动回退到几何与对比度规则评测"
                 }
 
+        # 5. Generate high-precision raster snapshot URI
+        from .renderer_snapshot import SlideSnapshotRenderer
+        try:
+            snapshot_uri = SlideSnapshotRenderer.render_data_uri(slide)
+        except Exception as e:
+            logger.debug(f"Snapshot URI generation failed: {e}")
+            snapshot_uri = None
+
         return VisualReviewResult(
             slide_id=slide.id,
             health_report=health_report,
             remediation_plan=remediation_plan,
             multimodal_feedback=multimodal_feedback,
             vision_status=vision_status,
-            needs_auto_correction=needs_correction
+            needs_auto_correction=needs_correction,
+            snapshot_uri=snapshot_uri
         )
 
     @classmethod
