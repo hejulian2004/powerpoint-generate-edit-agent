@@ -22,10 +22,32 @@ _RESULT_PATTERNS = re.compile(r"\b(result|comparison|performance|benchmark|accur
 _SETUP_PATTERNS = re.compile(r"\b(dataset|benchmark setting|distribution|sample|setup|example|case)\b", re.IGNORECASE)
 
 
+_FIRST_FIGURE_REGEX = re.compile(r"^(?:fig(?:ure)?[\s_]*0*1|fig\.?\s*0*1)$", re.IGNORECASE)
+_FIRST_TABLE_REGEX = re.compile(r"^(?:tab(?:le)?[\s_]*0*1|tab\.?\s*0*1)$", re.IGNORECASE)
+
+
+def _is_first_figure(fig: PaperFigure) -> bool:
+    """Check whether a figure is the primary first figure via id or xref_label."""
+    if _FIRST_FIGURE_REGEX.search(fig.id.strip()):
+        return True
+    if fig.xref_label and _FIRST_FIGURE_REGEX.search(fig.xref_label.strip()):
+        return True
+    return False
+
+
+def _is_first_table(table: PaperTable) -> bool:
+    """Check whether a table is the primary first table via id or xref_label."""
+    if _FIRST_TABLE_REGEX.search(table.id.strip()):
+        return True
+    if table.xref_label and _FIRST_TABLE_REGEX.search(table.xref_label.strip()):
+        return True
+    return False
+
+
 def classify_figure_role(fig: PaperFigure) -> str:
-    """Classify the likely communicative role of a figure based on its caption."""
+    """Classify the likely communicative role of a figure based on caption and xref."""
     caption = fig.caption.lower()
-    if _OVERVIEW_PATTERNS.search(caption) or fig.id in ("figure1", "fig1"):
+    if _OVERVIEW_PATTERNS.search(caption) or _is_first_figure(fig):
         return "method_overview"
     if _ABLATION_PATTERNS.search(caption):
         return "ablation"
@@ -37,11 +59,11 @@ def classify_figure_role(fig: PaperFigure) -> str:
 
 
 def classify_table_role(table: PaperTable) -> str:
-    """Classify the likely communicative role of a table based on its caption and header."""
+    """Classify the likely communicative role of a table based on caption and header."""
     text = (table.caption + " " + " ".join(table.header)).lower()
     if _ABLATION_PATTERNS.search(text):
         return "ablation"
-    if _RESULT_PATTERNS.search(text) or table.id in ("table1", "tab1"):
+    if _RESULT_PATTERNS.search(text) or _is_first_table(table):
         return "result"
     if _SETUP_PATTERNS.search(text):
         return "experiment_setup"
@@ -66,24 +88,24 @@ def select_visuals_for_slide(
     selected_figs: List[str] = []
     selected_tabs: List[str] = []
 
-    matched_sec_nums = {s.number for s in (matched_sections or []) if s.number}
+    matched_pages = {s.page for s in (matched_sections or []) if s.page > 0}
 
     if slide_type == SlideType.METHOD_OVERVIEW:
-        # High priority: overview / architecture diagram
+        # High priority: first figure or explicit overview/architecture diagram
         for fig in paper.figures:
             if fig.id in assigned_figs:
                 continue
-            role = classify_figure_role(fig)
-            if role in ("method_overview", "general") and fig.id in ("figure1", "fig1"):
+            if _is_first_figure(fig):
                 selected_figs.append(fig.id)
                 assigned_figs.add(fig.id)
                 break
-        # Fallback if figure1 was already used or not named figure1
+
+        # Fallback: any figure matching method_overview or on same page as method section
         if not selected_figs:
             for fig in paper.figures:
                 if fig.id in assigned_figs:
                     continue
-                if classify_figure_role(fig) == "method_overview":
+                if classify_figure_role(fig) == "method_overview" or (fig.page in matched_pages):
                     selected_figs.append(fig.id)
                     assigned_figs.add(fig.id)
                     break

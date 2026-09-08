@@ -88,7 +88,17 @@ def _parse_json_object(raw: str) -> Dict[str, Any]:
 
 
 def apply_plan_refinement(original: PresentationPlan, data: Dict[str, Any]) -> PresentationPlan:
-    """Safely apply LLM-refined text fields without altering structural bindings."""
+    """Safely apply LLM-refined text fields without altering structural bindings.
+
+    Strict Invariant Guards:
+    - Rejects refinement entirely (fail-closed) if:
+      1. Slide count does not match original.
+      2. Slide index does not match original.
+      3. An explicit slide_type is returned and differs from original.
+      4. Explicit source_figures / source_tables / source_sections differ from original.
+    - Only permits updating title, objective, key_messages, and notes.
+    - Ensures key_messages is a non-empty list of strings.
+    """
     if not isinstance(data, dict) or "slides" not in data or not isinstance(data["slides"], list):
         return original
 
@@ -96,18 +106,42 @@ def apply_plan_refinement(original: PresentationPlan, data: Dict[str, Any]) -> P
     if len(refined_slides_data) != len(original.slides):
         return original
 
-    updated_slides: List[SlidePlan] = []
+    # Invariant pass 1: validate that every slide honors structural invariants
     for orig_slide, ref_data in zip(original.slides, refined_slides_data):
         if not isinstance(ref_data, dict):
-            updated_slides.append(orig_slide)
-            continue
+            return original
 
-        # Preserve structural properties, update wording if valid
+        # Check index invariant if present
+        ref_idx = ref_data.get("index")
+        if ref_idx is not None and ref_idx != orig_slide.index:
+            return original
+
+        # Check slide_type invariant if present
+        ref_type = ref_data.get("slide_type")
+        if ref_type is not None and ref_type != orig_slide.slide_type:
+            return original
+
+        # Check source bindings invariants if present
+        if "source_figures" in ref_data and ref_data["source_figures"] != orig_slide.source_figures:
+            return original
+        if "source_tables" in ref_data and ref_data["source_tables"] != orig_slide.source_tables:
+            return original
+        if "source_sections" in ref_data and ref_data["source_sections"] != orig_slide.source_sections:
+            return original
+
+    # Invariant pass 2: construct refined slides safely
+    updated_slides: List[SlidePlan] = []
+    for orig_slide, ref_data in zip(original.slides, refined_slides_data):
         new_title = str(ref_data.get("title", orig_slide.title)).strip() or orig_slide.title
         new_obj = str(ref_data.get("objective", orig_slide.objective)).strip() or orig_slide.objective
+        new_notes = ref_data.get("notes")
+        notes_val = str(new_notes).strip() if isinstance(new_notes, str) and new_notes.strip() else orig_slide.notes
+
         new_keys = ref_data.get("key_messages")
         if isinstance(new_keys, list) and all(isinstance(k, str) for k in new_keys) and len(new_keys) > 0:
             cleaned_keys = [k.strip() for k in new_keys if k.strip()]
+            if not cleaned_keys:
+                cleaned_keys = orig_slide.key_messages
         else:
             cleaned_keys = orig_slide.key_messages
 
@@ -117,6 +151,7 @@ def apply_plan_refinement(original: PresentationPlan, data: Dict[str, Any]) -> P
                     "title": new_title,
                     "objective": new_obj,
                     "key_messages": cleaned_keys,
+                    "notes": notes_val,
                 }
             )
         )
