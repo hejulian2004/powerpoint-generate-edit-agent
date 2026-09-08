@@ -210,10 +210,16 @@ class RemediationRunner:
     @classmethod
     def _resolve_conflicts(cls, slide: SlideIR, actions: List[FixAction]) -> List[FixAction]:
         """Detects and resolves mutual interference and cascading collisions."""
+        # Ensure strict priority and confidence ordering so high priority fixes claim targets first
+        sorted_actions = sorted(
+            actions,
+            key=lambda a: (getattr(a, "priority", 1), getattr(a, "confidence", 1.0)),
+            reverse=True
+        )
         safe: List[FixAction] = []
         touched_elements = set()
 
-        for act in actions:
+        for act in sorted_actions:
             # If an action targets elements already modified by higher priority actions in this turn,
             # skip or deduplicate to avoid oscillating ping-pong shifts
             if any(tid in touched_elements for tid in act.target_ids):
