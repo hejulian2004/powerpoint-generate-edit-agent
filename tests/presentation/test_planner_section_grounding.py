@@ -69,3 +69,45 @@ def test_section_consumption_diversity():
     # Introduction should only appear for background / context slides
     intro_count = all_source_secs.count("1")
     assert intro_count <= 2
+
+
+def test_planner_fallbacks_have_no_domain_hallucinations():
+    """Verify that an empty or generic non-RL paper produces no RL/anomaly/simulation domain keywords."""
+    from backend.paper.schema import PaperIR, PaperMetadata
+    from backend.presentation import generate_presentation_plan
+
+    generic_paper = PaperIR(
+        source_filename="transformer_attention.pdf",
+        metadata=PaperMetadata(
+            title="Attention Is All You Need",
+            authors=["A. Vaswani", "N. Shazeer"],
+            venue="NeurIPS 2017",
+            page_count=10,
+        ),
+        abstract="",
+        sections=[],
+        figures=[],
+        tables=[],
+    )
+
+    plan = generate_presentation_plan(generic_paper, profile="research_15min")
+    assert plan.slide_count == 12
+
+    # Check that domain-specific keywords never appear anywhere in key_messages
+    forbidden_terms = [
+        "reinforcement learning",
+        "anomaly",
+        "simulation",
+        "simulator",
+        "industrial inspection",
+        "reward shaping",
+    ]
+
+    for slide in plan.slides:
+        for msg in slide.key_messages:
+            msg_lower = msg.lower()
+            for term in forbidden_terms:
+                assert term not in msg_lower, (
+                    f"Domain hallucination '{term}' detected on slide {slide.index} ({slide.slide_type}): '{msg}'"
+                )
+

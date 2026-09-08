@@ -128,3 +128,73 @@ def test_guard_accepts_valid_wording_refinement():
     assert refined.slides[1].title == "Method Overview: Tool-Augmented Loop"
     assert refined.slides[1].notes == "Emphasize architectural modularity"
     assert len(refined.slides[1].key_messages) == 2
+
+
+def test_guard_rejects_key_messages_below_min_count():
+    plan = _sample_plan()
+    # LLM returns only 1 key message (less than min 2)
+    bad_data = {
+        "slides": [
+            {"title": "Title", "key_messages": ["Only one message"]},
+            {"title": "Method", "key_messages": ["A", "B"]},
+        ]
+    }
+    refined = apply_plan_refinement(plan, bad_data)
+    assert refined.slides[0].key_messages == ["P1", "P2"]
+
+
+def test_guard_rejects_key_messages_exceeding_max_count():
+    plan = _sample_plan()
+    # LLM returns 5 key messages (more than max 4)
+    bad_data = {
+        "slides": [
+            {"title": "Title", "key_messages": ["M1", "M2", "M3", "M4", "M5"]},
+            {"title": "Method", "key_messages": ["A", "B"]},
+        ]
+    }
+    refined = apply_plan_refinement(plan, bad_data)
+    assert refined.slides[0].key_messages == ["P1", "P2"]
+
+
+def test_guard_rejects_key_messages_exceeding_char_limit():
+    plan = _sample_plan()
+    # Single key message is > 140 chars
+    long_msg = "X" * 141
+    bad_data = {
+        "slides": [
+            {"title": "Title", "key_messages": [long_msg, "Valid message"]},
+            {"title": "Method", "key_messages": ["A", "B"]},
+        ]
+    }
+    refined = apply_plan_refinement(plan, bad_data)
+    assert refined.slides[0].key_messages == ["P1", "P2"]
+
+
+def test_parse_json_resilient_to_nested_and_fences():
+    from backend.presentation.enricher import _parse_json_object
+
+    # Test 1: nested dictionary inside code block with chatter
+    raw1 = (
+        "Here is the refined plan:\n"
+        "```json\n"
+        '{\n  "slides": [\n    {"title": "T1", "meta": {"sub": "value"}}\n  ]\n}\n'
+        "```\n"
+        "Hope this helps!"
+    )
+    parsed1 = _parse_json_object(raw1)
+    assert "slides" in parsed1
+    assert parsed1["slides"][0]["meta"]["sub"] == "value"
+
+    # Test 2: no code fence, outer brace extraction
+    raw2 = 'Sure thing! {"title": "Presentation", "slides": []} Have a nice day.'
+    parsed2 = _parse_json_object(raw2)
+    assert parsed2["title"] == "Presentation"
+
+
+def test_parse_json_malformed_returns_original_in_enrichment():
+    from backend.presentation.enricher import enrich_presentation_plan
+    plan = _sample_plan()
+    # Safe call without key returns plan directly
+    res = enrich_presentation_plan(plan)
+    assert res.slide_count == plan.slide_count
+

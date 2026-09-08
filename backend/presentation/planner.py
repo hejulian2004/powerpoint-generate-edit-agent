@@ -100,9 +100,8 @@ def _generate_key_messages(
         if sec:
             return _extract_lead_sentences(sec.paragraphs, count=3)
         return [
-            "Current approaches suffer from fundamental scalability bottlenecks.",
-            "Lack of realistic synthesis leads to severe distribution shift.",
-            "Formulating the challenge as a tractable optimization objective.",
+            "Core problem formulation and practical bottlenecks identified in the paper.",
+            "Key challenges and limitations under existing contemporary approaches.",
         ]
 
     # 4. SlideType: MOTIVATION
@@ -117,8 +116,8 @@ def _generate_key_messages(
         if sec:
             return _extract_lead_sentences(sec.paragraphs, count=3)
         return [
-            "Leveraging reinforcement learning to explore complex action spaces.",
-            "Bridging simulation and real-world industrial anomaly distribution.",
+            "Primary motivation and conceptual intuition behind the proposed methodology.",
+            "Targeting fundamental bottlenecks through principled algorithmic design.",
         ]
 
     # 5. SlideType: RELATED_WORK
@@ -131,9 +130,8 @@ def _generate_key_messages(
         if sec:
             return _extract_lead_sentences(sec.paragraphs, count=3)
         return [
-            "Rule-based methods lack diversity across complex defect modes.",
-            "Generative models struggle with physical validity and precise constraints.",
-            "Our approach bridges agent decision-making with rendering tools.",
+            "Foundational prior art and literature context within the research domain.",
+            "Core technical differentiators and distinct positioning against existing methods.",
         ]
 
     # 6. SlideType: METHOD_OVERVIEW
@@ -148,8 +146,8 @@ def _generate_key_messages(
         if sec:
             return _extract_lead_sentences(sec.paragraphs[:2], count=3)
         return [
-            "End-to-end framework integrating agent policy and rendering tools.",
-            "Modular pipeline enabling deterministic control and rich diversity.",
+            "High-level overview of the proposed architectural framework and system pipeline.",
+            "Key components, functional modules, and data flow across the pipeline.",
         ]
 
     # 7. SlideType: METHOD_DETAIL
@@ -167,8 +165,8 @@ def _generate_key_messages(
             slice_start = 1 if len(paras) > 2 else 0
             return _extract_lead_sentences(paras[slice_start:], count=3)
         return [
-            "Algorithmic formulation optimizing task-specific reward functions.",
-            "Guaranteed convergence and sample-efficient exploration policy.",
+            "Detailed formulation, operational mechanics, and algorithm specification.",
+            "Mathematical principles and core algorithmic component definitions.",
         ]
 
     # 8. SlideType: EXPERIMENT_SETUP
@@ -181,9 +179,8 @@ def _generate_key_messages(
         if sec:
             return _extract_lead_sentences(sec.paragraphs[:2], count=3)
         return [
-            "Evaluated across standard industrial benchmark datasets.",
-            "Compared against contemporary state-of-the-art baselines.",
-            "Rigorous metrics covering localization accuracy and synthesis fidelity.",
+            "Experimental benchmark datasets, evaluation metrics, and comparative baselines.",
+            "Standardized evaluation protocol and implementation details.",
         ]
 
     # 9. SlideType: RESULT
@@ -202,8 +199,8 @@ def _generate_key_messages(
             slice_start = 1 if len(paras) > 2 else 0
             return _extract_lead_sentences(paras[slice_start:], count=3)
         return [
-            "Significant quantitative improvement over prior leading baselines.",
-            "Demonstrated robust generalization across diverse anomaly categories.",
+            "Quantitative comparative findings and empirical performance across benchmarks.",
+            "Statistical significance and performance characteristics relative to baselines.",
         ]
 
     # 10. SlideType: ABLATION
@@ -216,8 +213,8 @@ def _generate_key_messages(
         if sec:
             return _extract_lead_sentences(sec.paragraphs, count=3)
         return [
-            "Ablating individual agent tools verifies each module's necessity.",
-            "Reward shaping demonstrates consistent stability gains across trials.",
+            "Ablation analysis dissecting the individual contribution of core components.",
+            "Empirical validation of design choices and hyperparameter sensitivities.",
         ]
 
     # 11. SlideType: LIMITATION
@@ -232,8 +229,8 @@ def _generate_key_messages(
         if sec:
             return _extract_lead_sentences(sec.paragraphs, count=3)
         return [
-            "Higher computational footprint during initial policy training.",
-            "Dependency on accurate physical parameter priors in simulator.",
+            "Identified scope boundaries, practical trade-offs, and computational constraints.",
+            "Known failure modes and considerations for broader real-world deployment.",
         ]
 
     # 12. SlideType: CONCLUSION
@@ -248,9 +245,8 @@ def _generate_key_messages(
         if sec:
             return _extract_lead_sentences(sec.paragraphs, count=3)
         return [
-            "Presented a novel formulation combining reinforcement learning and simulation.",
-            "Validated significant performance and fidelity gains empirically.",
-            "Opened promising directions for autonomous industrial inspection.",
+            "Summary of main contributions and principal research takeaways.",
+            "Broader impact and promising directions for future research investigations.",
         ]
 
     return ["Key takeaways and findings."]

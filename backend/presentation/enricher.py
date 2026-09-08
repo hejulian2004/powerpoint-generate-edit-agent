@@ -80,11 +80,47 @@ async def _enrich_plan_async(plan: PresentationPlan) -> PresentationPlan:
 
 
 def _parse_json_object(raw: str) -> Dict[str, Any]:
+    """Robust JSON extraction from LLM completion text.
+
+    Resilient to:
+    - Direct JSON string output.
+    - Markdown code fences (```json ... ```).
+    - Arbitrary prefix/suffix chatter by locating outer-most braces.
+    - Nested JSON objects (does not truncate prematurely).
+    """
     cleaned = raw.strip()
-    match = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", cleaned, re.DOTALL)
-    if match:
-        cleaned = match.group(1).strip()
-    return json.loads(cleaned)
+
+    # 1. Direct parse attempt
+    try:
+        data = json.loads(cleaned)
+        if isinstance(data, dict):
+            return data
+    except Exception:
+        pass
+
+    # 2. Extract from markdown code fence
+    fence_match = re.search(r"```(?:json)?\s*(.*?)\s*```", cleaned, re.DOTALL)
+    if fence_match:
+        try:
+            data = json.loads(fence_match.group(1).strip())
+            if isinstance(data, dict):
+                return data
+        except Exception:
+            cleaned = fence_match.group(1).strip()
+
+    # 3. Locate outermost { ... }
+    first_idx = cleaned.find("{")
+    last_idx = cleaned.rfind("}")
+    if first_idx != -1 and last_idx != -1 and last_idx > first_idx:
+        candidate = cleaned[first_idx : last_idx + 1]
+        try:
+            data = json.loads(candidate)
+            if isinstance(data, dict):
+                return data
+        except Exception:
+            pass
+
+    raise ValueError("Could not parse valid JSON object from LLM response")
 
 
 def apply_plan_refinement(original: PresentationPlan, data: Dict[str, Any]) -> PresentationPlan:
@@ -96,8 +132,8 @@ def apply_plan_refinement(original: PresentationPlan, data: Dict[str, Any]) -> P
       2. Slide index does not match original.
       3. An explicit slide_type is returned and differs from original.
       4. Explicit source_figures / source_tables / source_sections differ from original.
+      5. key_messages violates constraints (must have 2 to 4 items, <= 140 chars each).
     - Only permits updating title, objective, key_messages, and notes.
-    - Ensures key_messages is a non-empty list of strings.
     """
     if not isinstance(data, dict) or "slides" not in data or not isinstance(data["slides"], list):
         return original
@@ -106,7 +142,7 @@ def apply_plan_refinement(original: PresentationPlan, data: Dict[str, Any]) -> P
     if len(refined_slides_data) != len(original.slides):
         return original
 
-    # Invariant pass 1: validate that every slide honors structural invariants
+    # Invariant pass 1: validate that every slide honors structural and length invariants
     for orig_slide, ref_data in zip(original.slides, refined_slides_data):
         if not isinstance(ref_data, dict):
             return original
@@ -129,6 +165,21 @@ def apply_plan_refinement(original: PresentationPlan, data: Dict[str, Any]) -> P
         if "source_sections" in ref_data and ref_data["source_sections"] != orig_slide.source_sections:
             return original
 
+        # Check key_messages constraints if provided
+        if "key_messages" in ref_data:
+            ref_keys = ref_data["key_messages"]
+            if not isinstance(ref_keys, list):
+                return original
+            # Must be between 2 and 4 messages
+            if len(ref_keys) < 2 or len(ref_keys) > 4:
+                return original
+            for k in ref_keys:
+                if not isinstance(k, str):
+                    return original
+                k_clean = k.strip()
+                if not k_clean or len(k_clean) > 140:
+                    return original
+
     # Invariant pass 2: construct refined slides safely
     updated_slides: List[SlidePlan] = []
     for orig_slide, ref_data in zip(original.slides, refined_slides_data):
@@ -137,11 +188,8 @@ def apply_plan_refinement(original: PresentationPlan, data: Dict[str, Any]) -> P
         new_notes = ref_data.get("notes")
         notes_val = str(new_notes).strip() if isinstance(new_notes, str) and new_notes.strip() else orig_slide.notes
 
-        new_keys = ref_data.get("key_messages")
-        if isinstance(new_keys, list) and all(isinstance(k, str) for k in new_keys) and len(new_keys) > 0:
-            cleaned_keys = [k.strip() for k in new_keys if k.strip()]
-            if not cleaned_keys:
-                cleaned_keys = orig_slide.key_messages
+        if "key_messages" in ref_data and isinstance(ref_data["key_messages"], list):
+            cleaned_keys = [k.strip() for k in ref_data["key_messages"] if isinstance(k, str) and k.strip()]
         else:
             cleaned_keys = orig_slide.key_messages
 
