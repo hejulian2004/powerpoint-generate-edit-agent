@@ -49,6 +49,10 @@ class TextBlock(BaseModel):
     role: BlockRole = BlockRole.BULLET_ITEM
     content: str = Field(..., description="Text content")
     emphasis: bool = Field(default=False, description="Whether this block should be visually emphasized")
+    column: Optional[Literal["left", "right"]] = Field(
+        default=None,
+        description="Target column indicator for multi-column layouts (e.g. TWO_COLUMN_CONTRAST)",
+    )
 
 
 class FigureBlock(BaseModel):

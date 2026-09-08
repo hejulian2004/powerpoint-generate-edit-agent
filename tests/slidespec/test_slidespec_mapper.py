@@ -25,7 +25,81 @@ def test_mapper_title_slide():
     assert slide_spec.slide_type == SlideType.TITLE
     assert slide_spec.visual_intent == VisualIntent.TITLE_HERO
     assert len(slide_spec.get_blocks_by_kind("badge")) >= 1
-    assert len(slide_spec.get_blocks_by_kind("text")) >= 1
+    # Check that authors is placed in subtitle and not duplicated across bullet blocks
+    assert slide_spec.subtitle is not None
+    assert "Researcher" in slide_spec.subtitle
+
+    # Ensure metadata lines like "Paper:" or "Presented by:" do not clutter blocks
+    for b in slide_spec.get_blocks_by_kind("text"):
+        assert not b.content.lower().startswith("paper:")
+        assert not b.content.lower().startswith("presented by:")
+
+
+def test_mapper_method_detail_slide_preserves_figures():
+    """Verify that when a METHOD_DETAIL slide has source_figures, FigureBlocks are created."""
+    from backend.presentation.schema import SlidePlan
+
+    detail_plan = SlidePlan(
+        index=7,
+        slide_type=SlideType.METHOD_DETAIL,
+        title="Core Mechanism",
+        objective="Explain algorithmic formulation",
+        key_messages=["Loss function details", "Policy gradient steps"],
+        source_sections=["4"],
+        source_figures=["figure2"],
+        source_tables=[],
+    )
+    paper = extract_paper(FIXTURE_PDF)
+    slide_spec = map_slide_plan_to_slide_spec(detail_plan, paper)
+
+    assert slide_spec.visual_intent == VisualIntent.PIPELINE_ARCHITECTURE
+    figs = slide_spec.get_blocks_by_kind("figure")
+    assert len(figs) == 1
+    assert figs[0].source_figure_id == "figure2"
+    assert "Fig. 2" in figs[0].xref_label or "2" in figs[0].xref_label
+
+
+def test_mapper_two_column_contrast_sets_columns():
+    """Verify that TWO_COLUMN_CONTRAST slides partition items into left and right columns."""
+    from backend.presentation.schema import SlidePlan
+
+    prob_plan = SlidePlan(
+        index=3,
+        slide_type=SlideType.PROBLEM,
+        title="Problem Definition",
+        objective="Contrast challenges against assumptions",
+        key_messages=["Bottleneck 1", "Bottleneck 2", "Bottleneck 3", "Bottleneck 4"],
+        source_sections=["3"],
+    )
+    slide_spec = map_slide_plan_to_slide_spec(prob_plan)
+    assert slide_spec.visual_intent == VisualIntent.TWO_COLUMN_CONTRAST
+
+    text_blocks = slide_spec.get_blocks_by_kind("text")
+    left_blocks = [b for b in text_blocks if getattr(b, "column", None) == "left"]
+    right_blocks = [b for b in text_blocks if getattr(b, "column", None) == "right"]
+
+    assert len(left_blocks) >= 1
+    assert len(right_blocks) >= 1
+    assert len(left_blocks) + len(right_blocks) == 4
+
+
+def test_mapper_empty_key_messages_falls_back_to_objective():
+    """Verify that slides with empty key_messages cleanly fallback to slide.objective."""
+    from backend.presentation.schema import SlidePlan
+
+    overview_empty = SlidePlan(
+        index=6,
+        slide_type=SlideType.METHOD_OVERVIEW,
+        title="Empty Messages Method",
+        objective="Explain complete framework architecture",
+        key_messages=[],
+        source_sections=["4"],
+        source_figures=["figure1"],
+    )
+    slide_spec = map_slide_plan_to_slide_spec(overview_empty)
+    texts = slide_spec.get_blocks_by_kind("text")
+    assert len(texts) == 1
+    assert texts[0].content == "Explain complete framework architecture"
 
 
 def test_mapper_method_overview_slide():
