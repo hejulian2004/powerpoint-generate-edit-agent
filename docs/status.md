@@ -27,24 +27,34 @@ This document defines the current baseline state, active developments, and futur
 - **Multi-Fixture Smoke Test Gate (`test_roundtrip_smoke.py`)**: Validates the closed-loop pipeline (`PPTX -> OOXML Extractor -> PPT-IR -> OOXML Renderer -> PPTX`) across diverse presentation archetypes (`simple.pptx`, `academic.pptx`, `diagram.pptx`, `image-heavy.pptx`).
 - **Conversion Fidelity Reporting (`ConversionReport`)**: Transparent tracking of converted vs. skipped elements with unified counting in `element_to_ir` to eliminate group double-counting, alongside explicit warning logs.
 
+### Fidelity Engine Hardening (PR6.1)
+- **Capability Matrix**: `FidelityCapability` and `CapabilityDetector` distinguishing editable features from detect-only boundaries (chart / smartart / animation / master).
+- **Partial-Failure Tolerant Import**: Corrupt parts emit warnings rather than hard-crashing.
+- **Risk-Gated Mutation Policy**: `ActionRiskPolicy` ensuring proportional confidence thresholds (delete 0.95, move/resize 0.85, style 0.75).
+- **Regression Guard & Rollback**: `FidelityRegressionGuard` protecting sub-metric fidelity limits (geometry <= 5 pts, text/style/visual <= 10 pts, critical floor 85).
+- **Structured Fidelity Reporting**: `FidelityReport` surfacing actionable remediation issues for the agent.
+
+### Research Paper Understanding Core (PR7.1)
+- **Paper Intermediate Representation (`PaperIR`)**: Strongly-typed Pydantic v2 document model (`metadata`, `abstract`, `sections`, `figures`, `tables`, `contributions`, `methodology`, `experiments`, `limitations`).
+- **Deterministic PDF Structural Extractor**: Zero-network heuristics extracting paper title, author bylines, reading order, numbered section hierarchy, figure/table captions, and raster image bounding boxes.
+- **Optional LLM Semantic Enrichment**: Fault-tolerant reasoning layer to extract research contributions and limitations when a live API key is configured.
+- **Deterministic Academic PDF Fixture**: Self-contained `tests/fixtures/paper/anomaly_agent.pdf` with automated generator `scripts/create_paper_fixtures.py`.
+- **Full Acceptance Suite**: 16 dedicated unit and acceptance tests validating structural completeness and JSON round-trip stability.
+
 ---
 
 ## 2. In Progress
 
-- **OOXML Fidelity**:
-  - Deepening support for complex text run properties (multi-level bullet lists, character spacing, hyperlinks).
-  - Expanding shape geometry mappings and custom preset geometry preservation.
-- **Complex Shape & Group Support**:
-  - Improved preservation of deeply nested group hierarchies during roundtrip serialization.
-  - Enhanced connector auto-routing and sticky connection points.
-- **Fidelity Engine Hardening (PR6.1)**:
-  - OOXML capability matrix (`FidelityCapability` / `CapabilityDetector`) surfaces which features are editable vs detect-only (chart / smartart / animation / master).
-  - Partial-failure-tolerant import: corrupt theme / rels / media / slide parts produce a `partial` IR with warnings instead of crashing.
-  - Per-action risk-gated semantic resolution (`ActionRiskPolicy`): delete 0.95 / move 0.85 / resize 0.85 / style 0.75.
-  - Per-metric regression guard (`FidelityRegressionGuard`): geometry <= 5 pts, text/style/visual <= 10 pts, critical floor 85.
-  - Stable element ids (`compute_stable_id`) for replay / undo / cross-render tracking.
-  - Structured fidelity report (`FidelityReport`) with typed issues for the PR7 agent.
-  - Real-world v2 benchmark (`tests/assets/real_world_v2/`, Composite >= 90%).
+### Research Paper Presentation Agent (PR7)
+- **PR7.2 Research Presentation Planner**:
+  - Transforming `PaperIR` into a structured `PresentationPlan` (10-12 slide 15-minute academic lab meeting archetype).
+  - Stable slide archetype mapping (Background, Problem, Motivation, Method, Experiments, Limitations, Conclusion).
+- **PR7.3 Slide Semantic IR & Asset Understanding**:
+  - `SlideSpec` semantic blocks (pipeline, comparison, metric highlights).
+  - Figure classification (architecture, experiment, ablation) and table best-cell highlighting.
+- **PR7.4 End-to-End Paper-to-PPTX Generation**:
+  - Academic design themes (blue-accent minimal, dark keynote).
+  - Unified PDF -> PPTX generation pipeline combining PR7 Planner + PR6 Fidelity Engine.
 
 ---
 
