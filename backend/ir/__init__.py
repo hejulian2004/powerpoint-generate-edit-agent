@@ -26,6 +26,7 @@ from .models import (
 )
 from .converter import PPTIRConverter, ConversionReport, import_pptx, export_pptx
 from .patch import PatchRecord, HistoryManager
+from .history_event import MutationEvent
 from .svg_renderer import SVGRenderer
 
 __all__ = [
@@ -57,5 +58,6 @@ __all__ = [
     "export_pptx",
     "PatchRecord",
     "HistoryManager",
+    "MutationEvent",
     "SVGRenderer",
 ]

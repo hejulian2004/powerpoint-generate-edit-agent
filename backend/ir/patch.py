@@ -13,6 +13,7 @@ import copy
 from typing import List, Dict, Any, Optional, Literal
 from pydantic import BaseModel, Field
 from .models import PresentationIR, SlideIR, ElementIR
+from .history_event import MutationEvent
 
 
 class PatchRecord(BaseModel):
@@ -24,6 +25,7 @@ class PatchRecord(BaseModel):
     element_id: Optional[str] = None
     before: Optional[Dict[str, Any]] = None
     after: Optional[Dict[str, Any]] = None
+    source: str = "agent_tool"
 
 
 class HistoryManager:
@@ -41,7 +43,8 @@ class HistoryManager:
         slide_id: Optional[str] = None,
         element_id: Optional[str] = None,
         before: Optional[Dict[str, Any]] = None,
-        after: Optional[Dict[str, Any]] = None
+        after: Optional[Dict[str, Any]] = None,
+        source: str = "agent_tool"
     ) -> PatchRecord:
         record = PatchRecord(
             action=action,
@@ -49,7 +52,8 @@ class HistoryManager:
             slide_id=slide_id,
             element_id=element_id,
             before=copy.deepcopy(before),
-            after=copy.deepcopy(after)
+            after=copy.deepcopy(after),
+            source=source
         )
         self.undo_stack.append(record)
         if len(self.undo_stack) > self.max_history:
@@ -91,9 +95,24 @@ class HistoryManager:
                 "description": p.description,
                 "slide_id": p.slide_id,
                 "element_id": p.element_id,
+                "source": p.source,
             }
             for p in self.undo_stack
         ]
+
+    def get_mutation_events(self) -> List[MutationEvent]:
+        """Converts undo stack patch records into standardized MutationEvent history objects."""
+        events: List[MutationEvent] = []
+        for p in self.undo_stack:
+            events.append(MutationEvent(
+                action=p.action,
+                element_id=p.element_id or "",
+                before=p.before or {},
+                after=p.after or {},
+                timestamp=str(p.timestamp),
+                source=getattr(p, "source", "agent_tool")
+            ))
+        return events
 
     def _apply_state_delta(self, pres: PresentationIR, patch: PatchRecord, reverse: bool = False):
         state_to_apply = patch.before if reverse else patch.after
