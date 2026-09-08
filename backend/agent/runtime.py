@@ -68,6 +68,7 @@ class AgentRuntime:
         user_message: str,
         pres: PresentationIR,
         history: HistoryManager,
+        session: Optional[Any] = None,
         on_event: Optional[Callable[[Dict[str, Any]], Any]] = None,
         max_iterations: int = 5
     ) -> Dict[str, Any]:
@@ -87,6 +88,7 @@ class AgentRuntime:
             "configurable": {
                 "pres": pres,
                 "history": history,
+                "session": session,
                 "on_event": on_event,
                 "llm_client": self.llm,
                 "memory": self.memory

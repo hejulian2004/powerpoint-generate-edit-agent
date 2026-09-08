@@ -262,3 +262,30 @@ export interface ChatMessage {
   }
   isStreaming?: boolean
 }
+
+export interface PreviewUpdateEvent {
+  type: 'preview_update'
+  session_id: string
+  slide_id: string
+  svg: string
+  score: number
+  quality_score?: VisualQualityScore
+  version: number
+}
+
+export interface PPTEditorState {
+  slide: SlideIR | null
+  selectedElement: ElementIR | null
+  history: PatchRecord[]
+  preview: {
+    slide_id: string
+    svg: string
+    score?: number
+    quality_score?: VisualQualityScore
+  } | null
+  agentStatus: {
+    isThinking: boolean
+    thinkingStatus: string
+    visualRemediation?: VisualRemediationEvent | null
+  }
+}
