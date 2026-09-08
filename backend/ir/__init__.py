@@ -20,7 +20,7 @@ from .models import (
     RunIR,
     FontIR,
 )
-from .converter import PPTIRConverter
+from .converter import PPTIRConverter, ConversionReport, import_pptx, export_pptx
 from .patch import PatchRecord, HistoryManager
 from .svg_renderer import SVGRenderer
 
@@ -44,6 +44,9 @@ __all__ = [
     "RunIR",
     "FontIR",
     "PPTIRConverter",
+    "ConversionReport",
+    "import_pptx",
+    "export_pptx",
     "PatchRecord",
     "HistoryManager",
     "SVGRenderer",

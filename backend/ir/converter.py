@@ -6,8 +6,11 @@ Enables seamless lossless translation between:
 """
 
 from __future__ import annotations
+import os
 import base64
-from typing import Optional, Dict, Any, List, Tuple
+from pathlib import Path
+from dataclasses import dataclass, field
+from typing import Optional, Dict, Any, List, Tuple, Union
 from pptx_agent_converter.model.slide import (
     Presentation, Slide, SlideSize, ThemeInfo,
     DEFAULT_WIDTH, DEFAULT_HEIGHT
@@ -37,25 +40,55 @@ PT_TO_PX = 96.0 / 72.0  # 1.333333
 PX_TO_PT = 72.0 / 96.0  # 0.75
 
 
+@dataclass
+class ConversionReport:
+    """Report tracking element conversion fidelity, counts, and skipped items."""
+    converted_elements: int = 0
+    skipped_elements: int = 0
+    warnings: List[str] = field(default_factory=list)
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "converted_elements": self.converted_elements,
+            "skipped_elements": self.skipped_elements,
+            "warnings": list(self.warnings)
+        }
+
+
 class PPTIRConverter:
     """High-fidelity bidirectional converter."""
+
+    last_report: Optional[ConversionReport] = None
 
     # -----------------------------------------------------------------
     # OOXML Model -> PPT-IR
     # -----------------------------------------------------------------
 
     @classmethod
-    def presentation_to_ir(cls, pres: Presentation) -> PresentationIR:
+    def presentation_to_ir(
+        cls,
+        pres: Presentation,
+        report: Optional[ConversionReport] = None
+    ) -> PresentationIR:
+        if pres is None:
+            raise ValueError("Critical corruption: cannot convert None Presentation to PPT-IR")
+        if pres.size is None or pres.size.width <= 0 or pres.size.height <= 0:
+            raise ValueError("Critical corruption: presentation dimensions must be positive")
+
+        if report is None:
+            report = ConversionReport()
+        cls.last_report = report
+
         w_in = pres.size.width if pres.size.width > 0 else DEFAULT_WIDTH
         h_in = pres.size.height if pres.size.height > 0 else DEFAULT_HEIGHT
-        
+
         # Calculate scale ratio to map to 1280x720 standard canvas
         scale_x = 1280.0 / w_in
         scale_y = 720.0 / h_in
 
         slides_ir: List[SlideIR] = []
         for s in pres.slides:
-            slides_ir.append(cls.slide_to_ir(s, scale_x, scale_y))
+            slides_ir.append(cls.slide_to_ir(s, scale_x, scale_y, report=report))
 
         # Transfer media assets
         assets: Dict[str, str] = {}
@@ -80,15 +113,45 @@ class PPTIRConverter:
         )
 
     @classmethod
-    def slide_to_ir(cls, slide: Slide, scale_x: float = DPI, scale_y: float = DPI) -> SlideIR:
+    def convert_presentation_with_report(cls, pres: Presentation) -> Tuple[PresentationIR, ConversionReport]:
+        """Converts Presentation to PresentationIR and returns a structured ConversionReport."""
+        report = ConversionReport()
+        pres_ir = cls.presentation_to_ir(pres, report=report)
+        return pres_ir, report
+
+    @classmethod
+    def slide_to_ir(
+        cls,
+        slide: Slide,
+        scale_x: float = DPI,
+        scale_y: float = DPI,
+        report: Optional[ConversionReport] = None
+    ) -> SlideIR:
+        if slide is None:
+            raise ValueError("Critical corruption: cannot convert None Slide to SlideIR")
+
+        # Record warnings from slide's parsed unsupported elements (e.g. SmartArt, chart, table)
+        if hasattr(slide, "unsupported_elements") and slide.unsupported_elements:
+            for item in slide.unsupported_elements:
+                if report is not None:
+                    report.skipped_elements += 1
+                    report.warnings.append(f"Slide {slide.slide_num}: {item}")
+
         elements_ir: List[ElementIR] = []
         for el in slide.elements:
             if isinstance(el, GroupElement):
-                cls._flatten_group_to_ir(el, elements_ir, scale_x, scale_y)
+                cls._flatten_group_to_ir(el, elements_ir, scale_x, scale_y, report=report)
             else:
-                ir_el = cls.element_to_ir(el, scale_x, scale_y)
+                ir_el = cls.element_to_ir(el, scale_x, scale_y, report=report)
                 if ir_el:
                     elements_ir.append(ir_el)
+                    if report is not None:
+                        report.converted_elements += 1
+                else:
+                    if report is not None:
+                        report.skipped_elements += 1
+                        elem_name = getattr(el, 'name', 'unnamed')
+                        report.warnings.append(f"Slide {slide.slide_num}: unsupported element '{elem_name}' ({type(el).__name__}) was skipped")
 
         bg_style = FillStyle(type="solid", color="#FFFFFF", alpha=1.0)
         if slide.background:
@@ -105,7 +168,21 @@ class PPTIRConverter:
         )
 
     @classmethod
-    def element_to_ir(cls, elem: Any, scale_x: float = DPI, scale_y: float = DPI) -> Optional[ElementIR]:
+    def element_to_ir(
+        cls,
+        elem: Any,
+        scale_x: float = DPI,
+        scale_y: float = DPI,
+        report: Optional[ConversionReport] = None
+    ) -> Optional[ElementIR]:
+        if elem is None:
+            return None
+
+        # Check for explicit unsupported shape types
+        if hasattr(elem, "shape_type") and elem.shape_type in ["smartArt", "chart", "diagram", "oleObject"]:
+            if report is not None:
+                report.warnings.append(f"Element '{getattr(elem, 'name', '')}' has unsupported shape_type '{elem.shape_type}'")
+            return None
         if isinstance(elem, ConnectorElement):
             sx = round(elem.start[0] * scale_x, 2)
             sy = round(elem.start[1] * scale_y, 2)
@@ -203,34 +280,63 @@ class PPTIRConverter:
 
         elif isinstance(elem, GroupElement):
             # Flatten group elements for simple IR manipulation
-            # or treat as grouped shape
             children = []
             for child in elem.elements:
-                ir_child = cls.element_to_ir(child, scale_x, scale_y)
+                ir_child = cls.element_to_ir(child, scale_x, scale_y, report=report)
                 if ir_child:
                     children.append(ir_child)
             # return first child or shape
             return children[0] if children else None
 
+        if report is not None:
+            elem_name = getattr(elem, 'name', '') or str(elem)
+            report.warnings.append(f"Unsupported element class '{type(elem).__name__}' ({elem_name})")
         return None
 
     @classmethod
-    def _flatten_group_to_ir(cls, grp: GroupElement, acc: List[ElementIR], scale_x: float, scale_y: float):
+    def _flatten_group_to_ir(
+        cls,
+        grp: GroupElement,
+        acc: List[ElementIR],
+        scale_x: float,
+        scale_y: float,
+        report: Optional[ConversionReport] = None
+    ):
         """Recursively unwraps group elements into flat IR elements."""
         for child in grp.elements:
             if isinstance(child, GroupElement):
-                cls._flatten_group_to_ir(child, acc, scale_x, scale_y)
+                cls._flatten_group_to_ir(child, acc, scale_x, scale_y, report=report)
             else:
-                ir_child = cls.element_to_ir(child, scale_x, scale_y)
+                ir_child = cls.element_to_ir(child, scale_x, scale_y, report=report)
                 if ir_child:
                     acc.append(ir_child)
+                    if report is not None:
+                        report.converted_elements += 1
+                else:
+                    if report is not None:
+                        report.skipped_elements += 1
+                        child_name = getattr(child, 'name', 'unnamed')
+                        report.warnings.append(f"Group child '{child_name}' ({type(child).__name__}) was skipped")
 
     # -----------------------------------------------------------------
     # PPT-IR -> OOXML Model
     # -----------------------------------------------------------------
 
     @classmethod
-    def ir_to_presentation(cls, pres_ir: PresentationIR) -> Presentation:
+    def ir_to_presentation(
+        cls,
+        pres_ir: PresentationIR,
+        report: Optional[ConversionReport] = None
+    ) -> Presentation:
+        if pres_ir is None:
+            raise ValueError("Critical corruption: cannot convert None PresentationIR to Presentation")
+        if pres_ir.width <= 0 or pres_ir.height <= 0:
+            raise ValueError("Critical corruption: PresentationIR canvas width and height must be positive")
+
+        if report is None:
+            report = ConversionReport()
+        cls.last_report = report
+
         w_in = DEFAULT_WIDTH  # 13.333
         h_in = DEFAULT_HEIGHT  # 7.5
         scale_x = 1280.0 / w_in
@@ -238,7 +344,7 @@ class PPTIRConverter:
 
         slides: List[Slide] = []
         for idx, s_ir in enumerate(pres_ir.slides):
-            slides.append(cls.ir_to_slide(s_ir, idx + 1, scale_x, scale_y))
+            slides.append(cls.ir_to_slide(s_ir, idx + 1, scale_x, scale_y, report=report))
 
         # Media files reconstruction from assets dict
         media_files: Dict[str, bytes] = {}
@@ -259,12 +365,35 @@ class PPTIRConverter:
         )
 
     @classmethod
-    def ir_to_slide(cls, s_ir: SlideIR, slide_num: int = 1, scale_x: float = DPI, scale_y: float = DPI) -> Slide:
+    def ir_to_presentation_with_report(cls, pres_ir: PresentationIR) -> Tuple[Presentation, ConversionReport]:
+        """Converts PresentationIR to Presentation and returns a structured ConversionReport."""
+        report = ConversionReport()
+        pres = cls.ir_to_presentation(pres_ir, report=report)
+        return pres, report
+
+    @classmethod
+    def ir_to_slide(
+        cls,
+        s_ir: SlideIR,
+        slide_num: int = 1,
+        scale_x: float = DPI,
+        scale_y: float = DPI,
+        report: Optional[ConversionReport] = None
+    ) -> Slide:
+        if s_ir is None:
+            raise ValueError("Critical corruption: cannot convert None SlideIR to Slide")
+
         elements: List[Any] = []
         for el in s_ir.elements:
-            elem = cls.ir_to_element(el, scale_x, scale_y)
+            elem = cls.ir_to_element(el, scale_x, scale_y, report=report)
             if elem:
                 elements.append(elem)
+                if report is not None:
+                    report.converted_elements += 1
+            else:
+                if report is not None:
+                    report.skipped_elements += 1
+                    report.warnings.append(f"Slide {slide_num}: element '{el.id}' of type '{el.type}' cannot be converted to OOXML and was skipped")
 
         bg = cls._ir_to_fill(s_ir.background) if s_ir.background else None
 
@@ -277,7 +406,21 @@ class PPTIRConverter:
         )
 
     @classmethod
-    def ir_to_element(cls, el: ElementIR, scale_x: float = DPI, scale_y: float = DPI) -> Optional[Any]:
+    def ir_to_element(
+        cls,
+        el: ElementIR,
+        scale_x: float = DPI,
+        scale_y: float = DPI,
+        report: Optional[ConversionReport] = None
+    ) -> Optional[Any]:
+        if el is None:
+            return None
+
+        if isinstance(el, TableElementIR):
+            if report is not None:
+                report.warnings.append(f"Table element '{el.id}' is not yet supported for OOXML export")
+            return None
+
         if isinstance(el, ConnectorElementIR):
             return ConnectorElement(
                 id=el.id,
@@ -499,3 +642,27 @@ class PPTIRConverter:
 def uuid_short() -> str:
     import uuid
     return uuid.uuid4().hex[:6]
+
+
+def import_pptx(source: Union[str, Path, os.PathLike]) -> PresentationIR:
+    """Imports a PPTX file into PPT-IR representation."""
+    path = Path(source)
+    if not path.exists():
+        raise FileNotFoundError(f"PPTX file not found: {path}")
+
+    from pptx_agent_converter.extractor.pptx_parser import PPTXParser
+    parser = PPTXParser(str(path))
+    ooxml_pres = parser.parse()
+    return PPTIRConverter.presentation_to_ir(ooxml_pres)
+
+
+def export_pptx(pres_ir: PresentationIR, output_path: Union[str, Path, os.PathLike]) -> Path:
+    """Exports a PPT-IR presentation into a valid OOXML PPTX file."""
+    out = Path(output_path)
+    out.parent.mkdir(parents=True, exist_ok=True)
+
+    from pptx_agent_converter.renderer.pptx_builder import PPTXBuilder
+    ooxml_pres = PPTIRConverter.ir_to_presentation(pres_ir)
+    builder = PPTXBuilder()
+    builder.build(ooxml_pres, str(out))
+    return out

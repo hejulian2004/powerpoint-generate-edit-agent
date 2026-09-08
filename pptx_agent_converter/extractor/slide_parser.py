@@ -58,6 +58,7 @@ class SlideParser:
         # Parse shape tree: <p:spTree>
         sp_tree = root.find(".//p:spTree", NS)
         elements: List[Union[ShapeElement, ConnectorElement, ImageElement, GroupElement]] = []
+        unsupported_elements: List[str] = []
 
         if sp_tree is not None:
             z_order = 0
@@ -80,6 +81,22 @@ class SlideParser:
                     grp = self._parse_group(child, rels, z_order=z_order)
                     elements.append(grp)
                     z_order += 1
+                elif tag == "graphicFrame":
+                    # Detect graphic frame type (SmartArt, Chart, Table, etc.)
+                    gf_uri = ""
+                    graphic_data = child.find(".//a:graphicData", NS)
+                    if graphic_data is not None:
+                        gf_uri = graphic_data.get("uri", "")
+                    if "diagram" in gf_uri:
+                        unsupported_elements.append("SmartArt unsupported")
+                    elif "chart" in gf_uri:
+                        unsupported_elements.append("Chart unsupported")
+                    elif "table" in gf_uri:
+                        unsupported_elements.append("Table graphicFrame unsupported")
+                    else:
+                        unsupported_elements.append(f"GraphicFrame ({gf_uri or 'unknown'}) unsupported")
+                elif tag not in ["nvGrpSpPr", "grpSpPr"]:
+                    unsupported_elements.append(f"Unsupported OOXML element tag: <{tag}>")
 
         return Slide(
             slide_id=slide_id,
@@ -87,6 +104,7 @@ class SlideParser:
             size=slide_size,
             background=bg_fill,
             elements=elements,
+            unsupported_elements=unsupported_elements,
             xml_path=xml_path
         )
 

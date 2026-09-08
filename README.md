@@ -29,8 +29,30 @@
    ▼                             ▼
 SVG 实时渲染器 (前端 WebSocket 推送)   原生 OOXML 编解码引擎 (pptx_agent_converter)
    │                             │
-高保真交互画布 / Vision Loop 视觉自省       原生 .pptx 双向无损导入与导出
+高保真交互画布 / Vision Loop 视觉自省       原生 OOXML 双向转换框架，支持核心元素高保真导入导出，复杂对象持续完善
 ```
+
+---
+
+## 🎯 当前能力支持矩阵 (Current Support Matrix)
+
+### Supported (完全支持)
+- **文本与段落排版** (Text, Paragraphs & Fonts)
+- **基础几何形状与圆角卡片** (Basic Shapes, Rounded Cards, Diamonds, Triangles)
+- **图片与媒体资产** (Images & Media Assets)
+- **连接导线与箭头** (Connectors & Arrows)
+- **PPT-IR 矢量交互与协同编辑** (PPT-IR Direct Editing & Canvas Controls)
+
+### Partially Supported (部分支持 / 持续完善)
+- **组合对象** (Groups & Flattening)
+- **主题色与字体方案** (Themes & Scheme Mapping)
+- **高级排版与特效** (Advanced Formatting, Shadows & Gradients)
+
+### Not Guaranteed (暂不承诺 / 后续演进)
+- **动态 SmartArt 图示** (SmartArt)
+- **幻灯片过渡与对象动画** (Animations & Transitions)
+- **复杂图表与数据透视** (Complex Charts)
+- **OLE 嵌入式对象** (Embedded Objects)
 
 ---
 

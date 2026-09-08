@@ -69,6 +69,7 @@ class Slide:
     size: SlideSize = field(default_factory=SlideSize)
     background: Optional[Fill] = None
     elements: List[Union[ShapeElement, ConnectorElement, ImageElement, GroupElement]] = field(default_factory=list)
+    unsupported_elements: List[str] = field(default_factory=list)
     layout_name: Optional[str] = None
     xml_path: Optional[str] = None
 
@@ -80,6 +81,8 @@ class Slide:
         if self.background:
             res["background"] = self.background.to_dict()
         res["elements"] = [elem.to_dict() for elem in self.elements]
+        if self.unsupported_elements:
+            res["unsupported_elements"] = list(self.unsupported_elements)
         return res
 
     @classmethod
