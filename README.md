@@ -1,204 +1,184 @@
-# pptx_agent_converter
+# PPT-Agent-Studio
 
-> 面向 PPT Agent 的高性能、高保真 PPTX OOXML 工程化解析与重建工具链。
+> AI Agent 驱动的智能 PPT 生成、可视化编辑与高保真 OOXML 重构平台。
 
-## 📖 项目简介
+---
 
-传统的 `python-pptx` 高层封装方案在重绘或修改 PPT 时会丢失大量视觉效果与元数据，例如：
-- 主题（Theme：fontScheme, clrScheme）与母版（Slide Master / Layout）继承
-- 渐变填充（Gradient Fill：多色标、角度、线性/路径）与透明度（Alpha）
-- 阴影（Outer Shadow：模糊半径、距离、方向、透明度）与形状特效
-- 连线与接头（Connector）的精确起点/终点与箭头方向（防止反向）
-- 自定义圆角矩形曲率（Radius / adjustment values）
-- 细粒度的段落和 Run 级别字体样式与对齐方式
+## 📖 项目定位与核心思想
 
-`pptx_agent_converter` 采用**底层 OOXML 直解与重构架构**，直接解析 `.pptx` (ZIP) 内部的 `ppt/slides/*.xml`、`ppt/theme/*.xml`、`ppt/slideMasters/*.xml`、`ppt/slideLayouts/*.xml` 和 `ppt/media/*`，将复杂的 PresentationML 和 DrawingML 转化为严谨、可被 AI 轻松理解与编辑的结构化 JSON 和 Python DSL，并支持无损或高保真重新组装打包为原生 PPTX 文件。
+**PPT-Agent-Studio** 突破了传统单一提示词生成简单 PPT 的局限，构建了一套以 **PPT-IR (Presentation Intermediate Representation)** 为核心的 Agent Runtime 智能平台。
+
+> **核心架构理念：PPTX 不是核心数据格式，PPT-IR 才是系统状态核心。**
+
+```
+用户 (Web UI / 聊天流)
+        │
+        ▼
+   PPT Agent (Observe-Think-Plan-Execute-Review Loop)
+        │
+        ▼
+    LLM Provider (OpenAI Compatible API / Multi-Model Roles)
+        │
+        ▼
+    PPT Tools (create_slide, add_shape, update_element, etc.)
+        │
+        ▼
+    PPT-IR (1280×720 标准矢量中间表示，毫秒级 Patch 差异版本控制)
+        │
+   ┌────┴────────────────────────┐
+   ▼                             ▼
+SVG 实时渲染器 (前端 WebSocket 推送)   原生 OOXML 编解码引擎 (pptx_agent_converter)
+   │                             │
+高保真交互画布 / Vision Loop 视觉自省       原生 .pptx 双向无损导入与导出
+```
 
 ---
 
 ## 🚀 核心特性
 
-1. **直接 OOXML 解构**：完全不依赖 `python-pptx` 作为主解析器，基于 `lxml` 与 `xml.etree.ElementTree` 精确解析 DrawingML 命名空间。
-2. **结构化 JSON 规范**：每页 Slide 导出独立规范的 JSON，专为 LLM / PPT Agent 读取与局部重写优化。
-3. **富有表现力的 Python DSL**：摆脱臃肿的底层 API 调用，提供 `add_shape`、`add_connector`、`add_textbox` 等声明式 DSL，支持 `build.py` 自动化一键生成。
-4. **箭头方向与连线保真**：通过精确解析 `xfrm`（`off`, `ext`, `flipH`, `flipV`）和 `tailEnd`/`headEnd`，确保从 A 到 B 的连接线和箭头绝不反向。
-5. **完整保留原 PPT 设计资产**：自动解包并管理媒体文件（图片），重新构建时完整映射 Relationship 引用。
-6. **全套 CLI 工具链**：支持完整转译、全量重建、单页导出、单页重建。
+1. **PPT-IR 统一中间层**：
+   - 采用标准 1280×720 ViewBox 像素坐标系，直观对应 Web 画布与 SVG 矢量渲染。
+   - 具备严格精确的 96 DPI / EMU / Inch 双向换算，保证与微软 PowerPoint 原生坐标零失真互转。
+2. **AI Agent 闭环运行时**：
+   - 支持自然语言对话指令（如“帮我添加 3 个特性卡片并规整排版”、“换成深色科技主题”、“从左侧卡片连接到右侧”）。
+   - 自动规划并调用专业 PPT 工具（`add_text`, `add_shape`, `add_connector`, `update_element`, `optimize_layout`, `apply_theme` 等）。
+3. **Vision Loop 多模态视觉自省**：
+   - 结合 Headless 浏览器截图与高质量 SVG 快照，将实时视觉呈现回传给 Vision LLM。
+   - 自动检测文字重叠、布局拥挤或色彩冲突，实现自我反思与连续校正。
+4. **全功能版本控制与 Undo/Redo**：
+   - 每次 Agent 修改或用户直接编辑均生成严格可逆的 Patch 记录。
+   - 支持全局随时撤销（Ctrl+Z）、重做（Ctrl+Y）与历史回溯。
+5. **极速双向 WebSocket 协同**：
+   - 画布实时更新延迟 < 500ms，毫秒级推送补丁。
+6. **底层 OOXML 原生高保真重构 (`pptx_agent_converter`)**：
+   - 直解与重构 DrawingML / PresentationML，完整保真渐变、阴影、圆角、连接箭头及媒体资产。
 
 ---
 
 ## 📂 项目结构
 
 ```
-pptx_agent_converter/
+D:\PPT/
 │
-├── cli.py                  # CLI 命令行入口
-├── extractor/              # OOXML 深度解析器
-│   ├── pptx_parser.py      # PPTX ZIP/OPC 容器总解析器
-│   ├── slide_parser.py     # 单页 Slide 与形状树解析
-│   ├── shape_parser.py     # 几何图形、坐标转换、连线方向计算
-│   ├── text_parser.py      # 段落、Run、字体、对齐解析
-│   ├── style_parser.py     # 颜色、渐变填充、边框、阴影、主题解析
-│   ├── media_parser.py     # 图片与关系(rels)管理
-│   └── constants.py        # 命名空间、EMU单位换算、几何预设映射
+├── backend/                    # FastAPI 后端服务与 Agent 运行时
+│   ├── main.py                 # FastAPI 入口与静态单页应用挂载
+│   ├── config.py               # 环境变量与动态多模型配置
+│   ├── ir/                     # PPT-IR 核心模块
+│   │   ├── models.py           # PPT-IR 强类型 Pydantic 模型
+│   │   ├── converter.py        # PPT-IR 与 OOXML 双向转换器
+│   │   ├── patch.py            # Patch 记录与 Undo/Redo 历史引擎
+│   │   └── svg_renderer.py     # 服务端独立 SVG 渲染器
+│   ├── agent/                  # Agent 核心模块
+│   │   ├── llm.py              # OpenAI Compatible API 客户端（流式+多角色路由）
+│   │   ├── tools.py            # PPT Tool API 注册中心与执行处理器
+│   │   ├── runtime.py          # Agent 执行循环 (Observe-Think-Plan-Execute-Review)
+│   │   ├── vision.py           # Vision Loop 快照捕获与多模态质检
+│   │   └── memory.py           # 用户偏好、设计规范与近期记忆
+│   ├── state/                  # 运行时状态与连接管理
+│   │   └── store.py            # Presentation 单例存储与 WebSocket 广播中心
+│   └── api/                    # 接口层
+│       ├── routes.py           # REST API (上传、导出、设置、撤销重做)
+│       └── websocket.py        # WebSocket 实时交互信道
 │
-├── model/                  # 强类型 Dataclass 数据模型
-│   ├── slide.py            # Slide, Presentation, ThemeInfo, SlideSize
-│   ├── shape.py            # ShapeElement, ConnectorElement, ImageElement
-│   ├── text.py             # TextBlock, Paragraph, Run
-│   └── style.py            # Fill, Line, Shadow, Font, ParagraphStyle, Color
+├── frontend/                   # 现代 React + Vite + TypeScript 前端 Studio
+│   ├── src/
+│   │   ├── components/
+│   │   │   ├── Header.tsx      # 顶部操作栏（撤销、重做、导入、导出、设置、状态）
+│   │   │   ├── Sidebar.tsx     # 左侧幻灯片缩略图大纲列表（实时微缩 SVG 预览）
+│   │   │   ├── SlideCanvas.tsx # 中间高保真 16:9 画布容器与缩放控制器
+│   │   │   ├── SVGRendererComponent.tsx # 矢量 SVG 交互渲染核心与元素选中框
+│   │   │   ├── ChatPanel.tsx   # 右侧 Copilot 聊天面板（工具状态卡片、思考动画、快捷指令）
+│   │   │   └── SettingsModal.tsx # LLM 配置与多模型路由弹窗
+│   │   ├── store/              # Zustand 全局响应式状态管理
+│   │   └── types/              # 完整的 PPT-IR TypeScript 类型声明
+│   └── dist/                   # 生产环境静态打包产物
 │
-├── exporter/               # 数据导出器
-│   ├── json_exporter.py    # 输出 presentation.json, slides/*.json, assets/*
-│   └── python_exporter.py  # 输出 slide_*.py, build.py
+├── pptx_agent_converter/       # 底层高保真 OOXML 解析与重建引擎
+│   ├── extractor/              # OOXML 深度解构 (pptx_parser, shape_parser 等)
+│   ├── model/                  # OOXML 物理领域模型
+│   └── renderer/               # OOXML 重建器 (pptx_builder, shape_renderer 等)
 │
-├── renderer/               # OOXML 重建与渲染器
-│   ├── pptx_builder.py     # OPC ZIP 打包、母版布局合成、全局 Rel 组装
-│   ├── shape_renderer.py   # 生成 p:sp, p:cxnSp, p:pic, p:grpSp 节点
-│   └── style_renderer.py   # 生成 DrawingML 填充、线条、阴影、文本样式
-│
-├── dsl/                    # Python DSL 运行时
-│   └── api.py              # Shape, Connector, TextBox, Image, add_* API
-│
-├── output/                 # 转换生成的工程目录
-│
-└── tests/                  # 自动化测试用例套件
-    ├── test_text.py        # 文本与字体测试
-    ├── test_shape.py       # 形状、填充、圆角、阴影测试
-    ├── test_connector.py   # 连线端点与箭头方向测试
-    └── test_roundtrip.py   # 完整 PPTX -> JSON -> PPTX 端到端回环测试
+├── run_studio.py               # 一键启动完整 Studio 平台的启动脚本
+├── cli.py                      # 独立 PPTX 转换器命令行工具
+└── tests/                      # 自动化测试套件 (包含 34+ 项全链路单元与集成测试)
 ```
 
 ---
 
-## 🛠️ 安装与环境
+## 🛠️ 安装与快速启动
 
-要求 **Python 3.11+**。
+### 1. 环境准备
 
-建议使用虚拟环境：
+要求 **Python 3.11+** 与 **Node.js 18+**。
 
 ```bash
-python -m venv .venv
-
-# Windows
+# 激活虚拟环境
 .venv\Scripts\activate
 
-# Linux / macOS
-source .venv/bin/activate
-
-# 安装依赖
+# 安装后端依赖
 pip install -r requirements.txt
 pip install -e .
+
+# 安装前端依赖并构建静态资源
+cd frontend
+npm install
+npm run build
+cd ..
 ```
+
+### 2. 启动服务
+
+运行根目录启动脚本：
+
+```bash
+python run_studio.py
+```
+
+终端将输出：
+```text
+[Ready] Production frontend is built and mounted at http://127.0.0.1:8000
+🚀 Starting PPT-Agent-Studio on http://127.0.0.1:8000 ...
+```
+
+在浏览器中打开 `http://127.0.0.1:8000`，即可立即使用完整的 **PPT-Agent-Studio** 平台！
 
 ---
 
-## 💻 命令行使用说明
+## 🧪 自动化测试验证
 
-### 1. 转换 PPTX 为 JSON / Python DSL
-```bash
-python cli.py convert input.pptx
-```
-输出目录结构：
-```
-output/
-└── input_name/
-    ├── presentation.json       # 演示文稿全局元数据与主题定义
-    ├── slides/
-    │   ├── slide_01.json       # 各单页结构化 JSON
-    │   ├── slide_02.json
-    │   └── ...
-    ├── assets/
-    │   ├── image1.png          # 原始图片素材
-    │   └── ...
-    └── python/
-        ├── slide_01.py         # 各单页声明式 Python DSL
-        ├── slide_02.py
-        └── build.py            # DSL 独立重建脚本
-```
-
-### 2. 重建 PPTX
-从生成的工程目录中重新打包生成 PPTX：
-```bash
-python cli.py build output/input_name --output output/input_name/rebuild.pptx
-```
-
-### 3. 单页导出
-单独导出 PPTX 中的某一页为独立 JSON：
-```bash
-python cli.py export-slide input.pptx --slide 1 --output single_slide_export/
-```
-
-### 4. 单页重建
-将单独修改后的 `slide_01.json` 重建为独立 PPTX：
-```bash
-python cli.py build-slide single_slide_export/slide_01.json --output single_slide.pptx
-```
-
----
-
-## 🎨 Python DSL 示例
-
-转换后生成的 `slide_01.py` 如下所示，清晰直观，易于让 LLM Agent 针对特定元素进行增删改查：
-
-```python
-# -*- coding: utf-8 -*-
-from pptx_agent_converter.dsl import (
-    Shape,
-    Connector,
-    TextBox,
-    Image,
-    add_shape,
-    add_connector
-)
-
-def build(slide):
-    # 添加带阴影与圆角的圆角矩形
-    add_shape(
-        slide,
-        Shape(
-            type="roundRect",
-            x=1.2,
-            y=2.5,
-            width=2.5,
-            height=1.0,
-            radius=0.1667,
-            style={
-                "fill": "#3366FF",
-                "border": "#FFFFFF",
-                "border_width": 1.5,
-                "shadow": True
-            },
-            text="Image Generation",
-            font={"name": "Aptos", "size": 18.0, "color": "#FFFFFF"},
-            paragraph={"align": "center", "vertical": "middle"}
-        )
-    )
-
-    # 添加带三角箭头的连线（箭头方向严格保持）
-    add_connector(
-        slide,
-        start=(3.7, 3.0),
-        end=(5.5, 3.0),
-        arrow="triangle",
-        line={"color": "#3366FF", "width": 2.0}
-    )
-```
-
-直接运行 `python output/input_name/python/build.py` 亦可无缝完成 DSL 到 PPTX 的编译。
-
----
-
-## 🧪 运行测试套件
-
-执行全部自动化测试：
+系统配备了全面的测试覆盖，包含 PPT-IR 校验、双向转换保真度、Agent 运行时、REST API 与 PPTX 原生回环：
 
 ```bash
 pytest -v
 ```
 
-测试覆盖内容：
-- `test_text.py`: 字体名称、字号、颜色、粗体、斜体、对齐方式、多段落与多 Run 解析与还原。
-- `test_shape.py`: 矩形、圆角矩形、椭圆、菱形、箭头等形状类型，纯色填充、渐变填充、透明度、边框虚线、圆角半径、阴影效果。
-- `test_connector.py`: 连线起点与终点计算、横向/纵向/对角连线、箭头方向不反向验证。
-- `test_roundtrip.py`: PPTX → JSON → PPTX 完整端到端回环测试，对比页面数量、形状类型、文本内容与坐标，以及 CLI 命令和图片资源保真度。
+执行结果：
+```text
+tests/test_agent_runtime.py::test_tool_create_and_delete_slide PASSED
+tests/test_agent_runtime.py::test_tool_add_and_update_shape PASSED
+tests/test_agent_runtime.py::test_agent_runtime_turn PASSED
+tests/test_backend_api.py::test_api_get_presentation PASSED
+tests/test_backend_api.py::test_api_slide_svg PASSED
+tests/test_backend_api.py::test_api_settings_update PASSED
+tests/test_backend_api.py::test_pptx_import_export_roundtrip PASSED
+tests/test_backend_api.py::test_api_upload_and_export PASSED
+tests/test_backend_api.py::test_frontend_spa_serving PASSED
+tests/test_ppt_ir.py::test_ppt_ir_model_creation PASSED
+tests/test_ppt_ir.py::test_svg_renderer PASSED
+tests/test_ppt_ir.py::test_bidirectional_conversion PASSED
+tests/test_ppt_ir.py::test_history_manager_undo_redo PASSED
+tests/test_roundtrip.py::test_full_roundtrip_workflow PASSED
+... (34 项测试全部通过)
+```
+
+---
+
+## 💻 核心操作工作流
+
+1. **导入 PPTX**：点击顶部导航栏的“导入 PPTX”，底层 OOXML 解析器将自动解构母版、形状、文字、图片及连线，并投射为标准 PPT-IR。
+2. **AI 自然语言编辑**：在右侧 Copilot 面板输入你的意图，例如：
+   - *“在当前页右下角添加一个指标卡片，标题为数据增长，数值 150%”*
+   - *“将所有卡片规整排版为水平等宽网格”*
+   - *“将整套 PPT 配色切换为深蓝科技风”*
+3. **实时预览与撤销**：画布即时接收 WebSocket 补丁并平滑重绘，可随时通过撤销按钮或快捷键 `Ctrl+Z` 回滚至上一状态。
+4. **高保真导出**：点击“导出 PPTX”，系统自动组装标准的 PresentationML 压缩包，可在 Microsoft PowerPoint、WPS 或 Keynote 中无损打开与二次编辑。
