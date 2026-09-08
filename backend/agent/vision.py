@@ -24,7 +24,28 @@ except ImportError:
 
 
 class VisionEngine:
-    """Manages screenshot generation and visual review loop."""
+    """Manages screenshot generation, layout verification, and visual review loop."""
+
+    @classmethod
+    def evaluate_slide_layout(cls, slide: SlideIR) -> Any:
+        """Runs the rule-based geometric and accessibility layout evaluation."""
+        from ..eval.layout_diff import LayoutDiffEngine
+        return LayoutDiffEngine.evaluate_slide(slide)
+
+    @classmethod
+    async def audit_and_remediate(
+        cls,
+        slide: SlideIR,
+        client: Optional[Any] = None,
+        include_multimodal: bool = True
+    ) -> Any:
+        """Executes full Visual Critic inspection producing scores and remediation actions."""
+        from ..eval.visual_critic import VisualCritic
+        return await VisualCritic.review_slide(
+            slide=slide,
+            llm_client=client,
+            include_multimodal=include_multimodal
+        )
 
     @classmethod
     async def capture_slide_snapshot(cls, slide: SlideIR) -> str:

@@ -1550,3 +1550,98 @@ def duplicate_slide(pres: PresentationIR, history: HistoryManager, slide_id: str
     )
 
     return {"success": True, "new_slide_id": new_slide.id, "slide_num": new_slide.slide_num, "message": f"已成功复制幻灯片为第 {new_slide.slide_num} 页"}
+
+
+# =====================================================================
+# 7. Visual Evaluation & Self-Healing Tools
+# =====================================================================
+
+@tools.register({
+    "type": "function",
+    "function": {
+        "name": "evaluate_layout",
+        "description": "Perform comprehensive visual geometry and WCAG contrast inspection on a slide, returning quality health score and defects.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "slide_id": {"type": "string", "description": "Slide ID or empty for active slide"}
+            },
+            "required": []
+        }
+    }
+})
+def evaluate_layout(
+    pres: PresentationIR,
+    history: HistoryManager,
+    slide_id: Optional[str] = None
+) -> Dict[str, Any]:
+    slide = pres.get_slide(slide_id) if slide_id else pres.get_active_slide()
+    if not slide:
+        return {"success": False, "error": "Slide not found"}
+
+    from ..eval.layout_diff import LayoutDiffEngine
+    report = LayoutDiffEngine.evaluate_slide(slide)
+    return {
+        "success": True,
+        "slide_id": slide.id,
+        "score": report.score,
+        "summary": report.summary(),
+        "report": report.to_dict()
+    }
+
+
+@tools.register({
+    "type": "function",
+    "function": {
+        "name": "auto_fix_layout",
+        "description": "Automatically detect and remediate layout defects (such as element collisions, viewport clipping, and low contrast) on a slide.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "slide_id": {"type": "string", "description": "Slide ID or empty for active slide"}
+            },
+            "required": []
+        }
+    }
+})
+def auto_fix_layout(
+    pres: PresentationIR,
+    history: HistoryManager,
+    slide_id: Optional[str] = None
+) -> Dict[str, Any]:
+    slide = pres.get_slide(slide_id) if slide_id else pres.get_active_slide()
+    if not slide:
+        return {"success": False, "error": "Slide not found"}
+
+    from ..eval.visual_critic import VisualCritic
+    from ..eval.layout_diff import LayoutDiffEngine
+
+    before_report = LayoutDiffEngine.evaluate_slide(slide)
+    actions = VisualCritic.plan_remediations(slide, before_report)
+
+    applied = []
+    for act in actions:
+        fn_name = act["tool"]
+        args = act.get("arguments", {})
+        res = tools.execute(fn_name, args, pres, history)
+        applied.append({"tool": fn_name, "args": args, "result": res, "reason": act.get("reason")})
+
+    after_report = LayoutDiffEngine.evaluate_slide(slide)
+    pres.version += 1
+
+    history.record(
+        action="auto_fix_layout",
+        description=f"视觉自动修复: 修复 {len(applied)} 项排版缺陷 (得分: {before_report.score:.1f} -> {after_report.score:.1f})",
+        slide_id=slide.id
+    )
+
+    return {
+        "success": True,
+        "slide_id": slide.id,
+        "applied_fixes": applied,
+        "score_before": before_report.score,
+        "score_after": after_report.score,
+        "score_delta": round(after_report.score - before_report.score, 1),
+        "message": f"排版自愈完成: 应用了 {len(applied)} 处修复，得分由 {before_report.score:.1f} 提升至 {after_report.score:.1f}"
+    }
+
