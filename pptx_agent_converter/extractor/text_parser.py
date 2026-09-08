@@ -93,6 +93,40 @@ class TextParser:
             if bu_char is not None:
                 bullet = bu_char.get("char", "•")
 
+            # Line spacing
+            ln_spc = p_pr.find("a:lnSpc", NS)
+            if ln_spc is not None:
+                spc_pct = ln_spc.find("a:spcPct", NS)
+                spc_pts = ln_spc.find("a:spcPts", NS)
+                if spc_pct is not None and spc_pct.get("val"):
+                    val = spc_pct.get("val", "0")
+                    if val.isdigit():
+                        line_spacing = round(int(val) / 100000.0, 2)
+                elif spc_pts is not None and spc_pts.get("val"):
+                    val = spc_pts.get("val", "0")
+                    if val.isdigit():
+                        line_spacing = round(int(val) / 100.0, 1)
+
+            # Space before
+            spc_bef = p_pr.find("a:spcBdr", NS)
+            if spc_bef is None:
+                spc_bef = p_pr.find("a:spcBef", NS)
+            if spc_bef is not None:
+                spc_pts = spc_bef.find("a:spcPts", NS)
+                if spc_pts is not None and spc_pts.get("val"):
+                    val = spc_pts.get("val", "0")
+                    if val.isdigit():
+                        space_before = round(int(val) / 100.0, 1)
+
+            # Space after
+            spc_aft = p_pr.find("a:spcAft", NS)
+            if spc_aft is not None:
+                spc_pts = spc_aft.find("a:spcPts", NS)
+                if spc_pts is not None and spc_pts.get("val"):
+                    val = spc_pts.get("val", "0")
+                    if val.isdigit():
+                        space_after = round(int(val) / 100.0, 1)
+
         para_style = ParagraphStyle(
             align=align,
             vertical=default_vertical,

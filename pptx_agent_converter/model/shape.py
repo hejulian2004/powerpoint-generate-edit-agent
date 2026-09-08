@@ -255,6 +255,85 @@ class GroupElement(BaseElement):
     def __post_init__(self):
         self.type = "group"
 
+    def all_children(self) -> List[Union[ShapeElement, ConnectorElement, ImageElement, 'GroupElement']]:
+        """Returns all descendants recursively."""
+        result = []
+        for child in self.elements:
+            result.append(child)
+            if isinstance(child, GroupElement):
+                result.extend(child.all_children())
+        return result
+
+    def recompute_bounds(self) -> Position:
+        """Computes and updates the bounding box from all child elements."""
+        if not self.elements:
+            return self.position
+
+        min_x = float('inf')
+        min_y = float('inf')
+        max_x = float('-inf')
+        max_y = float('-inf')
+
+        for child in self.elements:
+            if hasattr(child, "position") and child.position:
+                p = child.position
+                min_x = min(min_x, p.x)
+                min_y = min(min_y, p.y)
+                max_x = max(max_x, p.x + p.width)
+                max_y = max(max_y, p.y + p.height)
+            elif isinstance(child, ConnectorElement):
+                min_x = min(min_x, child.start[0], child.end[0])
+                min_y = min(min_y, child.start[1], child.end[1])
+                max_x = max(max_x, child.start[0], child.end[0])
+                max_y = max(max_y, child.start[1], child.end[1])
+
+        if min_x != float('inf'):
+            self.position.x = round(min_x, 4)
+            self.position.y = round(min_y, 4)
+            self.position.width = round(max(max_x - min_x, 0.01), 4)
+            self.position.height = round(max(max_y - min_y, 0.01), 4)
+        return self.position
+
+    def translate(self, dx: float, dy: float) -> None:
+        """Translates the group and all its children by dx, dy."""
+        self.position.x = round(self.position.x + dx, 4)
+        self.position.y = round(self.position.y + dy, 4)
+        for child in self.elements:
+            if isinstance(child, GroupElement):
+                child.translate(dx, dy)
+            elif hasattr(child, "position") and child.position:
+                child.position.x = round(child.position.x + dx, 4)
+                child.position.y = round(child.position.y + dy, 4)
+            elif isinstance(child, ConnectorElement):
+                child.start = (round(child.start[0] + dx, 4), round(child.start[1] + dy, 4))
+                child.end = (round(child.end[0] + dx, 4), round(child.end[1] + dy, 4))
+
+    def scale(self, sx: float, sy: float, origin_x: Optional[float] = None, origin_y: Optional[float] = None) -> None:
+        """Scales group and children relative to origin (default group position)."""
+        ox = self.position.x if origin_x is None else origin_x
+        oy = self.position.y if origin_y is None else origin_y
+
+        self.position.x = round(ox + (self.position.x - ox) * sx, 4)
+        self.position.y = round(oy + (self.position.y - oy) * sy, 4)
+        self.position.width = round(self.position.width * sx, 4)
+        self.position.height = round(self.position.height * sy, 4)
+
+        for child in self.elements:
+            if isinstance(child, GroupElement):
+                child.scale(sx, sy, origin_x=ox, origin_y=oy)
+            elif hasattr(child, "position") and child.position:
+                child.position.x = round(ox + (child.position.x - ox) * sx, 4)
+                child.position.y = round(oy + (child.position.y - oy) * sy, 4)
+                child.position.width = round(child.position.width * sx, 4)
+                child.position.height = round(child.position.height * sy, 4)
+            elif isinstance(child, ConnectorElement):
+                sx_start = round(ox + (child.start[0] - ox) * sx, 4)
+                sy_start = round(oy + (child.start[1] - oy) * sy, 4)
+                sx_end = round(ox + (child.end[0] - ox) * sx, 4)
+                sy_end = round(oy + (child.end[1] - oy) * sy, 4)
+                child.start = (sx_start, sy_start)
+                child.end = (sx_end, sy_end)
+
     def to_dict(self) -> Dict[str, Any]:
         return {
             "id": self.id,

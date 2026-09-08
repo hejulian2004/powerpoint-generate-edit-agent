@@ -475,14 +475,13 @@ async def vision_critic_node(state: PPTAgentState, config: RunnableConfig) -> Di
 
 
 async def auto_correct_node(state: PPTAgentState, config: RunnableConfig) -> Dict[str, Any]:
-    """Executes automated remediation operations proposed by VisualCritic."""
+    """Executes transaction-guarded, conflict-resolved remediation operations."""
     configurable = config.get("configurable", {})
     pres: Optional[PresentationIR] = configurable.get("pres")
     history: Optional[HistoryManager] = configurable.get("history")
     on_event: Optional[Callable] = configurable.get("on_event")
 
     visual_review = state.get("visual_review", {})
-    proposed_actions = visual_review.get("proposed_actions", []) if visual_review else []
     tool_results = list(state.get("tool_results", []))
     correction_count = state.get("correction_count", 0) + 1
 
@@ -490,27 +489,64 @@ async def auto_correct_node(state: PPTAgentState, config: RunnableConfig) -> Dic
         await on_event({
             "type": "vision_loop",
             "status": "auto_correcting",
-            "text": f"排版自愈中: 正在自动修正 {len(proposed_actions)} 处几何与视觉缺陷..."
+            "text": "排版自愈中: 开启事务安全执行关键缺陷修复..."
         })
 
-    for action in proposed_actions:
-        fn_name = action.get("tool")
-        args = action.get("arguments", {})
-        res = tools.execute(fn_name, args, pres, history)
+    from .remediation_runner import RemediationRunner
+    from ..eval.remediation import RemediationPlan, FixAction, FixActionType, DefectCategory
+
+    # Reconstruct RemediationPlan from review dict
+    plan_dict = visual_review.get("remediation_plan", {})
+    actions = []
+    for a in plan_dict.get("actions", []):
+        try:
+            actions.append(FixAction(
+                action_type=FixActionType(a["action_type"]),
+                category=DefectCategory(a["category"]),
+                target_ids=a.get("target_ids", []),
+                parameters=a.get("parameters", {}),
+                reason=a.get("reason", ""),
+                priority=a.get("priority", 1)
+            ))
+        except Exception:
+            pass
+
+    plan = RemediationPlan(
+        actions=actions,
+        has_critical=plan_dict.get("has_critical", False),
+        summary=plan_dict.get("summary", "")
+    )
+
+    runner_res = RemediationRunner.apply_plan(
+        pres=pres,
+        history=history,
+        plan=plan,
+        slide_id=state.get("active_slide_id"),
+        only_critical=True
+    )
+
+    for rec in runner_res.get("applied_records", []):
         tool_results.append({
-            "tool": fn_name,
-            "args": args,
-            "result": res,
+            "tool": rec["tool"],
+            "args": rec["args"],
+            "result": rec["result"],
             "auto_correct": True,
-            "reason": action.get("reason", "")
+            "reason": rec["reason"]
         })
         if on_event:
             await on_event({
                 "type": "tool_completed",
-                "tool": fn_name,
-                "result": res,
+                "tool": rec["tool"],
+                "result": rec["result"],
                 "presentation_version": pres.version if pres else 1
             })
+
+    if runner_res.get("rolled_back") and on_event:
+        await on_event({
+            "type": "vision_loop",
+            "status": "rolled_back",
+            "text": runner_res.get("message", "自愈因质量未达标已安全回滚")
+        })
 
     return {
         "tool_results": tool_results,
@@ -627,18 +663,18 @@ def should_execute_tools(state: PPTAgentState) -> str:
 
 
 def should_auto_correct(state: PPTAgentState) -> str:
-    """Decides whether to enter auto-correction loop based on visual review results."""
+    """Decides whether to enter auto-correction loop based on critical defects."""
     visual_review = state.get("visual_review")
     if not visual_review:
         return "summary_node"
 
-    proposed = visual_review.get("proposed_actions", [])
+    plan_dict = visual_review.get("remediation_plan", {})
+    has_critical = plan_dict.get("has_critical", False) or visual_review.get("has_critical_defects", False)
+    critical_count = plan_dict.get("critical_count", len(visual_review.get("proposed_actions", [])))
     correction_count = state.get("correction_count", 0)
-    has_critical = visual_review.get("has_critical_defects", False)
-    needs_correction = visual_review.get("needs_auto_correction", False)
 
-    # Perform auto-correction if defects are found and proposed actions exist (up to 2 iterations)
-    if (has_critical or needs_correction) and proposed and correction_count < 2:
+    # Policy: only critical defects (clipping, collisions, severe overflow) trigger auto-correction (max 2 iterations)
+    if has_critical and critical_count > 0 and correction_count < 2:
         return "auto_correct_node"
     return "summary_node"
 

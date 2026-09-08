@@ -13,10 +13,11 @@ from .constants import NS, emu_to_inches, angle_to_degrees
 class MediaParser:
     """Handles extracting media files and resolving image references in slides."""
 
-    def __init__(self, zf: zipfile.ZipFile):
+    def __init__(self, zf: Optional[zipfile.ZipFile] = None):
         self.zf = zf
         self._media_cache: Dict[str, bytes] = {}
-        self._extract_all_media()
+        if self.zf is not None:
+            self._extract_all_media()
 
     def _extract_all_media(self):
         """Pre-index all media files in ppt/media/."""

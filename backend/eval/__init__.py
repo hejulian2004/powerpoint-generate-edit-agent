@@ -9,6 +9,12 @@ from .layout_diff import (
     calculate_contrast_ratio,
     calculate_relative_luminance
 )
+from .remediation import (
+    DefectCategory,
+    FixActionType,
+    FixAction,
+    RemediationPlan
+)
 from .visual_critic import (
     VisualCritic,
     VisualReviewResult
@@ -22,6 +28,10 @@ __all__ = [
     "compare_slides",
     "calculate_contrast_ratio",
     "calculate_relative_luminance",
+    "DefectCategory",
+    "FixActionType",
+    "FixAction",
+    "RemediationPlan",
     "VisualCritic",
     "VisualReviewResult"
 ]

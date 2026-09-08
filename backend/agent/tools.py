@@ -11,7 +11,7 @@ import copy
 from typing import Dict, Any, List, Optional, Callable
 from ..ir.models import (
     PresentationIR, SlideIR, ElementIR, ShapeElementIR, TextElementIR,
-    ConnectorElementIR, ImageElementIR, TableElementIR, ElementStyleIR,
+    ConnectorElementIR, ImageElementIR, TableElementIR, GroupElementIR, ElementStyleIR,
     FillStyle, BorderStyle, ShadowStyle, TextContentIR, ParagraphIR, RunIR, FontIR
 )
 from ..ir.patch import HistoryManager
@@ -462,14 +462,25 @@ def update_element(
 
     before_state = elem.model_dump()
 
-    if x is not None:
-        elem.x = x
-    if y is not None:
-        elem.y = y
-    if width is not None:
-        elem.width = width
-    if height is not None:
-        elem.height = height
+    if isinstance(elem, GroupElementIR):
+        dx = (x - elem.x) if x is not None else 0.0
+        dy = (y - elem.y) if y is not None else 0.0
+        sx = (width / elem.width) if (width is not None and elem.width > 0) else 1.0
+        sy = (height / elem.height) if (height is not None and elem.height > 0) else 1.0
+
+        if sx != 1.0 or sy != 1.0:
+            elem.scale(sx, sy)
+        if dx != 0.0 or dy != 0.0:
+            elem.translate(dx, dy)
+    else:
+        if x is not None:
+            elem.x = x
+        if y is not None:
+            elem.y = y
+        if width is not None:
+            elem.width = width
+        if height is not None:
+            elem.height = height
 
     if fill_color is not None:
         elem.style.fill = FillStyle(type="solid", color=fill_color) if fill_color else FillStyle(type="none")
@@ -573,6 +584,106 @@ def delete_element(
     )
 
     return {"success": True, "message": f"已成功删除元素 {element_id}"}
+
+
+@tools.register({
+    "type": "function",
+    "function": {
+        "name": "group_elements",
+        "description": "Group multiple elements on a slide into a single group container.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "element_ids": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "List of element IDs to group together"
+                },
+                "slide_id": {"type": "string", "description": "Slide ID or empty for active slide"},
+                "group_name": {"type": "string", "description": "Display name for the new group", "default": "Group"}
+            },
+            "required": ["element_ids"]
+        }
+    }
+})
+def group_elements(
+    pres: PresentationIR,
+    history: HistoryManager,
+    element_ids: List[str],
+    slide_id: Optional[str] = None,
+    group_name: str = "Group"
+) -> Dict[str, Any]:
+    slide = pres.get_slide(slide_id) if slide_id else pres.get_active_slide()
+    if not slide:
+        return {"success": False, "error": "Slide not found"}
+
+    grp = slide.group_elements(element_ids, group_name=group_name)
+    if not grp:
+        return {"success": False, "error": "Could not group specified elements (need at least 2 valid top-level elements)"}
+
+    pres.version += 1
+    history.record(
+        action="group_elements",
+        description=f"组合 {len(element_ids)} 个图元为组: {group_name}",
+        slide_id=slide.id,
+        element_id=grp.id,
+        after=grp.model_dump()
+    )
+    return {
+        "success": True,
+        "group_id": grp.id,
+        "x": grp.x,
+        "y": grp.y,
+        "width": grp.width,
+        "height": grp.height,
+        "children_count": len(grp.children),
+        "message": f"成功将 {len(grp.children)} 个图元组合为组 '{group_name}'"
+    }
+
+
+@tools.register({
+    "type": "function",
+    "function": {
+        "name": "ungroup_elements",
+        "description": "Dissolve a group element on a slide, restoring its children to top-level elements.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "group_id": {"type": "string", "description": "ID of group element to ungroup"},
+                "slide_id": {"type": "string", "description": "Slide ID or empty for active slide"}
+            },
+            "required": ["group_id"]
+        }
+    }
+})
+def ungroup_elements(
+    pres: PresentationIR,
+    history: HistoryManager,
+    group_id: str,
+    slide_id: Optional[str] = None
+) -> Dict[str, Any]:
+    slide = pres.get_slide(slide_id) if slide_id else pres.get_active_slide()
+    if not slide:
+        return {"success": False, "error": "Slide not found"}
+
+    children = slide.ungroup_elements(group_id)
+    if not children:
+        return {"success": False, "error": f"Group '{group_id}' not found or has no children"}
+
+    pres.version += 1
+    history.record(
+        action="ungroup_elements",
+        description=f"解散组: {group_id}",
+        slide_id=slide.id,
+        element_id=group_id,
+        after={"restored_elements": [c.model_dump() for c in children]}
+    )
+    return {
+        "success": True,
+        "restored_count": len(children),
+        "child_ids": [c.id for c in children],
+        "message": f"成功解散组，已恢复 {len(children)} 个独立图元"
+    }
 
 
 # =====================================================================
@@ -1594,11 +1705,12 @@ def evaluate_layout(
     "type": "function",
     "function": {
         "name": "auto_fix_layout",
-        "description": "Automatically detect and remediate layout defects (such as element collisions, viewport clipping, and low contrast) on a slide.",
+        "description": "Automatically detect and safely remediate layout defects with transaction rollback protection.",
         "parameters": {
             "type": "object",
             "properties": {
-                "slide_id": {"type": "string", "description": "Slide ID or empty for active slide"}
+                "slide_id": {"type": "string", "description": "Slide ID or empty for active slide"},
+                "only_critical": {"type": "boolean", "default": False, "description": "If False, also addresses structural spacing/alignments"}
             },
             "required": []
         }
@@ -1607,7 +1719,8 @@ def evaluate_layout(
 def auto_fix_layout(
     pres: PresentationIR,
     history: HistoryManager,
-    slide_id: Optional[str] = None
+    slide_id: Optional[str] = None,
+    only_critical: bool = False
 ) -> Dict[str, Any]:
     slide = pres.get_slide(slide_id) if slide_id else pres.get_active_slide()
     if not slide:
@@ -1615,33 +1728,27 @@ def auto_fix_layout(
 
     from ..eval.visual_critic import VisualCritic
     from ..eval.layout_diff import LayoutDiffEngine
+    from .remediation_runner import RemediationRunner
 
-    before_report = LayoutDiffEngine.evaluate_slide(slide)
-    actions = VisualCritic.plan_remediations(slide, before_report)
+    # Generate decoupled plan
+    health_report = LayoutDiffEngine.evaluate_slide(slide)
+    plan = VisualCritic.plan_remediations(slide, health_report)
 
-    applied = []
-    for act in actions:
-        fn_name = act["tool"]
-        args = act.get("arguments", {})
-        res = tools.execute(fn_name, args, pres, history)
-        applied.append({"tool": fn_name, "args": args, "result": res, "reason": act.get("reason")})
-
-    after_report = LayoutDiffEngine.evaluate_slide(slide)
-    pres.version += 1
-
-    history.record(
-        action="auto_fix_layout",
-        description=f"视觉自动修复: 修复 {len(applied)} 项排版缺陷 (得分: {before_report.score:.1f} -> {after_report.score:.1f})",
-        slide_id=slide.id
+    # Execute plan safely with rollback protection
+    res = RemediationRunner.apply_plan(
+        pres=pres,
+        history=history,
+        plan=plan,
+        slide_id=slide.id,
+        only_critical=only_critical
     )
 
-    return {
-        "success": True,
-        "slide_id": slide.id,
-        "applied_fixes": applied,
-        "score_before": before_report.score,
-        "score_after": after_report.score,
-        "score_delta": round(after_report.score - before_report.score, 1),
-        "message": f"排版自愈完成: 应用了 {len(applied)} 处修复，得分由 {before_report.score:.1f} 提升至 {after_report.score:.1f}"
-    }
+    if res.get("applied_count", 0) > 0 and not res.get("rolled_back"):
+        history.record(
+            action="auto_fix_layout",
+            description=f"视觉自动修复: 修复 {res['applied_count']} 项排版缺陷 (得分: {res.get('score_before', 0):.1f} -> {res.get('score_after', 0):.1f})",
+            slide_id=slide.id
+        )
+
+    return res
 

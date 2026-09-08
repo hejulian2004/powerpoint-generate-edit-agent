@@ -15,7 +15,9 @@ Features in v2:
 """
 
 from __future__ import annotations
-from typing import List, Dict, Any, Optional, Union, Literal
+import copy
+from contextlib import contextmanager
+from typing import List, Dict, Any, Optional, Union, Literal, Generator
 from pydantic import BaseModel, Field, model_validator
 import uuid
 
@@ -262,6 +264,59 @@ class GroupElementIR(BaseElementIR):
                 result.extend(child.all_children())
         return result
 
+    def recompute_bounds(self) -> None:
+        """Computes and updates bounding box from children in canvas pixels."""
+        if not self.children:
+            return
+        min_x = min(c.x for c in self.children)
+        min_y = min(c.y for c in self.children)
+        max_x = max(c.x + c.width for c in self.children)
+        max_y = max(c.y + c.height for c in self.children)
+        self.x = round(min_x, 2)
+        self.y = round(min_y, 2)
+        self.width = round(max(max_x - min_x, 1.0), 2)
+        self.height = round(max(max_y - min_y, 1.0), 2)
+
+    def translate(self, dx: float, dy: float) -> None:
+        """Translates group origin and recursively shifts all children."""
+        self.x = round(self.x + dx, 2)
+        self.y = round(self.y + dy, 2)
+        for child in self.children:
+            if isinstance(child, GroupElementIR):
+                child.translate(dx, dy)
+            else:
+                child.x = round(child.x + dx, 2)
+                child.y = round(child.y + dy, 2)
+                if isinstance(child, ConnectorElementIR):
+                    child.start_x = round(child.start_x + dx, 2)
+                    child.start_y = round(child.start_y + dy, 2)
+                    child.end_x = round(child.end_x + dx, 2)
+                    child.end_y = round(child.end_y + dy, 2)
+
+    def scale(self, sx: float, sy: float, origin_x: Optional[float] = None, origin_y: Optional[float] = None) -> None:
+        """Scales group and all children relative to origin (default top-left of group)."""
+        ox = self.x if origin_x is None else origin_x
+        oy = self.y if origin_y is None else origin_y
+
+        self.x = round(ox + (self.x - ox) * sx, 2)
+        self.y = round(oy + (self.y - oy) * sy, 2)
+        self.width = round(self.width * sx, 2)
+        self.height = round(self.height * sy, 2)
+
+        for child in self.children:
+            if isinstance(child, GroupElementIR):
+                child.scale(sx, sy, origin_x=ox, origin_y=oy)
+            else:
+                child.x = round(ox + (child.x - ox) * sx, 2)
+                child.y = round(oy + (child.y - oy) * sy, 2)
+                child.width = round(child.width * sx, 2)
+                child.height = round(child.height * sy, 2)
+                if isinstance(child, ConnectorElementIR):
+                    child.start_x = round(ox + (child.start_x - ox) * sx, 2)
+                    child.start_y = round(oy + (child.start_y - oy) * sy, 2)
+                    child.end_x = round(ox + (child.end_x - ox) * sx, 2)
+                    child.end_y = round(oy + (child.end_y - oy) * sy, 2)
+
     @property
     def text_content(self) -> Optional[TextContentIR]:
         """Aggregate text content from children if any child has text."""
@@ -368,6 +423,83 @@ class SlideIR(BaseModel):
                     return True
         return False
 
+    def group_elements(
+        self,
+        element_ids: List[str],
+        group_id: Optional[str] = None,
+        group_name: str = "Group"
+    ) -> Optional[GroupElementIR]:
+        """Groups the specified elements into a new GroupElementIR container."""
+        if not element_ids or len(element_ids) < 2:
+            return None
+
+        # Find target elements from top-level elements
+        target_ids_set = set(element_ids)
+        targets = [el for el in self.elements if el.id in target_ids_set]
+        if len(targets) < 2:
+            return None
+
+        remaining = [el for el in self.elements if el.id not in target_ids_set]
+
+        min_x = min(t.x for t in targets)
+        min_y = min(t.y for t in targets)
+        max_x = max(t.x + t.width for t in targets)
+        max_y = max(t.y + t.height for t in targets)
+
+        gid = group_id or f"grp_{uuid.uuid4().hex[:6]}"
+        new_grp = GroupElementIR(
+            id=gid,
+            name=group_name,
+            x=round(min_x, 2),
+            y=round(min_y, 2),
+            width=round(max(max_x - min_x, 1.0), 2),
+            height=round(max(max_y - min_y, 1.0), 2),
+            children=targets
+        )
+
+        remaining.append(new_grp)
+        self.elements = remaining
+        return new_grp
+
+    def ungroup_elements(self, group_id: str) -> List[ElementIR]:
+        """Dissolves the specified group and restores its children to slide top-level elements."""
+        grp_idx = None
+        for idx, el in enumerate(self.elements):
+            if el.id == group_id and isinstance(el, GroupElementIR):
+                grp_idx = idx
+                break
+
+        if grp_idx is None:
+            return []
+
+        grp = self.elements.pop(grp_idx)
+        # Children coordinates are in absolute slide canvas pixels; restore in-place
+        for offset, c in enumerate(grp.children):
+            self.elements.insert(grp_idx + offset, c)
+        return grp.children
+
+
+class PresentationTransaction:
+    """Represents a transaction session on a PresentationIR with rollback capability."""
+
+    def __init__(self, presentation: PresentationIR, name: str, snapshot: Dict[str, Any]):
+        self.presentation = presentation
+        self.name = name
+        self.snapshot = snapshot
+        self.is_aborted: bool = False
+        self.is_committed: bool = False
+        self.rollback_reason: Optional[str] = None
+
+    def rollback(self, reason: str = ""):
+        """Explicitly abort and revert changes to pre-transaction snapshot."""
+        self.is_aborted = True
+        self.rollback_reason = reason
+        self.presentation.restore_snapshot(self.snapshot)
+
+    def commit(self):
+        """Mark transaction as committed successfully."""
+        self.is_committed = True
+
 
 class PresentationIR(BaseModel):
     id: str = Field(default_factory=lambda: f"pres_{uuid.uuid4().hex[:8]}")
@@ -407,6 +539,53 @@ class PresentationIR(BaseModel):
     version: int = 1
     assets: Dict[str, str] = Field(default_factory=dict, description="asset_id -> base64 or path")
     asset_metadata: Dict[str, Any] = Field(default_factory=dict, description="asset_id -> {mime_type, width, height, hash}")
+    metadata: Dict[str, Any] = Field(default_factory=dict, description="Custom metadata e.g. fix iterations, user preferences")
+
+    def create_snapshot(self) -> Dict[str, Any]:
+        """Creates a deep serializable snapshot of the current presentation state."""
+        return copy.deepcopy(self.model_dump())
+
+    def restore_snapshot(self, snapshot: Dict[str, Any]) -> None:
+        """Restores presentation state entirely from snapshot, preserving slide references in-place."""
+        rebuilt = PresentationIR.model_validate(snapshot)
+        self.id = rebuilt.id
+        self.title = rebuilt.title
+        self.width = rebuilt.width
+        self.height = rebuilt.height
+        self.theme = rebuilt.theme
+        self.master = rebuilt.master
+
+        # In-place slide state update to keep active references valid
+        slide_map = {s.id: s for s in self.slides}
+        updated_slides = []
+        for new_s in rebuilt.slides:
+            if new_s.id in slide_map:
+                old_s = slide_map[new_s.id]
+                for f_name in SlideIR.model_fields.keys():
+                    setattr(old_s, f_name, getattr(new_s, f_name))
+                updated_slides.append(old_s)
+            else:
+                updated_slides.append(new_s)
+
+        self.slides = updated_slides
+        self.active_slide_id = rebuilt.active_slide_id
+        self.version = rebuilt.version
+        self.assets = rebuilt.assets
+        self.asset_metadata = rebuilt.asset_metadata
+        self.metadata = rebuilt.metadata
+
+    @contextmanager
+    def transaction(self, name: str = "transaction") -> Generator[PresentationTransaction, None, None]:
+        """Context manager providing atomicity, commit, and rollback capabilities."""
+        snapshot = self.create_snapshot()
+        tx = PresentationTransaction(self, name, snapshot)
+        try:
+            yield tx
+            if tx.is_aborted:
+                self.restore_snapshot(snapshot)
+        except Exception:
+            self.restore_snapshot(snapshot)
+            raise
 
     def get_slide(self, slide_id_or_num: Union[str, int]) -> Optional[SlideIR]:
         if isinstance(slide_id_or_num, int):
