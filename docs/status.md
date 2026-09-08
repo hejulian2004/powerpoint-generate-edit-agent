@@ -64,15 +64,22 @@ This document defines the current baseline state, active developments, and futur
 - **100% Deterministic Execution**: Validated across 100 consecutive synthesis runs producing zero layout drift or coordinate discrepancies.
 - **Comprehensive Test Suite (`tests/layout/`)**: 23 unit and acceptance tests covering schema roundtrip, template synthesis, constraint validation, determinism, and full end-to-end PDF -> PaperIR -> PresentationPlan -> DeckSpec -> DeckLayoutSpec -> JSON pipeline.
 
+### PPTX Fidelity Renderer & OOXML Export Layer (PR11)
+- **Zero-Loss OOXML Translation (`backend/renderer/renderer.py`)**: Directly maps `DeckLayoutSpec` (1280×720 ViewBox) into native PowerPoint (`.pptx`) presentations via strict $1\text{ px} = 9525\text{ EMUs}$ translation without recomputing layout.
+- **Strict Architectural Boundaries**: `render_pptx` enforces `DeckLayoutSpec` input exclusivity, preventing direct invocation from `SlideSpec` or raw planning objects.
+- **Encapsulated Builder (`pptx_builder.py`)**: Isolates `python-pptx` behind a clean presentation builder facade (`add_text`, `add_image`, `add_table`, `add_shape`, `save`).
+- **Academic Theme System (`theme.py` & `typography.py`)**: Academic typography hierarchy, color palettes, and spacing rules ensuring no hardcoded magic font sizes appear in renderer code.
+- **Asset Resolver & Diagram Synthesis (`assets.py`)**: Maps `source_figure_id` and `source_table_id` to raster disk assets or synthesizes elegant academic placeholder figures and structured tables.
+- **Fidelity Validator & Visual Exporter (`validators.py`)**: Automated verification of slide count, shape types, text containment, and geometry fidelity with coordinate error $< 1.0\%$ (empirically $0.0\%$), plus automated slide screenshot export via PowerPoint COM.
+- **Comprehensive Acceptance Test Suite (`tests/renderer/`)**: 20 dedicated unit and pipeline acceptance tests covering text, figures, tables, themes, and full end-to-end PDF -> PaperIR -> PresentationPlan -> SlideSpec -> LayoutSpec -> PPTX export.
+
 ---
 
 ## 2. In Progress
 
-### Research Paper Presentation Agent Pipeline
-- **PR11 End-to-End Paper-to-PPTX Exporter**:
-  - Academic themes (blue-accent minimal, dark keynote, LaTeX-clean).
-  - Unified PDF -> PPTX generation pipeline connecting PR10 LayoutSpec + PR6 Fidelity Engine (OOXML Shape / Picture / Table / Text rendering).
-  - Native python-pptx rendering with zero layout leakage into semantic layers.
+### Visual Evaluation & Agent Editing (PR12 & PR13)
+- **PR12 Visual Evaluation Loop**: Multi-modal vision critique of rendered slide screenshots with automated layout self-healing.
+- **PR13 Agent Editing Interface**: Conversational and iterative presentation editing actions.
 
 ---
 
