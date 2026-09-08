@@ -11,9 +11,10 @@ Follows the rule-first architecture:
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import json
 import re
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from ..config import settings
 from .schema import PresentationPlan, SlidePlan
@@ -33,9 +34,23 @@ _SYSTEM_PROMPT = (
 
 
 def enrich_presentation_plan(plan: PresentationPlan) -> PresentationPlan:
-    """Synchronous entry point for refining a presentation plan."""
+    """Synchronous entry point for refining a presentation plan.
+
+    Safe for calling inside active event loops (FastAPI, Jupyter, worker threads).
+    """
     if _no_live_key():
         return plan
+
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        loop = None
+
+    if loop and loop.is_running():
+        # Execute in a background thread to prevent nested asyncio.run() collision
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+            return pool.submit(asyncio.run, _enrich_plan_async(plan)).result()
+
     return asyncio.run(_enrich_plan_async(plan))
 
 
@@ -79,14 +94,46 @@ async def _enrich_plan_async(plan: PresentationPlan) -> PresentationPlan:
         return plan
 
 
+def _extract_first_json_object(text: str) -> Optional[Dict[str, Any]]:
+    """Scan text using bracket-depth matching and return the first valid JSON object."""
+    depth = 0
+    start = None
+    in_string = False
+    escape = False
+
+    for i, c in enumerate(text):
+        if c == '"' and not escape:
+            in_string = not in_string
+        elif not in_string:
+            if c == '{':
+                if depth == 0:
+                    start = i
+                depth += 1
+            elif c == '}':
+                depth -= 1
+                if depth == 0 and start is not None:
+                    candidate = text[start : i + 1]
+                    try:
+                        val = json.loads(candidate)
+                        if isinstance(val, dict):
+                            return val
+                    except Exception:
+                        pass
+                    # Reset start and look for next object candidate if this one failed
+                    start = None
+        escape = (c == '\\' and not escape)
+
+    return None
+
+
 def _parse_json_object(raw: str) -> Dict[str, Any]:
     """Robust JSON extraction from LLM completion text.
 
     Resilient to:
     - Direct JSON string output.
     - Markdown code fences (```json ... ```).
-    - Arbitrary prefix/suffix chatter by locating outer-most braces.
-    - Nested JSON objects (does not truncate prematurely).
+    - Trailing commentary containing extraneous braces.
+    - Deeply nested JSON structures.
     """
     cleaned = raw.strip()
 
@@ -101,24 +148,21 @@ def _parse_json_object(raw: str) -> Dict[str, Any]:
     # 2. Extract from markdown code fence
     fence_match = re.search(r"```(?:json)?\s*(.*?)\s*```", cleaned, re.DOTALL)
     if fence_match:
+        fence_content = fence_match.group(1).strip()
         try:
-            data = json.loads(fence_match.group(1).strip())
+            data = json.loads(fence_content)
             if isinstance(data, dict):
                 return data
         except Exception:
-            cleaned = fence_match.group(1).strip()
+            # Code fence might contain commentary as well; try bracket matching inside fence
+            matched = _extract_first_json_object(fence_content)
+            if matched is not None:
+                return matched
 
-    # 3. Locate outermost { ... }
-    first_idx = cleaned.find("{")
-    last_idx = cleaned.rfind("}")
-    if first_idx != -1 and last_idx != -1 and last_idx > first_idx:
-        candidate = cleaned[first_idx : last_idx + 1]
-        try:
-            data = json.loads(candidate)
-            if isinstance(data, dict):
-                return data
-        except Exception:
-            pass
+    # 3. Bracket-depth matching on the full string
+    matched = _extract_first_json_object(cleaned)
+    if matched is not None:
+        return matched
 
     raise ValueError("Could not parse valid JSON object from LLM response")
 

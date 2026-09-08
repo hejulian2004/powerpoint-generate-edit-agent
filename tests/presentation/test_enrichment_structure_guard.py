@@ -190,6 +190,15 @@ def test_parse_json_resilient_to_nested_and_fences():
     parsed2 = _parse_json_object(raw2)
     assert parsed2["title"] == "Presentation"
 
+    # Test 3: trailing commentary containing unmatched / extra braces
+    raw3 = (
+        'Here is the result:\n'
+        '{"title": "Valid Plan", "slides": []}\n'
+        'Additional explanation: Note that {this is not json} and should be ignored.'
+    )
+    parsed3 = _parse_json_object(raw3)
+    assert parsed3["title"] == "Valid Plan"
+
 
 def test_parse_json_malformed_returns_original_in_enrichment():
     from backend.presentation.enricher import enrich_presentation_plan
