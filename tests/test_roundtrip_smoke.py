@@ -63,6 +63,63 @@ def test_demo_pptx_roundtrip(tmp_path: Path):
             assert any(txt in rt for rt in re_texts), f"Text snippet '{txt}' was lost during roundtrip"
 
 
+@pytest.mark.parametrize("fixture_name", [
+    "simple.pptx",
+    "academic.pptx",
+    "diagram.pptx",
+    "image-heavy.pptx"
+])
+def test_fixtures_roundtrip(tmp_path: Path, fixture_name: str):
+    """Verify end-to-end roundtrip pipeline across diverse real-world fixtures (academic paper, diagram, image)."""
+    source = Path("tests/fixtures") / fixture_name
+    assert source.exists(), f"Fixture {fixture_name} must exist in tests/fixtures/"
+
+    # 1. PPTX -> OOXML Extractor -> PPT-IR with conversion report
+    parser = PPTXParser(str(source))
+    pres = parser.parse()
+    ir, in_report = PPTIRConverter.convert_presentation_with_report(pres)
+    assert ir is not None
+    assert len(ir.slides) == len(pres.slides)
+    assert in_report.converted_elements > 0
+
+    # Collect source plain texts
+    source_texts = []
+    for s in ir.slides:
+        for el in s.elements:
+            if hasattr(el, "text_content") and el.text_content and el.text_content.plain_text:
+                for line in el.text_content.plain_text.splitlines():
+                    trimmed = line.strip()
+                    if len(trimmed) > 5:
+                        source_texts.append(trimmed)
+
+    # 2. PPT-IR -> OOXML Renderer -> output.pptx
+    output_path = tmp_path / f"roundtrip_{fixture_name}"
+    output = export_pptx(ir, output_path)
+
+    # 3. Verify output file existence & zip archive integrity
+    assert output.exists()
+    assert output.stat().st_size > 0
+
+    validation = validate_pptx(output)
+    assert validation["valid"] is True, f"Validation failed for {fixture_name}: {validation['errors']}"
+    assert validation["slides"] == len(ir.slides)
+    assert len(validation["errors"]) == 0
+
+    # 4. Re-import and verify slide count & text preservation
+    re_ir = import_pptx(output)
+    assert len(re_ir.slides) == len(ir.slides)
+
+    re_texts = []
+    for s in re_ir.slides:
+        for el in s.elements:
+            if hasattr(el, "text_content") and el.text_content and el.text_content.plain_text:
+                re_texts.append(el.text_content.plain_text.strip())
+
+    re_corpus = "\n".join(re_texts)
+    for txt in source_texts:
+        assert txt in re_corpus, f"Text snippet '{txt}' was lost during roundtrip of {fixture_name}"
+
+
 def test_validation_utility_edge_cases(tmp_path: Path):
     """Verify validate_pptx handles invalid, missing, and empty files gracefully."""
     # 1. Non-existent file
@@ -105,3 +162,33 @@ def test_conversion_report_tracking():
     # Verify critical corruption throws
     with pytest.raises(ValueError, match="Critical corruption"):
         PPTIRConverter.presentation_to_ir(None)
+
+
+def test_conversion_report_no_double_counting_in_groups():
+    """Verify ConversionReport counts leaf elements once without duplicate group container counting."""
+    from pptx_agent_converter.model.slide import Slide, SlideSize, Presentation
+    from pptx_agent_converter.model.shape import ShapeElement, GroupElement, Position
+
+    s1 = ShapeElement(id="s1", name="Standalone Shape", position=Position(x=1, y=1, width=2, height=1))
+    child1 = ShapeElement(id="c1", name="Group Child 1", position=Position(x=1, y=3, width=2, height=1))
+    child2 = ShapeElement(id="c2", name="Group Child 2", position=Position(x=3, y=3, width=2, height=1))
+    grp = GroupElement(id="g1", name="Group Container", position=Position(x=1, y=3, width=4, height=1), elements=[child1, child2])
+    unsupported = ShapeElement(id="unsupp", name="SmartArt Node", shape_type="smartArt", position=Position(x=5, y=5, width=2, height=2))
+
+    slide = Slide(slide_id=1, slide_num=1, elements=[s1, grp, unsupported])
+    pres = Presentation(name="GroupTest", size=SlideSize(width=13.333, height=7.5), slides=[slide])
+
+    ir, report = PPTIRConverter.convert_presentation_with_report(pres)
+
+    # Elements in IR should be s1, child1, child2 -> total 3 elements
+    assert len(ir.slides[0].elements) == 3
+    # converted_elements must be exactly 3, not 4 (outer group must not be double counted)
+    assert report.converted_elements == 3, f"Expected 3 converted elements, got {report.converted_elements}"
+    # skipped_elements must be exactly 1 for the smartArt node
+    assert report.skipped_elements == 1
+    assert any("smartArt" in w for w in report.warnings)
+
+    # Reverse direction: PPT-IR -> OOXML Model
+    ooxml_pres, rev_report = PPTIRConverter.ir_to_presentation_with_report(ir)
+    assert rev_report.converted_elements == 3
+    assert rev_report.skipped_elements == 0

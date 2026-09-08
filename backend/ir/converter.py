@@ -145,13 +145,6 @@ class PPTIRConverter:
                 ir_el = cls.element_to_ir(el, scale_x, scale_y, report=report)
                 if ir_el:
                     elements_ir.append(ir_el)
-                    if report is not None:
-                        report.converted_elements += 1
-                else:
-                    if report is not None:
-                        report.skipped_elements += 1
-                        elem_name = getattr(el, 'name', 'unnamed')
-                        report.warnings.append(f"Slide {slide.slide_num}: unsupported element '{elem_name}' ({type(el).__name__}) was skipped")
 
         bg_style = FillStyle(type="solid", color="#FFFFFF", alpha=1.0)
         if slide.background:
@@ -181,14 +174,18 @@ class PPTIRConverter:
         # Check for explicit unsupported shape types
         if hasattr(elem, "shape_type") and elem.shape_type in ["smartArt", "chart", "diagram", "oleObject"]:
             if report is not None:
+                report.skipped_elements += 1
                 report.warnings.append(f"Element '{getattr(elem, 'name', '')}' has unsupported shape_type '{elem.shape_type}'")
             return None
+
+        res: Optional[ElementIR] = None
+
         if isinstance(elem, ConnectorElement):
             sx = round(elem.start[0] * scale_x, 2)
             sy = round(elem.start[1] * scale_y, 2)
             ex = round(elem.end[0] * scale_x, 2)
             ey = round(elem.end[1] * scale_y, 2)
-            
+
             x = min(sx, ex)
             y = min(sy, ey)
             w = max(abs(ex - sx), 1.0)
@@ -196,7 +193,7 @@ class PPTIRConverter:
 
             border = cls._line_to_ir(elem.line)
 
-            return ConnectorElementIR(
+            res = ConnectorElementIR(
                 id=elem.id or f"conn_{uuid_short()}",
                 name=elem.name or "Connector",
                 x=x,
@@ -219,7 +216,7 @@ class PPTIRConverter:
             w = round(elem.position.width * scale_x, 2)
             h = round(elem.position.height * scale_y, 2)
 
-            return ImageElementIR(
+            res = ImageElementIR(
                 id=elem.id or f"img_{uuid_short()}",
                 name=elem.name or "Image",
                 x=x,
@@ -248,7 +245,7 @@ class PPTIRConverter:
 
             # Distinguish pure textbox vs shape
             if elem.shape_type in ["textbox", "text"] or (not fill and not border and text_content):
-                return TextElementIR(
+                res = TextElementIR(
                     id=elem.id or f"txt_{uuid_short()}",
                     name=elem.name or "TextBox",
                     x=x,
@@ -259,38 +256,43 @@ class PPTIRConverter:
                     text_content=text_content or TextContentIR(),
                     style=ElementStyleIR(fill=fill, border=border, shadow=shadow)
                 )
-
-            return ShapeElementIR(
-                id=elem.id or f"shape_{uuid_short()}",
-                name=elem.name or "Shape",
-                shape_type=elem.shape_type or "roundRect",
-                x=x,
-                y=y,
-                width=w,
-                height=h,
-                rotation=elem.rotation,
-                text_content=text_content,
-                style=ElementStyleIR(
-                    fill=fill,
-                    border=border,
-                    shadow=shadow,
-                    radius=elem.radius if elem.radius is not None else 0.0
+            else:
+                res = ShapeElementIR(
+                    id=elem.id or f"shape_{uuid_short()}",
+                    name=elem.name or "Shape",
+                    shape_type=elem.shape_type or "roundRect",
+                    x=x,
+                    y=y,
+                    width=w,
+                    height=h,
+                    rotation=elem.rotation,
+                    text_content=text_content,
+                    style=ElementStyleIR(
+                        fill=fill,
+                        border=border,
+                        shadow=shadow,
+                        radius=elem.radius if elem.radius is not None else 0.0
+                    )
                 )
-            )
 
         elif isinstance(elem, GroupElement):
-            # Flatten group elements for simple IR manipulation
-            children = []
-            for child in elem.elements:
-                ir_child = cls.element_to_ir(child, scale_x, scale_y, report=report)
-                if ir_child:
-                    children.append(ir_child)
-            # return first child or shape
+            # Flatten group elements for simple IR manipulation without double-counting
+            children: List[ElementIR] = []
+            cls._flatten_group_to_ir(elem, children, scale_x, scale_y, report=report)
             return children[0] if children else None
 
-        if report is not None:
-            elem_name = getattr(elem, 'name', '') or str(elem)
-            report.warnings.append(f"Unsupported element class '{type(elem).__name__}' ({elem_name})")
+        else:
+            if report is not None:
+                report.skipped_elements += 1
+                elem_name = getattr(elem, 'name', '') or str(elem)
+                report.warnings.append(f"Unsupported element class '{type(elem).__name__}' ({elem_name})")
+            return None
+
+        if res is not None:
+            if report is not None:
+                report.converted_elements += 1
+            return res
+
         return None
 
     @classmethod
@@ -310,13 +312,6 @@ class PPTIRConverter:
                 ir_child = cls.element_to_ir(child, scale_x, scale_y, report=report)
                 if ir_child:
                     acc.append(ir_child)
-                    if report is not None:
-                        report.converted_elements += 1
-                else:
-                    if report is not None:
-                        report.skipped_elements += 1
-                        child_name = getattr(child, 'name', 'unnamed')
-                        report.warnings.append(f"Group child '{child_name}' ({type(child).__name__}) was skipped")
 
     # -----------------------------------------------------------------
     # PPT-IR -> OOXML Model
@@ -388,12 +383,6 @@ class PPTIRConverter:
             elem = cls.ir_to_element(el, scale_x, scale_y, report=report)
             if elem:
                 elements.append(elem)
-                if report is not None:
-                    report.converted_elements += 1
-            else:
-                if report is not None:
-                    report.skipped_elements += 1
-                    report.warnings.append(f"Slide {slide_num}: element '{el.id}' of type '{el.type}' cannot be converted to OOXML and was skipped")
 
         bg = cls._ir_to_fill(s_ir.background) if s_ir.background else None
 
@@ -418,11 +407,14 @@ class PPTIRConverter:
 
         if isinstance(el, TableElementIR):
             if report is not None:
+                report.skipped_elements += 1
                 report.warnings.append(f"Table element '{el.id}' is not yet supported for OOXML export")
             return None
 
+        res: Optional[Any] = None
+
         if isinstance(el, ConnectorElementIR):
-            return ConnectorElement(
+            res = ConnectorElement(
                 id=el.id,
                 name=el.name or "Connector",
                 connector_type=el.line_type,
@@ -434,7 +426,7 @@ class PPTIRConverter:
             )
 
         elif isinstance(elem := el, ImageElementIR):
-            return ImageElement(
+            res = ImageElement(
                 id=elem.id,
                 name=elem.name or "Image",
                 position=Position(
@@ -450,7 +442,7 @@ class PPTIRConverter:
 
         elif isinstance(elem := el, TextElementIR):
             text_block = cls._ir_to_text_block(elem.text_content)
-            return ShapeElement(
+            res = ShapeElement(
                 id=elem.id,
                 name=elem.name or "TextBox",
                 shape_type="textbox",
@@ -469,7 +461,7 @@ class PPTIRConverter:
 
         elif isinstance(elem := el, ShapeElementIR):
             text_block = cls._ir_to_text_block(elem.text_content) if elem.text_content else None
-            return ShapeElement(
+            res = ShapeElement(
                 id=elem.id,
                 name=elem.name or "Shape",
                 shape_type=elem.shape_type,
@@ -486,6 +478,17 @@ class PPTIRConverter:
                 radius=elem.style.radius if elem.style.radius > 0 else None,
                 text=text_block
             )
+
+        else:
+            if report is not None:
+                report.skipped_elements += 1
+                report.warnings.append(f"Element '{getattr(el, 'id', 'unnamed')}' of type '{getattr(el, 'type', type(el).__name__)}' cannot be converted to OOXML and was skipped")
+            return None
+
+        if res is not None:
+            if report is not None:
+                report.converted_elements += 1
+            return res
 
         return None
 

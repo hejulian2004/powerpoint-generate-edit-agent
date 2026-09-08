@@ -24,8 +24,8 @@ This document defines the current baseline state, active developments, and futur
 
 ### Package Validation & Regression Gates
 - **OOXML Validator (`validate_pptx`)**: Inspects archive health, `presentation.xml`, slide collections, and relationships.
-- **Smoke Test Gate (`test_roundtrip_smoke.py`)**: Validates the closed-loop pipeline (`PPTX -> OOXML Extractor -> PPT-IR -> OOXML Renderer -> PPTX`).
-- **Conversion Fidelity Reporting (`ConversionReport`)**: Transparent tracking of converted vs. skipped elements and explicit warning logs.
+- **Multi-Fixture Smoke Test Gate (`test_roundtrip_smoke.py`)**: Validates the closed-loop pipeline (`PPTX -> OOXML Extractor -> PPT-IR -> OOXML Renderer -> PPTX`) across diverse presentation archetypes (`simple.pptx`, `academic.pptx`, `diagram.pptx`, `image-heavy.pptx`).
+- **Conversion Fidelity Reporting (`ConversionReport`)**: Transparent tracking of converted vs. skipped elements with unified counting in `element_to_ir` to eliminate group double-counting, alongside explicit warning logs.
 
 ---
 
