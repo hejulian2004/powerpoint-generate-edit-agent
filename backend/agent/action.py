@@ -65,13 +65,61 @@ class ActionResolver:
                     if el.id == last_target_id:
                         return el
 
-        # 3. Semantic "title" resolution
+        # 3. High-Fidelity Semantic Element Graph resolution
+        try:
+            from ..semantic.element_graph import SemanticElementGraph
+            graph = SemanticElementGraph(slide)
+            target_norm = target.lower().strip()
+
+            # Title
+            if target_norm in ["title", "slide_title", "header"] or "标题" in target:
+                title_elem = graph.get_title()
+                if title_elem:
+                    return title_elem
+
+            # Subtitle
+            if target_norm in ["subtitle", "sub_title", "subheading"] or "副标题" in target:
+                subs = graph.find_by_role("subtitle")
+                if subs:
+                    return subs[0]
+
+            # Cards / Containers
+            if target_norm in ["card", "cards", "container"] or "卡片" in target or "容器" in target:
+                cards = graph.get_containers()
+                if cards:
+                    return cards[0]
+
+            # Metrics / KPIs
+            if target_norm in ["metric", "kpi", "number", "stat"] or "指标" in target or "数据" in target:
+                metrics = graph.find_by_role("metric")
+                if metrics:
+                    return metrics[0]
+
+            # Body / Paragraphs
+            if target_norm in ["body", "content", "paragraph", "text"] or "正文" in target:
+                bodies = graph.find_by_role("body")
+                if bodies:
+                    return bodies[0]
+
+            # Images
+            if target_norm in ["image", "picture", "photo", "pic"] or "图片" in target or "图" in target:
+                images = graph.find_by_role("image")
+                if images:
+                    return images[0]
+
+            # Footers
+            if target_norm in ["footer", "footnote", "page_number"] or "页脚" in target:
+                footers = graph.find_by_role("footer")
+                if footers:
+                    return footers[0]
+        except Exception:
+            pass
+
+        # 4. Fallback heuristic for "title" resolution
         if "title" in target.lower() or "标题" in target:
-            # Check ID
             for el in slide.elements:
                 if "title" in el.id.lower():
                     return el
-            # Check max font size
             title_candidate = None
             max_font = 0.0
             for el in slide.elements:
@@ -84,18 +132,17 @@ class ActionResolver:
                                 title_candidate = el
             if title_candidate and max_font >= 20.0:
                 return title_candidate
-            # Top-most text element
             top_text = next((e for e in slide.elements if e.type == "text" and e.y < 180), None)
             if top_text:
                 return top_text
 
-        # 4. Semantic "card" / "shape" resolution
+        # 5. Fallback heuristic for "card" / "shape"
         if "card" in target.lower() or "shape" in target.lower() or "卡片" in target:
             cards = [e for e in slide.elements if e.type == "shape"]
             if cards:
                 return cards[0]
 
-        # 5. Fallback to last target only if explicitly valid
+        # 6. Fallback to last target only if explicitly valid
         if last_target_id:
             for el in slide.elements:
                 if el.id == last_target_id:
@@ -112,6 +159,20 @@ class ActionResolver:
         """Converts an AgentAction into an executable tool call dict."""
         active_slide = pres.get_active_slide()
         target_elem = cls.resolve_target_element(action.target, active_slide, last_target_id)
+
+        # Resolve any theme color tokens in parameters (e.g. accent1, theme:accent1)
+        theme_engine = None
+        for k in ["color", "font_color", "fill_color", "border_color"]:
+            if k in action.parameters:
+                val = str(action.parameters[k]).strip()
+                if val.lower() in ["accent1", "accent2", "accent3", "accent4", "accent5", "accent6", "dk1", "lt1", "dk2", "lt2"] or val.lower().startswith("theme:"):
+                    token = val[6:] if val.lower().startswith("theme:") else val
+                    if theme_engine is None:
+                        from ..fidelity.theme_engine import ThemeEngine
+                        t_data = getattr(pres, "theme", None)
+                        scheme = getattr(t_data, "color_scheme", None) if t_data else None
+                        theme_engine = ThemeEngine(color_scheme=scheme)
+                    action.parameters[k] = theme_engine.resolve_color(token)
 
         # Guard: Relative movement requires a valid target element
         if action.relative:

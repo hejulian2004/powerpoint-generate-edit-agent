@@ -194,6 +194,51 @@ class PillowSlideRasterizer:
                     width=border_w if outline_rgb else 0
                 )
 
+            # Draw shape text if present
+            if getattr(elem, "text_content", None) and elem.text_content.plain_text:
+                plain_text = elem.text_content.plain_text
+                text_color = (255, 255, 255)
+                fsize = 18
+                font_fam = "Segoe UI"
+                is_bold = False
+                is_italic = False
+                if elem.text_content.paragraphs:
+                    first_p = elem.text_content.paragraphs[0]
+                    if first_p.runs:
+                        r = first_p.runs[0]
+                        if r.font:
+                            if r.font.color:
+                                text_color = _hex_to_rgb(r.font.color, default=(255, 255, 255))
+                            if r.font.size:
+                                fsize = int(r.font.size * scale)
+                            if r.font.name:
+                                font_fam = r.font.name
+                            is_bold = bool(r.font.bold)
+                            is_italic = bool(r.font.italic)
+
+                from ..fidelity.font_engine import FontEngine
+                font = FontEngine.get_pil_font(
+                    family=font_fam,
+                    size=float(fsize),
+                    bold=is_bold,
+                    italic=is_italic
+                )
+                if font is None:
+                    try:
+                        font = ImageFont.load_default()
+                    except Exception:
+                        font = None
+
+                tx = x + int(12 * scale)
+                ty = y + int(10 * scale)
+                draw.multiline_text(
+                    (tx, ty),
+                    plain_text,
+                    fill=text_color,
+                    font=font,
+                    spacing=int(4 * scale)
+                )
+
         elif isinstance(elem, TextElementIR):
             # Draw optional text box container background
             if fill_rgb or outline_rgb:
@@ -207,23 +252,39 @@ class PillowSlideRasterizer:
             # Draw text
             if elem.text_content and elem.text_content.plain_text:
                 plain_text = elem.text_content.plain_text
-                # Determine font color & size
+                # Determine font family, color & size
                 text_color = (255, 255, 255)
                 fsize = 18
+                font_fam = "Segoe UI"
+                is_bold = False
+                is_italic = False
                 if elem.text_content.paragraphs:
                     first_p = elem.text_content.paragraphs[0]
                     if first_p.runs:
                         r = first_p.runs[0]
-                        if r.font and r.font.color:
-                            text_color = _hex_to_rgb(r.font.color, default=(255, 255, 255))
-                        if r.font and r.font.size:
-                            fsize = int(r.font.size * scale)
+                        if r.font:
+                            if r.font.color:
+                                text_color = _hex_to_rgb(r.font.color, default=(255, 255, 255))
+                            if r.font.size:
+                                fsize = int(r.font.size * scale)
+                            if r.font.name:
+                                font_fam = r.font.name
+                            is_bold = bool(r.font.bold)
+                            is_italic = bool(r.font.italic)
 
-                # Try loading default system font
-                try:
-                    font = ImageFont.load_default()
-                except Exception:
-                    font = None
+                # Load vector font via FontEngine to eliminate default font drift
+                from ..fidelity.font_engine import FontEngine
+                font = FontEngine.get_pil_font(
+                    family=font_fam,
+                    size=float(fsize),
+                    bold=is_bold,
+                    italic=is_italic
+                )
+                if font is None:
+                    try:
+                        font = ImageFont.load_default()
+                    except Exception:
+                        font = None
 
                 # Simple padded text placement
                 tx = x + int(12 * scale)
