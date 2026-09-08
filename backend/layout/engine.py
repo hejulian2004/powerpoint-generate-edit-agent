@@ -64,7 +64,12 @@ def generate_layout(
 
     # 3. Validation guard
     if validate:
-        validate_layout(layout_spec, strict=strict)
+        report = validate_layout(layout_spec, strict=strict)
+        layout_spec.metadata["validation"] = {
+            "is_valid": report.is_valid,
+            "errors": report.errors,
+            "warnings": report.warnings,
+        }
 
     return layout_spec
 

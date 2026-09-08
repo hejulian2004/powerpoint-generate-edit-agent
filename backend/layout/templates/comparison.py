@@ -6,7 +6,7 @@ Synthesizes geometry for empirical results, benchmark comparisons, and experimen
 
 from __future__ import annotations
 
-from typing import List
+from typing import Any, Dict, List
 
 from ...slidespec.schema import BlockRole, FigureBlock, SlideSpec, TableBlock, TextBlock
 from ..schema import (
@@ -18,14 +18,7 @@ from ..schema import (
     Rect,
     TextStyle,
 )
-from .base import (
-    BODY_HEIGHT,
-    BODY_WIDTH,
-    BODY_X,
-    BODY_Y,
-    BaseLayoutTemplate,
-    create_header_elements,
-)
+from .base import BaseLayoutTemplate, compute_layout_zones, create_header_elements
 
 
 class BenchmarkComparisonTemplate(BaseLayoutTemplate):
@@ -33,9 +26,11 @@ class BenchmarkComparisonTemplate(BaseLayoutTemplate):
 
     def layout(self, slide: SlideSpec, canvas: Canvas) -> LayoutSpec:
         elements: List[LayoutElement] = []
+        zones = compute_layout_zones(canvas)
+        omitted_blocks: List[str] = []
 
         # 1. Header Elements
-        elements.extend(create_header_elements(slide))
+        elements.extend(create_header_elements(slide, canvas=canvas))
 
         # 2. Extract content blocks
         tables = [b for b in slide.blocks if isinstance(b, TableBlock)]
@@ -46,16 +41,22 @@ class BenchmarkComparisonTemplate(BaseLayoutTemplate):
 
         if has_visual_asset:
             # 60% Left Asset, 40% Right Insights
-            left_w = 680.0
-            gutter = 28.0
-            right_w = BODY_WIDTH - left_w - gutter  # 444.0
-            right_x = BODY_X + left_w + gutter
+            gutter = 28.0 * (canvas.width / 1280.0)
+            left_w = (zones.body_width - gutter) * 0.60
+            right_w = zones.body_width - left_w - gutter
+            right_x = zones.body_x + left_w + gutter
 
-            # Layout the primary visual asset on the left
+            # Layout the primary visual asset on the left (Table prioritized over Figure)
             if tables:
                 tbl = tables[0]
+                for tb in tables[1:]:
+                    omitted_blocks.append(tb.source_table_id)
+                for f in figures:
+                    omitted_blocks.append(f.source_figure_id)
+
                 has_cap = bool(tbl.caption or tbl.xref_label)
-                tbl_h = BODY_HEIGHT - 60.0 if has_cap else BODY_HEIGHT
+                cap_h = 52.0 if has_cap else 0.0
+                tbl_h = zones.body_height - cap_h - (8.0 if has_cap else 0.0)
 
                 elements.append(
                     LayoutElement(
@@ -63,7 +64,7 @@ class BenchmarkComparisonTemplate(BaseLayoutTemplate):
                         source_block_id=tbl.source_table_id,
                         element_type=ElementType.TABLE,
                         role=BlockRole.CALLOUT,
-                        geometry=Rect(x=BODY_X, y=BODY_Y, width=left_w, height=tbl_h),
+                        geometry=Rect(x=zones.body_x, y=zones.body_y, width=left_w, height=tbl_h),
                         style=ElementStyle(
                             background_color="#FFFFFF",
                             border_color="#CBD5E1",
@@ -88,7 +89,7 @@ class BenchmarkComparisonTemplate(BaseLayoutTemplate):
                             source_block_id=f"{tbl.source_table_id}_caption",
                             element_type=ElementType.TEXT,
                             role=BlockRole.CAPTION,
-                            geometry=Rect(x=BODY_X, y=BODY_Y + tbl_h + 8.0, width=left_w, height=52.0),
+                            geometry=Rect(x=zones.body_x, y=zones.body_y + tbl_h + 8.0, width=left_w, height=cap_h),
                             style=ElementStyle(
                                 text=TextStyle(
                                     font_size=13.0,
@@ -105,8 +106,12 @@ class BenchmarkComparisonTemplate(BaseLayoutTemplate):
 
             elif figures:
                 fig = figures[0]
+                for f in figures[1:]:
+                    omitted_blocks.append(f.source_figure_id)
+
                 has_cap = bool(fig.caption or fig.xref_label)
-                fig_h = BODY_HEIGHT - 60.0 if has_cap else BODY_HEIGHT
+                cap_h = 52.0 if has_cap else 0.0
+                fig_h = zones.body_height - cap_h - (8.0 if has_cap else 0.0)
 
                 elements.append(
                     LayoutElement(
@@ -114,7 +119,7 @@ class BenchmarkComparisonTemplate(BaseLayoutTemplate):
                         source_block_id=fig.source_figure_id,
                         element_type=ElementType.FIGURE,
                         role=BlockRole.CALLOUT,
-                        geometry=Rect(x=BODY_X, y=BODY_Y, width=left_w, height=fig_h),
+                        geometry=Rect(x=zones.body_x, y=zones.body_y, width=left_w, height=fig_h),
                         style=ElementStyle(
                             background_color="#F8FAFC",
                             border_color="#CBD5E1",
@@ -138,7 +143,7 @@ class BenchmarkComparisonTemplate(BaseLayoutTemplate):
                             source_block_id=f"{fig.source_figure_id}_caption",
                             element_type=ElementType.TEXT,
                             role=BlockRole.CAPTION,
-                            geometry=Rect(x=BODY_X, y=BODY_Y + fig_h + 8.0, width=left_w, height=52.0),
+                            geometry=Rect(x=zones.body_x, y=zones.body_y + fig_h + 8.0, width=left_w, height=cap_h),
                             style=ElementStyle(
                                 text=TextStyle(
                                     font_size=13.0,
@@ -153,14 +158,25 @@ class BenchmarkComparisonTemplate(BaseLayoutTemplate):
                         )
                     )
 
-            # Layout takeaways / insights on the right column
+            # Layout takeaways / insights on the right column with adaptive height
             if texts:
                 n_texts = len(texts)
-                gap = 14.0
+                gap = max(6.0, min(14.0, (zones.body_height / n_texts) * 0.2)) if n_texts > 1 else 0.0
                 total_gaps = (n_texts - 1) * gap
-                card_h = max(70.0, (BODY_HEIGHT - total_gaps) / n_texts)
+                avail_h = zones.body_height - total_gaps
+                card_h = max(32.0, avail_h / n_texts)
 
-                curr_y = BODY_Y
+                if card_h < 50.0:
+                    font_sz = 14.0
+                    pad = 6.0
+                elif card_h < 65.0:
+                    font_sz = 15.0
+                    pad = 10.0
+                else:
+                    font_sz = 15.0 if n_texts > 3 else 16.0
+                    pad = 12.0
+
+                curr_y = zones.body_y
                 for idx, t in enumerate(texts):
                     elements.append(
                         LayoutElement(
@@ -174,9 +190,9 @@ class BenchmarkComparisonTemplate(BaseLayoutTemplate):
                                 border_color="#BFDBFE" if t.emphasis else "#E2E8F0",
                                 border_width=1.0,
                                 corner_radius=6.0,
-                                padding=12.0,
+                                padding=pad,
                                 text=TextStyle(
-                                    font_size=15.0 if n_texts > 3 else 16.0,
+                                    font_size=font_sz,
                                     font_weight="bold" if t.emphasis else "normal",
                                     line_height=1.25,
                                     color="#1E3A8A" if t.emphasis else "#1E293B",
@@ -191,11 +207,22 @@ class BenchmarkComparisonTemplate(BaseLayoutTemplate):
         else:
             # Fallback when no visual assets: Full-width stacked comparison cards
             n_texts = max(1, len(texts))
-            gap = 16.0
+            gap = max(6.0, min(16.0, (zones.body_height / n_texts) * 0.2)) if n_texts > 1 else 0.0
             total_gaps = (n_texts - 1) * gap
-            card_h = max(70.0, (BODY_HEIGHT - total_gaps) / n_texts)
+            avail_h = zones.body_height - total_gaps
+            card_h = max(32.0, avail_h / n_texts)
 
-            curr_y = BODY_Y
+            if card_h < 50.0:
+                font_sz = 14.0
+                pad = 8.0
+            elif card_h < 65.0:
+                font_sz = 15.0
+                pad = 12.0
+            else:
+                font_sz = 17.0
+                pad = 16.0
+
+            curr_y = zones.body_y
             for idx, t in enumerate(texts):
                 elements.append(
                     LayoutElement(
@@ -203,15 +230,15 @@ class BenchmarkComparisonTemplate(BaseLayoutTemplate):
                         source_block_id=f"text_{idx + 1}",
                         element_type=ElementType.TEXT,
                         role=t.role,
-                        geometry=Rect(x=BODY_X, y=curr_y, width=BODY_WIDTH, height=card_h),
+                        geometry=Rect(x=zones.body_x, y=curr_y, width=zones.body_width, height=card_h),
                         style=ElementStyle(
                             background_color="#F8FAFC",
                             border_color="#E2E8F0",
                             border_width=1.0,
                             corner_radius=8.0,
-                            padding=16.0,
+                            padding=pad,
                             text=TextStyle(
-                                font_size=17.0,
+                                font_size=font_sz,
                                 font_weight="bold" if t.emphasis else "normal",
                                 line_height=1.3,
                                 color="#1E293B",
@@ -223,6 +250,10 @@ class BenchmarkComparisonTemplate(BaseLayoutTemplate):
                 )
                 curr_y += card_h + gap
 
+        metadata: Dict[str, Any] = {"template": "BenchmarkComparisonTemplate"}
+        if omitted_blocks:
+            metadata["omitted_blocks"] = omitted_blocks
+
         return LayoutSpec(
             slide_id=f"slide_{slide.index}",
             slide_index=slide.index,
@@ -230,5 +261,5 @@ class BenchmarkComparisonTemplate(BaseLayoutTemplate):
             canvas=canvas,
             elements=elements,
             speaker_notes=slide.speaker_notes,
-            metadata={"template": "BenchmarkComparisonTemplate"},
+            metadata=metadata,
         )

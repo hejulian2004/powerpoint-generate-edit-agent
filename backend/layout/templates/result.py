@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from typing import List
 
-from ...slidespec.schema import SlideSpec, TextBlock, VisualIntent
+from ...slidespec.schema import BlockRole, SlideSpec, TextBlock, VisualIntent
 from ..schema import (
     Canvas,
     ElementStyle,
@@ -18,14 +18,7 @@ from ..schema import (
     Rect,
     TextStyle,
 )
-from .base import (
-    BODY_HEIGHT,
-    BODY_WIDTH,
-    BODY_X,
-    BODY_Y,
-    BaseLayoutTemplate,
-    create_header_elements,
-)
+from .base import BaseLayoutTemplate, compute_layout_zones, create_header_elements
 
 
 class TakeawayListTemplate(BaseLayoutTemplate):
@@ -33,18 +26,19 @@ class TakeawayListTemplate(BaseLayoutTemplate):
 
     def layout(self, slide: SlideSpec, canvas: Canvas) -> LayoutSpec:
         elements: List[LayoutElement] = []
+        zones = compute_layout_zones(canvas)
 
         # 1. Header Elements
-        elements.extend(create_header_elements(slide))
+        elements.extend(create_header_elements(slide, canvas=canvas))
 
         # 2. Extract Text Content Blocks
         texts = [b for b in slide.blocks if isinstance(b, TextBlock)]
         if not texts:
-            # Fallback text if slide has no blocks
+            # Fallback text if slide has no blocks (using valid BlockRole)
             texts = [
                 TextBlock(
-                    role=slide.slide_type.value if hasattr(slide.slide_type, "value") else "BULLET_ITEM",  # type: ignore
-                    content=slide.title,
+                    role=BlockRole.BULLET_ITEM,
+                    content=slide.title or "Summary",
                 )
             ]
 
@@ -54,12 +48,12 @@ class TakeawayListTemplate(BaseLayoutTemplate):
         if slide.visual_intent == VisualIntent.METRIC_CARD_GRID and 2 <= n <= 4:
             if n == 2 or n == 3:
                 # 1 row, N columns
-                gap = 24.0
-                col_w = (BODY_WIDTH - (n - 1) * gap) / n
-                col_h = min(360.0, BODY_HEIGHT - 60.0)
-                card_y = BODY_Y + (BODY_HEIGHT - col_h) / 2.0
+                gap = 24.0 * (canvas.width / 1280.0)
+                col_w = (zones.body_width - (n - 1) * gap) / n
+                col_h = min(360.0 * (canvas.height / 720.0), zones.body_height - 40.0)
+                card_y = zones.body_y + (zones.body_height - col_h) / 2.0
 
-                curr_x = BODY_X
+                curr_x = zones.body_x
                 for idx, t in enumerate(texts):
                     elements.append(
                         LayoutElement(
@@ -73,7 +67,7 @@ class TakeawayListTemplate(BaseLayoutTemplate):
                                 border_color="#3B82F6" if t.emphasis else "#E2E8F0",
                                 border_width=2.0 if t.emphasis else 1.0,
                                 corner_radius=10.0,
-                                padding=20.0,
+                                padding=18.0,
                                 text=TextStyle(
                                     font_size=18.0,
                                     font_weight="bold" if t.emphasis else "normal",
@@ -89,16 +83,16 @@ class TakeawayListTemplate(BaseLayoutTemplate):
                     curr_x += col_w + gap
 
             else:  # n == 4 -> 2x2 grid
-                gap_x = 24.0
-                gap_y = 20.0
-                card_w = (BODY_WIDTH - gap_x) / 2.0
-                card_h = (BODY_HEIGHT - gap_y) / 2.0
+                gap_x = 24.0 * (canvas.width / 1280.0)
+                gap_y = 20.0 * (canvas.height / 720.0)
+                card_w = (zones.body_width - gap_x) / 2.0
+                card_h = (zones.body_height - gap_y) / 2.0
 
                 for idx, t in enumerate(texts):
                     row = idx // 2
                     col = idx % 2
-                    cx = BODY_X + col * (card_w + gap_x)
-                    cy = BODY_Y + row * (card_h + gap_y)
+                    cx = zones.body_x + col * (card_w + gap_x)
+                    cy = zones.body_y + row * (card_h + gap_y)
 
                     elements.append(
                         LayoutElement(
@@ -127,11 +121,22 @@ class TakeawayListTemplate(BaseLayoutTemplate):
 
         else:
             # Standard KEY_TAKEAWAY_LIST: Vertical Card Stack
-            gap = 16.0
+            gap = max(6.0, min(16.0, (zones.body_height / n) * 0.2)) if n > 1 else 0.0
             total_gaps = (n - 1) * gap
-            card_h = max(70.0, (BODY_HEIGHT - total_gaps) / n)
+            avail_h = zones.body_height - total_gaps
+            card_h = max(32.0, avail_h / n)
 
-            curr_y = BODY_Y
+            if card_h < 50.0:
+                font_sz = 14.0
+                pad = 8.0
+            elif card_h < 65.0:
+                font_sz = 15.0
+                pad = 12.0
+            else:
+                font_sz = 17.0
+                pad = 18.0
+
+            curr_y = zones.body_y
             for idx, t in enumerate(texts):
                 elements.append(
                     LayoutElement(
@@ -139,15 +144,15 @@ class TakeawayListTemplate(BaseLayoutTemplate):
                         source_block_id=f"text_{idx + 1}",
                         element_type=ElementType.TEXT,
                         role=t.role,
-                        geometry=Rect(x=BODY_X, y=curr_y, width=BODY_WIDTH, height=card_h),
+                        geometry=Rect(x=zones.body_x, y=curr_y, width=zones.body_width, height=card_h),
                         style=ElementStyle(
                             background_color="#EFF6FF" if t.emphasis else "#F8FAFC",
                             border_color="#3B82F6" if t.emphasis else "#E2E8F0",
                             border_width=1.5 if t.emphasis else 1.0,
                             corner_radius=8.0,
-                            padding=18.0,
+                            padding=pad,
                             text=TextStyle(
-                                font_size=17.0,
+                                font_size=font_sz,
                                 font_weight="bold" if t.emphasis else "normal",
                                 line_height=1.3,
                                 color="#1E3A8A" if t.emphasis else "#0F172A",

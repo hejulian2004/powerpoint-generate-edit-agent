@@ -12,7 +12,12 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import List, Optional
 
-from .constraints import check_canvas_bounds, check_figure_aspect_ratio, check_no_overlap
+from .constraints import (
+    check_canvas_bounds,
+    check_figure_aspect_ratio,
+    check_no_overlap,
+    check_text_overflow,
+)
 from .schema import ElementType, LayoutConstraint, LayoutElement, LayoutSpec
 
 
@@ -87,6 +92,11 @@ def validate_layout(
             text_str = str(el.content or "")
             if not text_str.strip():
                 report.add_error(f"Text/Badge element '{el.element_id}' has empty content")
+            else:
+                c_overflow = check_text_overflow(el)
+                report.evaluated_constraints.append(c_overflow)
+                if not c_overflow.satisfied and c_overflow.message:
+                    report.add_warning(c_overflow.message)
         elif el.element_type == ElementType.FIGURE:
             fig_id = None
             if isinstance(el.content, dict):

@@ -18,14 +18,7 @@ from ..schema import (
     Rect,
     TextStyle,
 )
-from .base import (
-    BODY_HEIGHT,
-    BODY_WIDTH,
-    BODY_X,
-    BODY_Y,
-    BaseLayoutTemplate,
-    create_header_elements,
-)
+from .base import BaseLayoutTemplate, compute_layout_zones, create_header_elements
 
 
 class TwoColumnContrastTemplate(BaseLayoutTemplate):
@@ -33,9 +26,10 @@ class TwoColumnContrastTemplate(BaseLayoutTemplate):
 
     def layout(self, slide: SlideSpec, canvas: Canvas) -> LayoutSpec:
         elements: List[LayoutElement] = []
+        zones = compute_layout_zones(canvas)
 
         # 1. Header Elements
-        elements.extend(create_header_elements(slide))
+        elements.extend(create_header_elements(slide, canvas=canvas))
 
         # 2. Split Blocks into Left and Right Columns
         texts = [b for b in slide.blocks if isinstance(b, TextBlock)]
@@ -50,7 +44,6 @@ class TwoColumnContrastTemplate(BaseLayoutTemplate):
                 elif b.column == "right":
                     right_blocks.append(b)
                 else:
-                    # Alternating assignment if not explicitly tagged
                     if len(left_blocks) <= len(right_blocks):
                         left_blocks.append(b)
                     else:
@@ -61,12 +54,12 @@ class TwoColumnContrastTemplate(BaseLayoutTemplate):
             right_blocks = texts[mid:]
 
         # Column geometry
-        gutter = 32.0
-        col_w = (BODY_WIDTH - gutter) / 2.0  # 560.0
-        left_x = BODY_X
-        right_x = BODY_X + col_w + gutter
+        gutter = 32.0 * (canvas.width / 1280.0)
+        col_w = (zones.body_width - gutter) / 2.0
+        left_x = zones.body_x
+        right_x = zones.body_x + col_w + gutter
 
-        # Helper to layout a column stack
+        # Helper to layout a column stack with overflow protection
         def _layout_column(
             items: List[TextBlock],
             col_x: float,
@@ -75,11 +68,22 @@ class TwoColumnContrastTemplate(BaseLayoutTemplate):
             if not items:
                 return
             n = len(items)
-            gap = 14.0
+            gap = max(6.0, min(14.0, (zones.body_height / n) * 0.2)) if n > 1 else 0.0
             total_gaps = (n - 1) * gap
-            item_h = max(60.0, (BODY_HEIGHT - total_gaps) / n)
+            avail_h = zones.body_height - total_gaps
+            item_h = max(32.0, avail_h / n)
 
-            curr_y = BODY_Y
+            if item_h < 50.0:
+                font_sz = 14.0
+                pad = 6.0
+            elif item_h < 65.0:
+                font_sz = 15.0
+                pad = 10.0
+            else:
+                font_sz = 16.0 if n > 3 else 17.0
+                pad = 14.0
+
+            curr_y = zones.body_y
             for idx, item in enumerate(items):
                 is_right = side == "right"
                 bg_color = "#EFF6FF" if (item.emphasis or is_right) else "#F8FAFC"
@@ -98,9 +102,9 @@ class TwoColumnContrastTemplate(BaseLayoutTemplate):
                             border_color=border_color,
                             border_width=1.0,
                             corner_radius=8.0,
-                            padding=14.0,
+                            padding=pad,
                             text=TextStyle(
-                                font_size=16.0 if n > 3 else 17.0,
+                                font_size=font_sz,
                                 font_weight="bold" if item.emphasis else "normal",
                                 line_height=1.25,
                                 color=text_color,

@@ -255,3 +255,142 @@ def test_benchmark_comparison_fallback_no_assets():
     assert len(results) == 2
     assert results[1].geometry.y >= results[0].geometry.bottom
 
+
+def test_takeaway_list_fallback_empty_blocks_valid_role():
+    # When blocks is completely empty, fallback TextBlock must construct with valid BlockRole
+    slide = SlideSpec(
+        index=11,
+        slide_type=SlideType.CONCLUSION,
+        visual_intent=VisualIntent.KEY_TAKEAWAY_LIST,
+        title="Empty Blocks Slide",
+        blocks=[],
+    )
+
+    layout = generate_layout(slide, validate=True, strict=True)
+    assert len(layout.elements) >= 2  # header title + fallback card
+    fallback_card = layout.get_element("slide_11_takeaway_card_1")
+    assert fallback_card is not None
+    assert fallback_card.role == BlockRole.BULLET_ITEM
+    assert fallback_card.content == "Empty Blocks Slide"
+
+
+def test_card_overflow_protection_many_items():
+    # 8 takeaway items must fit within canvas without bottom overflow
+    slide = SlideSpec(
+        index=10,
+        slide_type=SlideType.CONCLUSION,
+        visual_intent=VisualIntent.KEY_TAKEAWAY_LIST,
+        title="High Density Takeaways",
+        blocks=[TextBlock(content=f"Item {i + 1}: Detailed finding description") for i in range(8)],
+    )
+
+    layout = generate_layout(slide, validate=True, strict=True)
+    cards = [el for el in layout.elements if "takeaway_card" in el.element_id]
+    assert len(cards) == 8
+    for c in cards:
+        assert c.geometry.y >= 0
+        assert c.geometry.bottom <= 720.0
+
+
+def test_two_column_overflow_protection_many_items():
+    # 8 items per column
+    blocks = []
+    for i in range(8):
+        blocks.append(TextBlock(content=f"Left {i+1}", column="left"))
+        blocks.append(TextBlock(content=f"Right {i+1}", column="right"))
+
+    slide = SlideSpec(
+        index=6,
+        slide_type=SlideType.PROBLEM,
+        visual_intent=VisualIntent.TWO_COLUMN_CONTRAST,
+        title="High Density Contrast",
+        blocks=blocks,
+    )
+
+    layout = generate_layout(slide, validate=True, strict=True)
+    for el in layout.elements:
+        assert el.geometry.bottom <= 720.0
+
+
+def test_title_hero_badge_wrapping_many_badges():
+    # 6 badges with longer text must wrap cleanly without exceeding canvas width
+    slide = SlideSpec(
+        index=1,
+        slide_type=SlideType.TITLE,
+        visual_intent=VisualIntent.TITLE_HERO,
+        title="Scalable Multi-Agent Systems in Computer Vision",
+        subtitle="Julian He, AI Research Institute",
+        blocks=[
+            BadgeBlock(text="ICLR 2026 Conference"),
+            BadgeBlock(text="Oral Presentation Award"),
+            BadgeBlock(text="Outstanding Paper Track"),
+            BadgeBlock(text="Workshop on Autonomous Reasoning"),
+            BadgeBlock(text="Benchmark Challenge Winner"),
+            BadgeBlock(text="Open Source Release"),
+        ],
+    )
+
+    layout = generate_layout(slide, validate=True, strict=True)
+    badges = layout.get_elements_by_type(ElementType.BADGE)
+    assert len(badges) == 6
+    for b in badges:
+        assert b.geometry.x >= 0
+        assert b.geometry.right <= 1280.0
+
+
+def test_secondary_visual_assets_omitted_blocks_recorded():
+    slide = SlideSpec(
+        index=5,
+        slide_type=SlideType.METHOD_DETAIL,
+        visual_intent=VisualIntent.PIPELINE_ARCHITECTURE,
+        title="Multi-Asset Pipeline",
+        blocks=[
+            TextBlock(content="Stage 1"),
+            FigureBlock(source_figure_id="fig_primary", caption="Primary fig"),
+            FigureBlock(source_figure_id="fig_secondary", caption="Secondary fig"),
+            TableBlock(source_table_id="tbl_extra", caption="Extra table"),
+        ],
+    )
+
+    layout = generate_layout(slide, validate=True, strict=True)
+    omitted = layout.metadata.get("omitted_blocks", [])
+    assert "fig_secondary" in omitted
+    assert "tbl_extra" in omitted
+
+
+def test_validation_metadata_recorded_on_strict_false():
+    slide = SlideSpec(
+        index=2,
+        slide_type=SlideType.BACKGROUND,
+        visual_intent=VisualIntent.KEY_TAKEAWAY_LIST,
+        title="Valid Slide",
+        blocks=[TextBlock(content="Normal point")],
+    )
+
+    layout = generate_layout(slide, validate=True, strict=False)
+    assert "validation" in layout.metadata
+    assert layout.metadata["validation"]["is_valid"] is True
+    assert isinstance(layout.metadata["validation"]["errors"], list)
+    assert isinstance(layout.metadata["validation"]["warnings"], list)
+
+
+def test_custom_canvas_resolution_scaling():
+    from backend.layout.schema import Canvas
+
+    canvas_fhd = Canvas(width=1920.0, height=1080.0)
+    slide = SlideSpec(
+        index=1,
+        slide_type=SlideType.TITLE,
+        visual_intent=VisualIntent.TITLE_HERO,
+        title="1080p Resolution Slide",
+        blocks=[BadgeBlock(text="FHD Preview")],
+    )
+
+    layout = generate_layout(slide, canvas=canvas_fhd, validate=True, strict=True)
+    assert layout.canvas.width == 1920.0
+    assert layout.canvas.height == 1080.0
+    for el in layout.elements:
+        assert el.geometry.right <= 1920.0
+        assert el.geometry.bottom <= 1080.0
+
+
