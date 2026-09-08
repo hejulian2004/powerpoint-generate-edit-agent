@@ -1,7 +1,18 @@
 import { create } from 'zustand'
-import type { PresentationIR, SlideIR, ElementIR, ChatMessage, VisualRemediationEvent } from '../types/ppt'
+import type {
+  PresentationIR,
+  SlideIR,
+  ElementIR,
+  ChatMessage,
+  VisualRemediationEvent,
+  VisualQualityScore,
+  PPTEditorState,
+  PatchRecord,
+  MutationStatus
+} from '../types/ppt'
 
 interface PPTState {
+  sessionId: string
   presentation: PresentationIR | null
   activeSlideId: string | null
   selectedElementId: string | null
@@ -16,8 +27,14 @@ interface PPTState {
   settingsOpen: boolean
   zoom: number
   showGrid: boolean
+  previewSvg: string | null
+  previewScore: number | null
+  qualityScore: VisualQualityScore | null
+  history: PatchRecord[]
+  mutationStatus: MutationStatus
 
   // Actions
+  setSessionId: (id: string) => void
   setPresentation: (pres: PresentationIR) => void
   setActiveSlideId: (id: string) => void
   setSelectedElementId: (id: string | null) => void
@@ -25,10 +42,11 @@ interface PPTState {
   setSettingsOpen: (open: boolean) => void
   setZoom: (zoom: number) => void
   setShowGrid: (show: boolean) => void
+  setMutationStatus: (status: MutationStatus) => void
   addMessage: (msg: ChatMessage) => void
   updateLastMessage: (partial: Partial<ChatMessage>) => void
   setAgentThinking: (thinking: boolean, status?: string) => void
-  
+
   // Quick Canvas Tools
   addShapeQuick: (shapeType: string) => void
   addTextQuick: () => void
@@ -43,9 +61,11 @@ interface PPTState {
   updateElementDirect: (elemId: string, updates: Record<string, any>) => void
   getActiveSlide: () => SlideIR | null
   getSelectedElement: () => ElementIR | null
+  getEditorState: () => PPTEditorState
 }
 
 export const usePPTStore = create<PPTState>((set, get) => ({
+  sessionId: 'sess_default',
   presentation: null,
   activeSlideId: null,
   selectedElementId: null,
@@ -67,7 +87,15 @@ export const usePPTStore = create<PPTState>((set, get) => ({
   settingsOpen: false,
   zoom: 1.0,
   showGrid: false,
+  previewSvg: null,
+  previewScore: null,
+  qualityScore: null,
+  history: [],
+  mutationStatus: 'idle',
   ws: null,
+
+  setSessionId: (id: string) => set({ sessionId: id }),
+  setMutationStatus: (status) => set({ mutationStatus: status }),
 
   setPresentation: (pres) => set({
     presentation: pres,
@@ -76,9 +104,9 @@ export const usePPTStore = create<PPTState>((set, get) => ({
 
   setActiveSlideId: (id) => {
     set({ activeSlideId: id, selectedElementId: null })
-    const { ws } = get()
+    const { ws, sessionId } = get()
     if (ws && ws.readyState === WebSocket.OPEN) {
-      ws.send(JSON.stringify({ type: 'select_slide', slide_id: id }))
+      ws.send(JSON.stringify({ type: 'select_slide', slide_id: id, session_id: sessionId }))
     }
   },
 
@@ -135,7 +163,7 @@ export const usePPTStore = create<PPTState>((set, get) => ({
 
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
     const host = window.location.host
-    const wsUrl = `${protocol}//${host}/ws`
+    const wsUrl = `${protocol}//${host}/ws?session_id=${get().sessionId}`
 
     const ws = new WebSocket(wsUrl)
 
@@ -161,17 +189,27 @@ export const usePPTStore = create<PPTState>((set, get) => ({
 
         if (type === 'presentation_loaded') {
           set({
+            sessionId: data.session_id || get().sessionId,
             presentation: data.presentation,
             activeSlideId: data.active_slide_id || data.presentation.slides[0]?.id,
             canUndo: data.can_undo ?? false,
             canRedo: data.can_redo ?? false
           })
+        } else if (type === 'preview_update') {
+          set({
+            previewSvg: data.svg,
+            previewScore: data.score,
+            qualityScore: data.quality_score,
+            mutationStatus: 'committed'
+          })
         } else if (type === 'presentation_updated') {
           set((state) => ({
+            sessionId: data.session_id || state.sessionId,
             presentation: data.presentation,
-            activeSlideId: state.activeSlideId || data.presentation.slides[0]?.id,
+            activeSlideId: data.active_slide_id || state.activeSlideId || data.presentation.slides[0]?.id,
             canUndo: data.can_undo ?? state.canUndo,
-            canRedo: data.can_redo ?? state.canRedo
+            canRedo: data.can_redo ?? state.canRedo,
+            mutationStatus: 'committed'
           }))
         } else if (type === 'active_slide_changed') {
           set({ activeSlideId: data.active_slide_id })
@@ -201,7 +239,7 @@ export const usePPTStore = create<PPTState>((set, get) => ({
             visualReview: data.visual_review
           })
         } else if (type === 'agent_error') {
-          set({ isAgentThinking: false, thinkingStatus: '', visualRemediation: null })
+          set({ isAgentThinking: false, thinkingStatus: '', visualRemediation: null, mutationStatus: 'failed' })
           get().addMessage({
             id: `err_${Date.now()}`,
             role: 'assistant',
@@ -216,7 +254,7 @@ export const usePPTStore = create<PPTState>((set, get) => ({
   },
 
   sendChatMessage: (text) => {
-    const { ws, addMessage } = get()
+    const { ws, addMessage, sessionId } = get()
     if (!text.trim()) return
 
     addMessage({
@@ -229,7 +267,7 @@ export const usePPTStore = create<PPTState>((set, get) => ({
     set({ isAgentThinking: true, thinkingStatus: '分析需求与视觉结构...', activeRightTab: 'copilot' })
 
     if (ws && ws.readyState === WebSocket.OPEN) {
-      ws.send(JSON.stringify({ type: 'chat', message: text }))
+      ws.send(JSON.stringify({ type: 'chat', message: text, session_id: sessionId }))
     } else {
       fetch('/api/chat', {
         method: 'POST',
@@ -264,9 +302,9 @@ export const usePPTStore = create<PPTState>((set, get) => ({
   },
 
   triggerUndo: () => {
-    const { ws } = get()
+    const { ws, sessionId } = get()
     if (ws && ws.readyState === WebSocket.OPEN) {
-      ws.send(JSON.stringify({ type: 'undo' }))
+      ws.send(JSON.stringify({ type: 'undo', session_id: sessionId }))
     } else {
       fetch('/api/action/undo', { method: 'POST' })
         .then((r) => r.json())
@@ -281,9 +319,9 @@ export const usePPTStore = create<PPTState>((set, get) => ({
   },
 
   triggerRedo: () => {
-    const { ws } = get()
+    const { ws, sessionId } = get()
     if (ws && ws.readyState === WebSocket.OPEN) {
-      ws.send(JSON.stringify({ type: 'redo' }))
+      ws.send(JSON.stringify({ type: 'redo', session_id: sessionId }))
     } else {
       fetch('/api/action/redo', { method: 'POST' })
         .then((r) => r.json())
@@ -373,7 +411,7 @@ export const usePPTStore = create<PPTState>((set, get) => ({
         if (s.id !== (activeSlideId || presentation.slides[0]?.id)) return s
         return { ...s, elements: updateElInArray(s.elements) }
       })
-      set({ presentation: { ...presentation, slides: updatedSlides } })
+      set({ presentation: { ...presentation, slides: updatedSlides }, mutationStatus: 'pending' })
     }
 
     const payload = {
@@ -381,8 +419,9 @@ export const usePPTStore = create<PPTState>((set, get) => ({
       element_id: elemId,
       ...updates
     }
+    const { sessionId } = get()
     if (ws && ws.readyState === WebSocket.OPEN) {
-      ws.send(JSON.stringify({ type: 'direct_update_element', payload }))
+      ws.send(JSON.stringify({ type: 'direct_update_element', payload, session_id: sessionId }))
     }
   },
 
@@ -413,5 +452,39 @@ export const usePPTStore = create<PPTState>((set, get) => ({
     }
 
     return findInArray(slide.elements)
+  },
+
+  getEditorState: (): PPTEditorState => {
+    const {
+      getActiveSlide,
+      getSelectedElement,
+      history,
+      previewSvg,
+      previewScore,
+      qualityScore,
+      isAgentThinking,
+      thinkingStatus,
+      visualRemediation,
+      activeSlideId,
+      mutationStatus
+    } = get()
+
+    return {
+      slide: getActiveSlide(),
+      selectedElement: getSelectedElement(),
+      history,
+      preview: previewSvg ? {
+        slide_id: activeSlideId || '',
+        svg: previewSvg,
+        score: previewScore ?? undefined,
+        quality_score: qualityScore ?? undefined
+      } : null,
+      agentStatus: {
+        isThinking: isAgentThinking,
+        thinkingStatus,
+        visualRemediation
+      },
+      mutationStatus
+    }
   }
 }))

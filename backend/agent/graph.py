@@ -16,6 +16,8 @@ from .tools import tools
 from .memory import AgentMemory
 from .vision import VisionEngine
 from .llm import LLMClient
+from .action import AgentAction, ActionResolver
+from .iteration import AgentIteration
 from ..ir.models import PresentationIR, SlideIR
 from ..ir.patch import HistoryManager
 from ..config import settings
@@ -45,7 +47,7 @@ async def _safe_emit(on_event: Optional[Callable], data: Dict[str, Any]):
 class PPTAgentState(TypedDict, total=False):
     messages: List[Dict[str, Any]]
     user_query: str
-    intent: str  # "generate_presentation" | "generate_slide" | "modify_elements" | "optimize_layout" | "apply_theme" | "chat"
+    intent: str  # "generate_presentation" | "generate_slide" | "modify_elements" | "optimize_layout" | "apply_theme" | "undo" | "chat"
     plan: Optional[str]
     tool_calls: List[Dict[str, Any]]
     tool_results: List[Dict[str, Any]]
@@ -57,6 +59,7 @@ class PPTAgentState(TypedDict, total=False):
     final_summary: str
     active_slide_id: Optional[str]
     presentation_version: int
+    last_target_id: Optional[str]
 
 
 # =====================================================================
@@ -77,17 +80,19 @@ async def router_node(state: PPTAgentState, config: RunnableConfig) -> Dict[str,
 
     # Rule & keyword-assisted intent classification
     intent = "chat"
-    if any(k in user_query for k in ["生成完整", "制作一份", "创建ppt", "生成ppt", "写一个ppt", "关于", "汇报", "商业计划书"]) or (
+    if any(k in user_query for k in ["撤销刚才修改", "撤销修改", "撤销操作", "撤销刚才", "撤销", "undo", "回退"]):
+        intent = "undo"
+    elif any(k in user_query for k in ["生成完整", "制作一份", "创建ppt", "生成ppt", "写一个ppt", "关于", "汇报", "商业计划书"]) or (
         ("生成" in user_query or "创建" in user_query or "制作" in user_query) and ("演示文稿" in user_query or "ppt" in query_lower or "大纲" in user_query or "页" in user_query)
     ):
         intent = "generate_presentation"
     elif any(k in user_query for k in ["时间线", "里程碑", "指标", "kpi", "特性卡片", "栏卡片", "对比", "新增一页", "添加一页", "新页面", "生成两栏", "排版生成"]):
         intent = "generate_slide"
-    elif any(k in user_query for k in ["规整", "对齐", "排列", "居中", "均匀分布", "整理卡片", "自适应排版"]):
+    elif any(k in user_query for k in ["规整", "对齐", "排列", "居中", "均匀分布", "整理卡片", "自适应排版", "拥挤", "太挤", "紧凑", "排版杂乱"]):
         intent = "optimize_layout"
     elif any(k in user_query for k in ["主题", "配色", "黑曜", "深色", "科技蓝", "浅色", "风格"]):
         intent = "apply_theme"
-    elif any(k in user_query for k in ["修改", "改成", "换成", "变大", "变小", "调为", "更新", "删除", "添加", "标题", "文字", "复制", "移动", "位置", "右侧", "左侧"]):
+    elif any(k in user_query for k in ["修改", "改成", "换成", "变大", "变小", "调为", "更新", "删除", "添加", "标题", "文字", "复制", "移动", "位置", "右侧", "左侧", "再往", "往下", "往上", "往左", "往右", "突出"]):
         intent = "modify_elements"
     elif len(user_query) > 5:
         # Default action-oriented queries to modify or generate
@@ -111,7 +116,9 @@ async def planner_node(state: PPTAgentState, config: RunnableConfig) -> Dict[str
         await _safe_emit(on_event,{"type": "agent_thinking", "status": "planning", "text": f"规划设计策略 ({intent})，计算 1280x720 坐标体系..."})
 
     plan_desc = ""
-    if intent == "generate_presentation":
+    if intent == "undo":
+        plan_desc = "回退上一轮图元编辑与排版指令，恢复先前稳定版本快照。"
+    elif intent == "generate_presentation":
         plan_desc = f"规划生成多页精美演示文稿: 包含封面、核心架构、实施流程时间线、关键性能指标与总结展望。"
     elif intent == "generate_slide":
         plan_desc = f"规划生成当前页面布局架构: 统一字号层级、计算间距与容器圆角，避免元素交叠。"
@@ -138,6 +145,10 @@ async def executor_node(state: PPTAgentState, config: RunnableConfig) -> Dict[st
     user_query = state.get("user_query", "")
     intent = state.get("intent", "chat")
     active_slide = pres.get_active_slide() if pres else None
+    session = configurable.get("session")
+    last_target_id = getattr(session, "last_target_id", None) if session else None
+    if not last_target_id:
+        last_target_id = state.get("last_target_id")
 
     # Check if live LLM with valid non-mock API key is configured
     has_live_llm = llm_client and llm_client.api_key and not llm_client.api_key.startswith("mock_")
@@ -168,20 +179,34 @@ async def executor_node(state: PPTAgentState, config: RunnableConfig) -> Dict[st
                 tool_calls.append({"name": fn_name, "arguments": args, "id": tc.get("id", f"call_{uuid.uuid4().hex[:6]}")})
         except Exception as e:
             logger.warning(f"Live LLM call error: {e}, falling back to intelligent rule planner")
-            tool_calls = _heuristic_tool_planner(intent, user_query, pres)
+            tool_calls = _heuristic_tool_planner(intent, user_query, pres, last_target_id=last_target_id)
     else:
         # Fallback / Mock intelligent rule planner
-        tool_calls = _heuristic_tool_planner(intent, user_query, pres)
+        tool_calls = _heuristic_tool_planner(intent, user_query, pres, last_target_id=last_target_id)
 
     return {
-        "tool_calls": tool_calls
+        "tool_calls": tool_calls,
+        "last_target_id": last_target_id
     }
 
 
-def _heuristic_tool_planner(intent: str, user_query: str, pres: Optional[PresentationIR]) -> List[Dict[str, Any]]:
-    """Heuristic tool planner for deterministic and instant execution."""
+def _heuristic_tool_planner(
+    intent: str,
+    user_query: str,
+    pres: Optional[PresentationIR],
+    last_target_id: Optional[str] = None
+) -> List[Dict[str, Any]]:
+    """Heuristic tool planner using AgentAction contract for deterministic execution."""
     tool_calls = []
     active_slide = pres.get_active_slide() if pres else None
+
+    if intent == "undo":
+        tool_calls.append({
+            "name": "undo",
+            "arguments": {},
+            "id": f"call_{uuid.uuid4().hex[:6]}"
+        })
+        return tool_calls
 
     if intent == "generate_presentation":
         # Extract topic or use sensible default
@@ -331,60 +356,57 @@ def _heuristic_tool_planner(intent: str, user_query: str, pres: Optional[Present
         })
 
     elif intent == "modify_elements":
-        # Target elements on active slide
+        # Target elements on active slide using AgentAction contract
         if active_slide and active_slide.elements:
-            # Locate title element with multi-strategy resolution
-            title_elem = None
-            for e in active_slide.elements:
-                if "title" in e.id.lower():
-                    title_elem = e
-                    break
-            if not title_elem:
-                max_font = 0.0
-                for e in active_slide.elements:
-                    tc = getattr(e, "text_content", None)
-                    if tc and tc.paragraphs:
-                        for p in tc.paragraphs:
-                            for r in p.runs:
-                                if r.font and r.font.size and r.font.size > max_font:
-                                    max_font = r.font.size
-                                    title_elem = e
-                if not (title_elem and max_font >= 24.0):
-                    title_elem = next((e for e in active_slide.elements if e.type == "text" and e.y < 160), None)
+            target_ref = last_target_id or "title"
 
-            card_elems = [e for e in active_slide.elements if e.type == "shape"]
+            # 1. Relative movement (multi-turn context sensitive)
+            if any(k in user_query for k in ["再往下", "往下一点", "往下挪", "下移", "再往下", "低一点"]):
+                act = AgentAction(action_type="update_element", target=target_ref, parameters={"y": 50.0}, relative=True, reason="User requested downward adjustment")
+                tc = ActionResolver.action_to_tool_call(act, pres, last_target_id=last_target_id)
+                if tc:
+                    tool_calls.append({**tc, "id": f"call_{uuid.uuid4().hex[:6]}"})
+            elif any(k in user_query for k in ["再往上", "往上一点", "往上挪", "上移", "再往上", "高一点"]):
+                act = AgentAction(action_type="update_element", target=target_ref, parameters={"y": -50.0}, relative=True, reason="User requested upward adjustment")
+                tc = ActionResolver.action_to_tool_call(act, pres, last_target_id=last_target_id)
+                if tc:
+                    tool_calls.append({**tc, "id": f"call_{uuid.uuid4().hex[:6]}"})
+            elif any(k in user_query for k in ["再往右", "往右一点", "往右挪", "右移", "再往右"]):
+                act = AgentAction(action_type="update_element", target=target_ref, parameters={"x": 50.0}, relative=True, reason="User requested rightward adjustment")
+                tc = ActionResolver.action_to_tool_call(act, pres, last_target_id=last_target_id)
+                if tc:
+                    tool_calls.append({**tc, "id": f"call_{uuid.uuid4().hex[:6]}"})
+            elif any(k in user_query for k in ["再往左", "往左一点", "往左挪", "左移", "再往左"]):
+                act = AgentAction(action_type="update_element", target=target_ref, parameters={"x": -50.0}, relative=True, reason="User requested leftward adjustment")
+                tc = ActionResolver.action_to_tool_call(act, pres, last_target_id=last_target_id)
+                if tc:
+                    tool_calls.append({**tc, "id": f"call_{uuid.uuid4().hex[:6]}"})
 
-            # 1. Element repositioning / layout moving instructions
-            if ("移动" in user_query or "move" in user_query.lower() or "位置" in user_query) and ("右" in user_query or "right" in user_query.lower()) and title_elem:
-                tool_calls.append({
-                    "name": "update_element",
-                    "arguments": {
-                        "element_id": title_elem.id,
-                        "x": 900.0
-                    },
-                    "id": f"call_{uuid.uuid4().hex[:6]}"
-                })
-            elif ("移动" in user_query or "move" in user_query.lower() or "位置" in user_query) and ("左" in user_query or "left" in user_query.lower()) and title_elem:
-                tool_calls.append({
-                    "name": "update_element",
-                    "arguments": {
-                        "element_id": title_elem.id,
-                        "x": 100.0
-                    },
-                    "id": f"call_{uuid.uuid4().hex[:6]}"
-                })
-            elif ("标题" in user_query or "字号" in user_query) and title_elem:
-                tool_calls.append({
-                    "name": "format_text",
-                    "arguments": {
-                        "element_id": title_elem.id,
-                        "font_size": 36.0,
-                        "bold": True,
-                        "font_color": "#FFFFFF"
-                    },
-                    "id": f"call_{uuid.uuid4().hex[:6]}"
-                })
+            # 2. Prominent title / styling
+            elif any(k in user_query for k in ["突出", "醒目", "加大标题", "放大标题", "让标题更突出", "更突出"]):
+                act = AgentAction(action_type="resize_text", target="title", parameters={"font_size": 42.0, "bold": True}, reason="User requested prominent title")
+                tc = ActionResolver.action_to_tool_call(act, pres, last_target_id=last_target_id)
+                if tc:
+                    tool_calls.append({**tc, "id": f"call_{uuid.uuid4().hex[:6]}"})
+
+            # 3. Explicit repositioning / layout moving instructions
+            elif ("移动" in user_query or "move" in user_query.lower() or "位置" in user_query or "放" in user_query) and ("右" in user_query or "right" in user_query.lower()):
+                act = AgentAction(action_type="update_element", target="title", parameters={"x": 900.0}, reason="User moved title to right")
+                tc = ActionResolver.action_to_tool_call(act, pres, last_target_id=last_target_id)
+                if tc:
+                    tool_calls.append({**tc, "id": f"call_{uuid.uuid4().hex[:6]}"})
+            elif ("移动" in user_query or "move" in user_query.lower() or "位置" in user_query or "放" in user_query) and ("左" in user_query or "left" in user_query.lower()):
+                act = AgentAction(action_type="update_element", target="title", parameters={"x": 100.0}, reason="User moved title to left")
+                tc = ActionResolver.action_to_tool_call(act, pres, last_target_id=last_target_id)
+                if tc:
+                    tool_calls.append({**tc, "id": f"call_{uuid.uuid4().hex[:6]}"})
+            elif ("标题" in user_query or "字号" in user_query):
+                act = AgentAction(action_type="format_text", target="title", parameters={"font_size": 36.0, "bold": True, "font_color": "#FFFFFF"})
+                tc = ActionResolver.action_to_tool_call(act, pres, last_target_id=last_target_id)
+                if tc:
+                    tool_calls.append({**tc, "id": f"call_{uuid.uuid4().hex[:6]}"})
             elif "颜色" in user_query or "背景" in user_query or "深色" in user_query:
+                card_elems = [e for e in active_slide.elements if e.type == "shape"]
                 if card_elems:
                     tool_calls.append({
                         "name": "update_element",
@@ -441,25 +463,54 @@ async def tools_node(state: PPTAgentState, config: RunnableConfig) -> Dict[str, 
     configurable = config.get("configurable", {})
     pres: Optional[PresentationIR] = configurable.get("pres")
     history: Optional[HistoryManager] = configurable.get("history")
+    session: Optional[Any] = configurable.get("session")
     on_event: Optional[Callable] = configurable.get("on_event")
     memory: Optional[AgentMemory] = configurable.get("memory")
 
     tool_calls = state.get("tool_calls", [])
     results: List[Dict[str, Any]] = []
+    current_target_id = state.get("last_target_id")
 
     for tc in tool_calls:
         fn_name = tc.get("name", "")
         args = tc.get("arguments", {})
 
         if on_event:
-            await _safe_emit(on_event,{
+            await _safe_emit(on_event, {
                 "type": "tool_executing",
                 "tool": fn_name,
                 "arguments": args
             })
 
-        # Execute
-        res = tools.execute(fn_name, args, pres, history)
+        # Special handling for undo / redo
+        if fn_name == "undo":
+            if session and hasattr(session, "undo"):
+                patch = session.undo()
+                res = {"success": True if patch else False, "message": "已成功撤销上一步操作" if patch else "当前无历史操作可撤销"}
+            elif history and hasattr(history, "undo"):
+                patch = history.undo(pres)
+                res = {"success": True if patch else False, "message": "已成功撤销上一步操作" if patch else "当前无历史操作可撤销"}
+            else:
+                res = {"success": False, "message": "未找到可撤销的历史记录"}
+        elif fn_name == "redo":
+            if session and hasattr(session, "redo"):
+                patch = session.redo()
+                res = {"success": True if patch else False, "message": "已成功重做操作" if patch else "当前无历史操作可重做"}
+            elif history and hasattr(history, "redo"):
+                patch = history.redo(pres)
+                res = {"success": True if patch else False, "message": "已成功重做操作" if patch else "当前无历史操作可重做"}
+            else:
+                res = {"success": False, "message": "未找到可重做的历史记录"}
+        else:
+            # Standard tool execution
+            res = tools.execute(fn_name, args, pres, history)
+
+        # Track last target element ID for multi-turn conversational memory
+        target_el_id = args.get("element_id") or (res.get("element_id") if isinstance(res, dict) else None)
+        if target_el_id:
+            current_target_id = target_el_id
+            if session and hasattr(session, "last_target_id"):
+                session.last_target_id = target_el_id
 
         results.append({
             "tool": fn_name,
@@ -468,7 +519,7 @@ async def tools_node(state: PPTAgentState, config: RunnableConfig) -> Dict[str, 
         })
 
         if on_event:
-            await _safe_emit(on_event,{
+            await _safe_emit(on_event, {
                 "type": "tool_completed",
                 "tool": fn_name,
                 "result": res,
@@ -476,11 +527,12 @@ async def tools_node(state: PPTAgentState, config: RunnableConfig) -> Dict[str, 
             })
 
         if memory:
-            memory.log_action(f"执行工具 '{fn_name}': {res.get('message', 'ok')}")
+            memory.log_action(f"执行工具 '{fn_name}': {res.get('message', 'ok') if isinstance(res, dict) else 'ok'}")
 
     return {
         "tool_results": results,
-        "presentation_version": pres.version if pres else 1
+        "presentation_version": pres.version if pres else 1,
+        "last_target_id": current_target_id
     }
 
 
@@ -637,6 +689,7 @@ async def summary_node(state: PPTAgentState, config: RunnableConfig) -> Dict[str
     configurable = config.get("configurable", {})
     on_event: Optional[Callable] = configurable.get("on_event")
     pres: Optional[PresentationIR] = configurable.get("pres")
+    session: Optional[Any] = configurable.get("session")
 
     intent = state.get("intent", "chat")
     tool_results = state.get("tool_results", [])
@@ -645,7 +698,9 @@ async def summary_node(state: PPTAgentState, config: RunnableConfig) -> Dict[str
     correction_count = state.get("correction_count", 0)
     user_query = state.get("user_query", "")
 
-    if intent == "chat" and not tool_results:
+    if intent == "undo":
+        final_text = "已为您成功撤销上一步修改，画布已恢复至先前的状态快照。"
+    elif intent == "chat" and not tool_results:
         final_text = "你好！我是你的 PPT 协同设计架构师。我支持通过自然语言一键生成多页精美演示文稿、自动排版时间线/指标卡/对比栏、智能调色与图元微调。请告诉我你的设计需求！"
     elif intent == "generate_presentation":
         final_text = f"已为您成功构思并生成完整的《{pres.title if pres else '演示文稿'}》，共 {len(pres.slides) if pres else 1} 页。页面涵盖封面、核心特性、演进流程与关键指标，并已统一应用专业设计规范。"
@@ -664,14 +719,38 @@ async def summary_node(state: PPTAgentState, config: RunnableConfig) -> Dict[str
         score_val = visual_review.get("score", 95.0)
         final_text += f"\n\n[视觉自愈闭环] 检测并自动纠偏了几何重叠与边缘贴靠缺陷，当前页面健康度达 {score_val:.1f}/100。"
 
+    it_dict = None
+    if session and visual_review:
+        score_after = float(visual_review.get("score", 95.0))
+        last_it = session.iterations[-1] if session.iterations else None
+        score_before = float(last_it.get("score_after", 80.0) if isinstance(last_it, dict) else getattr(last_it, "score_after", 80.0)) if last_it else 80.0
+        changes_summary = [{"tool": r["tool"], "arguments": r.get("arguments", {})} for r in tool_results]
+        applied_fixes = [r["tool"] for r in tool_results if r.get("auto_correct")]
+        it_record = AgentIteration(
+            iteration=len(session.iterations) + 1,
+            score_before=score_before,
+            score_after=score_after,
+            changes=changes_summary,
+            critique=vision_critique,
+            applied_fixes=applied_fixes
+        )
+        session.record_iteration(it_record)
+        it_dict = it_record.to_dict()
+        if on_event:
+            await _safe_emit(on_event, {
+                "type": "iteration_completed",
+                "iteration": it_dict
+            })
+
     if on_event:
-        await _safe_emit(on_event,{
+        await _safe_emit(on_event, {
             "type": "agent_finished",
             "summary": final_text,
             "tools_executed": tool_results,
             "vision_critique": vision_critique,
             "visual_review": visual_review,
             "correction_count": correction_count,
+            "iteration": it_dict,
             "presentation_version": pres.version if pres else 1
         })
 

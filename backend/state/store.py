@@ -23,6 +23,8 @@ from ..ir.models import (
 from ..ir.converter import PPTIRConverter
 from ..ir.patch import HistoryManager
 from ..agent.runtime import AgentRuntime
+from ..session.manager import session_manager, SessionManager
+from ..session.session import PPTSession
 from pptx_agent_converter.extractor.pptx_parser import PPTXParser
 from pptx_agent_converter.renderer.pptx_builder import PPTXBuilder
 
@@ -221,22 +223,46 @@ def create_default_demo_presentation() -> PresentationIR:
 
 
 class PresentationStore:
-    """Singleton store managing current presentation state and clients."""
+    """Singleton store managing current presentation state, sessions, and clients."""
 
     def __init__(self):
-        self.presentation: PresentationIR = create_default_demo_presentation()
-        self.history = HistoryManager()
+        self.session_manager: SessionManager = session_manager
+        self.active_session_id: str = SessionManager.DEFAULT_SESSION_ID
+        default_pres = create_default_demo_presentation()
+        self.session_manager.get_or_create(self.active_session_id, pres_factory=lambda: default_pres)
         self.agent_runtime = AgentRuntime()
         self.active_websockets: List[WebSocket] = []
+        self.session_websockets: Dict[str, List[WebSocket]] = {}
+        self.ws_session_map: Dict[WebSocket, str] = {}
+
+    @property
+    def active_session(self) -> PPTSession:
+        return self.session_manager.get_or_create(
+            self.active_session_id,
+            pres_factory=create_default_demo_presentation
+        )
+
+    @property
+    def presentation(self) -> PresentationIR:
+        return self.active_session.pres
+
+    @presentation.setter
+    def presentation(self, pres: PresentationIR):
+        self.active_session.pres = pres
+
+    @property
+    def history(self):
+        return self.active_session.history
+
+    @history.setter
+    def history(self, h):
+        self.active_session.history = h
 
     def get_presentation(self) -> PresentationIR:
-        return self.presentation
+        return self.active_session.pres
 
     def set_active_slide(self, slide_id: str) -> bool:
-        if self.presentation.get_slide(slide_id):
-            self.presentation.active_slide_id = slide_id
-            return True
-        return False
+        return self.active_session.set_active_slide(slide_id)
 
     def import_pptx_bytes(self, data: bytes, filename: str = "imported.pptx") -> PresentationIR:
         """Parses native PPTX bytes into PPT-IR."""
@@ -250,8 +276,10 @@ class PresentationStore:
             ir_pres = PPTIRConverter.presentation_to_ir(ooxml_pres)
             ir_pres.title = filename.replace(".pptx", "")
 
-            self.presentation = ir_pres
-            self.history = HistoryManager()
+            self.active_session.pres = ir_pres
+            self.active_session.history = HistoryManager()
+            self.active_session.checkpoint_mgr.clear()
+            self.active_session.create_checkpoint(description=f"Imported from {filename}")
             return self.presentation
         finally:
             if os.path.exists(tmp_path):
@@ -273,24 +301,55 @@ class PresentationStore:
                 os.remove(tmp_path)
 
     def undo(self) -> Optional[Dict[str, Any]]:
-        patch = self.history.undo(self.presentation)
-        return patch.model_dump() if patch else None
+        patch = self.active_session.undo()
+        if not patch:
+            return None
+        if hasattr(patch, "model_dump"):
+            return patch.model_dump()
+        elif hasattr(patch, "to_dict"):
+            return patch.to_dict()
+        return dict(patch)
 
     def redo(self) -> Optional[Dict[str, Any]]:
-        patch = self.history.redo(self.presentation)
-        return patch.model_dump() if patch else None
+        patch = self.active_session.redo()
+        if not patch:
+            return None
+        if hasattr(patch, "model_dump"):
+            return patch.model_dump()
+        elif hasattr(patch, "to_dict"):
+            return patch.to_dict()
+        return dict(patch)
 
-    # WebSocket registration
-    async def connect_ws(self, ws: WebSocket):
+    # WebSocket registration with session isolation
+    async def connect_ws(self, ws: WebSocket, session_id: Optional[str] = None):
         await ws.accept()
-        self.active_websockets.append(ws)
+        sid = session_id or self.active_session_id
+        if ws not in self.active_websockets:
+            self.active_websockets.append(ws)
+        self.ws_session_map[ws] = sid
+        if sid not in self.session_websockets:
+            self.session_websockets[sid] = []
+        if ws not in self.session_websockets[sid]:
+            self.session_websockets[sid].append(ws)
 
     def disconnect_ws(self, ws: WebSocket):
         if ws in self.active_websockets:
             self.active_websockets.remove(ws)
+        sid = self.ws_session_map.pop(ws, None)
+        if sid and sid in self.session_websockets:
+            if ws in self.session_websockets[sid]:
+                self.session_websockets[sid].remove(ws)
+            if not self.session_websockets[sid]:
+                del self.session_websockets[sid]
 
-    async def broadcast(self, message: Dict[str, Any]):
-        for ws in list(self.active_websockets):
+    async def broadcast(self, message: Dict[str, Any], session_id: Optional[str] = None):
+        sid = session_id or message.get("session_id")
+        if sid:
+            targets = list(self.session_websockets.get(sid, []))
+        else:
+            targets = list(self.active_websockets)
+
+        for ws in targets:
             try:
                 await ws.send_json(message)
             except Exception as e:
