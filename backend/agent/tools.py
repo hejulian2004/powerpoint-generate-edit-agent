@@ -403,7 +403,7 @@ def add_connector(
     "type": "function",
     "function": {
         "name": "update_element",
-        "description": "Update element position, size, text content, fill, border or styles by element_id.",
+        "description": "Update element position, size, text content, font family, font size, fill, border, radius or styles by element_id.",
         "parameters": {
             "type": "object",
             "properties": {
@@ -417,9 +417,13 @@ def add_connector(
                 "fill_color": {"type": "string", "description": "New fill color hex"},
                 "border_color": {"type": "string"},
                 "border_width": {"type": "number"},
+                "radius": {"type": "number", "description": "Corner radius in px"},
+                "opacity": {"type": "number", "description": "Opacity 0.0 to 1.0"},
+                "font_family": {"type": "string", "description": "Font family name e.g. 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', 'Inter', 'SimSun'"},
                 "font_size": {"type": "number"},
                 "font_color": {"type": "string"},
                 "bold": {"type": "boolean"},
+                "italic": {"type": "boolean"},
                 "align": {"type": "string", "enum": ["left", "center", "right"]}
             },
             "required": ["element_id"]
@@ -439,9 +443,13 @@ def update_element(
     fill_color: Optional[str] = None,
     border_color: Optional[str] = None,
     border_width: Optional[float] = None,
+    radius: Optional[float] = None,
+    opacity: Optional[float] = None,
+    font_family: Optional[str] = None,
     font_size: Optional[float] = None,
     font_color: Optional[str] = None,
     bold: Optional[bool] = None,
+    italic: Optional[bool] = None,
     align: Optional[str] = None
 ) -> Dict[str, Any]:
     slide = pres.get_slide(slide_id) if slide_id else pres.get_active_slide()
@@ -467,19 +475,46 @@ def update_element(
         elem.style.fill = FillStyle(type="solid", color=fill_color) if fill_color else FillStyle(type="none")
     if border_color is not None:
         elem.style.border = BorderStyle(color=border_color, width=border_width or 1.0)
+    if border_width is not None and elem.style.border:
+        elem.style.border.width = border_width
+    if radius is not None:
+        elem.style.radius = radius
+    if opacity is not None:
+        elem.style.opacity = max(0.0, min(1.0, opacity))
 
     # Text update
     if text is not None:
         if isinstance(elem, TextElementIR) or isinstance(elem, ShapeElementIR):
             f_color = font_color or "#1E293B"
             f_size = font_size or 18.0
+            f_family = font_family or "Segoe UI"
             b = bold if bold is not None else False
+            it = italic if italic is not None else False
             a = align or "left"
             elem.text_content = TextContentIR.from_plain_text(
                 text,
-                font=FontIR(size=f_size, color=f_color, bold=b),
+                font=FontIR(name=f_family, size=f_size, color=f_color, bold=b, italic=it),
                 align=a if a in ["left", "center", "right"] else "left"
             )
+    else:
+        # In-place typography update on existing text_content
+        if hasattr(elem, "text_content") and elem.text_content:
+            for p in elem.text_content.paragraphs:
+                if align and align in ["left", "center", "right"]:
+                    p.align = align
+                for r in p.runs:
+                    if not r.font:
+                        r.font = FontIR()
+                    if font_family is not None:
+                        r.font.name = font_family
+                    if font_size is not None:
+                        r.font.size = font_size
+                    if font_color is not None:
+                        r.font.color = font_color
+                    if bold is not None:
+                        r.font.bold = bold
+                    if italic is not None:
+                        r.font.italic = italic
 
     pres.version += 1
     after_state = elem.model_dump()
@@ -663,6 +698,13 @@ def apply_theme(pres: PresentationIR, history: HistoryManager, theme_preset: str
             "primary": "#D97706",
             "text": "#78350F",
             "border": "#FDE68A"
+        },
+        "monochrome_studio": {
+            "bg": "#0A0A0A",
+            "card_fill": "#141414",
+            "primary": "#F1F2F6",
+            "text": "#FFFFFF",
+            "border": "#2E2E2E"
         }
     }
 
@@ -693,3 +735,818 @@ def apply_theme(pres: PresentationIR, history: HistoryManager, theme_preset: str
     )
 
     return {"success": True, "message": f"已应用 {theme_preset} 全局主题规范"}
+
+
+# =====================================================================
+# 5. Advanced PPT Generation & Archetype Tools
+# =====================================================================
+
+@tools.register({
+    "type": "function",
+    "function": {
+        "name": "generate_presentation",
+        "description": "Generate a full multi-slide presentation deck from topic, outline, and layout specifications.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "topic": {"type": "string", "description": "Presentation topic or title"},
+                "slides": {
+                    "type": "array",
+                    "description": "List of slide specifications to generate",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "title": {"type": "string", "description": "Slide title"},
+                            "layout": {
+                                "type": "string",
+                                "enum": ["title_slide", "card_grid", "timeline", "kpi_metrics", "comparison"],
+                                "description": "Slide layout archetype"
+                            },
+                            "subtitle": {"type": "string", "description": "Subtitle or description"},
+                            "items": {
+                                "type": "array",
+                                "description": "Items/cards/steps/metrics content for the slide",
+                                "items": {"type": "object"}
+                            }
+                        },
+                        "required": ["title", "layout"]
+                    }
+                },
+                "theme": {
+                    "type": "string",
+                    "enum": ["monochrome_studio", "tech_blue", "dark_minimal", "emerald_nature", "warm_corporate"],
+                    "default": "monochrome_studio"
+                },
+                "replace": {
+                    "type": "boolean",
+                    "description": "If true, replaces all current slides; if false, appends to existing presentation",
+                    "default": True
+                }
+            },
+            "required": ["topic", "slides"]
+        }
+    }
+})
+def generate_presentation(
+    pres: PresentationIR,
+    history: HistoryManager,
+    topic: str,
+    slides: List[Dict[str, Any]],
+    theme: str = "monochrome_studio",
+    replace: bool = True
+) -> Dict[str, Any]:
+    pres.title = topic
+
+    if replace:
+        pres.slides.clear()
+
+    start_num = len(pres.slides) + 1
+    new_slides: List[SlideIR] = []
+
+    for i, s_spec in enumerate(slides):
+        s_title = s_spec.get("title", f"Slide {i + 1}")
+        s_layout = s_spec.get("layout", "card_grid")
+        s_subtitle = s_spec.get("subtitle", "")
+        s_items = s_spec.get("items", [])
+
+        slide_id = f"slide_{uuid.uuid4().hex[:6]}"
+        slide = SlideIR(
+            id=slide_id,
+            slide_num=start_num + i,
+            title=s_title,
+            background=FillStyle(type="solid", color="#0A0A0A")
+        )
+
+        _build_slide_elements_by_layout(slide, s_title, s_layout, s_subtitle, s_items)
+        new_slides.append(slide)
+        pres.slides.append(slide)
+
+    if pres.slides:
+        pres.active_slide_id = pres.slides[0].id
+
+    # Apply chosen theme
+    apply_theme(pres, history, theme_preset=theme)
+
+    pres.version += 1
+    history.record(
+        action="generate_presentation",
+        description=f"生成完整演示文稿: {topic} (共 {len(new_slides)} 页)"
+    )
+
+    return {
+        "success": True,
+        "topic": topic,
+        "slides_count": len(pres.slides),
+        "generated_count": len(new_slides),
+        "message": f"成功生成《{topic}》演示文稿，包含 {len(new_slides)} 页精美幻灯片。"
+    }
+
+
+def _build_slide_elements_by_layout(
+    slide: SlideIR,
+    title: str,
+    layout: str,
+    subtitle: str = "",
+    items: Optional[List[Dict[str, Any]]] = None
+):
+    """Populates slide elements based on design archetypes."""
+    items = items or []
+    is_dark = slide.background.color in ["#0A0A0A", "#0B0F19", "#000000", "#121212"]
+    text_color = "#FFFFFF" if is_dark else "#0F172A"
+    subtext_color = "#A3A3A3" if is_dark else "#64748B"
+    card_fill = "#141414" if is_dark else "#FFFFFF"
+    card_border = "#2E2E2E" if is_dark else "#E2E8F0"
+    primary_color = "#38BDF8" if is_dark else "#2563EB"
+
+    if layout == "title_slide":
+        # Hero Title
+        slide.elements.append(TextElementIR(
+            id=f"title_{uuid.uuid4().hex[:6]}",
+            name="Hero Title",
+            x=120,
+            y=180,
+            width=1040,
+            height=90,
+            text_content=TextContentIR.from_plain_text(
+                title,
+                font=FontIR(size=44.0, color=text_color, bold=True),
+                align="center"
+            )
+        ))
+        if subtitle:
+            slide.elements.append(TextElementIR(
+                id=f"sub_{uuid.uuid4().hex[:6]}",
+                name="Hero Subtitle",
+                x=160,
+                y=290,
+                width=960,
+                height=50,
+                text_content=TextContentIR.from_plain_text(
+                    subtitle,
+                    font=FontIR(size=20.0, color=subtext_color),
+                    align="center"
+                )
+            ))
+        # Top Accent Badge
+        slide.elements.append(ShapeElementIR(
+            id=f"badge_{uuid.uuid4().hex[:6]}",
+            name="Category Badge",
+            shape_type="roundRect",
+            x=540,
+            y=120,
+            width=200,
+            height=36,
+            style=ElementStyleIR(
+                fill=FillStyle(type="solid", color=card_fill),
+                border=BorderStyle(color=primary_color, width=1.5),
+                radius=18.0
+            ),
+            text_content=TextContentIR.from_plain_text(
+                "KEYNOTE PRESENTATION",
+                font=FontIR(size=12.0, color=primary_color, bold=True),
+                align="center"
+            )
+        ))
+
+    elif layout == "card_grid":
+        # Header Title
+        slide.elements.append(TextElementIR(
+            id=f"header_{uuid.uuid4().hex[:6]}",
+            name="Slide Title",
+            x=100,
+            y=60,
+            width=1080,
+            height=50,
+            text_content=TextContentIR.from_plain_text(
+                title,
+                font=FontIR(size=32.0, color=text_color, bold=True),
+                align="left"
+            )
+        ))
+        if subtitle:
+            slide.elements.append(TextElementIR(
+                id=f"sub_{uuid.uuid4().hex[:6]}",
+                name="Slide Subtitle",
+                x=100,
+                y=115,
+                width=1080,
+                height=35,
+                text_content=TextContentIR.from_plain_text(
+                    subtitle,
+                    font=FontIR(size=16.0, color=subtext_color),
+                    align="left"
+                )
+            ))
+
+        n = len(items) if items else 3
+        margin = 100.0
+        gap = 30.0
+        start_y = 180.0
+        total_gaps = (n - 1) * gap
+        avail_w = 1280.0 - (margin * 2) - total_gaps
+        card_w = max(avail_w / n, 160.0)
+        card_h = 440.0
+
+        for idx, item in enumerate(items or [{"title": f"核心特性 {idx+1}", "description": "详细描述与架构说明"} for idx in range(3)]):
+            cx = margin + idx * (card_w + gap)
+            item_title = item.get("title", f"Feature {idx+1}")
+            item_desc = item.get("description", "")
+            badge = item.get("badge", f"0{idx+1}")
+
+            slide.elements.append(ShapeElementIR(
+                id=f"card_{idx}_{uuid.uuid4().hex[:6]}",
+                name=f"Card {idx+1}",
+                shape_type="roundRect",
+                x=cx,
+                y=start_y,
+                width=card_w,
+                height=card_h,
+                style=ElementStyleIR(
+                    fill=FillStyle(type="solid", color=card_fill),
+                    border=BorderStyle(color=card_border, width=1.5),
+                    shadow=ShadowStyle(enabled=True, blur=6.0, alpha=0.3),
+                    radius=14.0
+                ),
+                text_content=TextContentIR.from_plain_text(
+                    f"【{badge}】 {item_title}\n\n{item_desc}",
+                    font=FontIR(size=16.0, color=text_color),
+                    align="left"
+                )
+            ))
+
+    elif layout == "timeline":
+        # Header Title
+        slide.elements.append(TextElementIR(
+            id=f"header_{uuid.uuid4().hex[:6]}",
+            name="Slide Title",
+            x=100,
+            y=60,
+            width=1080,
+            height=50,
+            text_content=TextContentIR.from_plain_text(
+                title,
+                font=FontIR(size=32.0, color=text_color, bold=True),
+                align="left"
+            )
+        ))
+
+        steps = items or [
+            {"title": "阶段一: 需求分析", "description": "定义核心流程与目标"},
+            {"title": "阶段二: 架构研发", "description": "设计中间件与工具链"},
+            {"title": "阶段三: 质检上线", "description": "自动化验证与全面交付"}
+        ]
+        n = len(steps)
+        margin = 100.0
+        gap = 40.0
+        step_w = (1280.0 - (margin * 2) - (n - 1) * gap) / n
+        step_h = 240.0
+        cy = 240.0
+
+        for idx, st in enumerate(steps):
+            cx = margin + idx * (step_w + gap)
+            st_title = st.get("title", f"Step {idx+1}")
+            st_desc = st.get("description", "")
+
+            # Step Card
+            slide.elements.append(ShapeElementIR(
+                id=f"step_{idx}_{uuid.uuid4().hex[:6]}",
+                name=f"Timeline Step {idx+1}",
+                shape_type="roundRect",
+                x=cx,
+                y=cy,
+                width=step_w,
+                height=step_h,
+                style=ElementStyleIR(
+                    fill=FillStyle(type="solid", color=card_fill),
+                    border=BorderStyle(color=card_border, width=1.5),
+                    radius=12.0
+                ),
+                text_content=TextContentIR.from_plain_text(
+                    f"阶段 0{idx+1}\n\n{st_title}\n\n{st_desc}",
+                    font=FontIR(size=15.0, color=text_color),
+                    align="center"
+                )
+            ))
+
+            # Connecting arrow to next step
+            if idx < n - 1:
+                arrow_start_x = cx + step_w
+                arrow_end_x = arrow_start_x + gap
+                slide.elements.append(ConnectorElementIR(
+                    id=f"arrow_{idx}_{uuid.uuid4().hex[:6]}",
+                    name=f"Arrow {idx+1}",
+                    start_x=arrow_start_x,
+                    start_y=cy + step_h / 2,
+                    end_x=arrow_end_x,
+                    end_y=cy + step_h / 2,
+                    arrow_end="triangle",
+                    style=ElementStyleIR(border=BorderStyle(color=primary_color, width=2.0))
+                ))
+
+    elif layout == "kpi_metrics":
+        # Header Title
+        slide.elements.append(TextElementIR(
+            id=f"header_{uuid.uuid4().hex[:6]}",
+            name="Slide Title",
+            x=100,
+            y=60,
+            width=1080,
+            height=50,
+            text_content=TextContentIR.from_plain_text(
+                title,
+                font=FontIR(size=32.0, color=text_color, bold=True),
+                align="left"
+            )
+        ))
+
+        stats = items or [
+            {"value": "99.9%", "label": "系统高可用性", "subtext": "SLA 严格达标保证"},
+            {"value": "10x", "label": "PPT 制作效率提升", "subtext": "自动化秒级编排"},
+            {"value": "< 500ms", "label": "双向渲染延迟", "subtext": "实时高保真同步"}
+        ]
+        n = len(stats)
+        margin = 100.0
+        gap = 35.0
+        card_w = (1280.0 - (margin * 2) - (n - 1) * gap) / n
+        card_h = 320.0
+        cy = 200.0
+
+        for idx, st in enumerate(stats):
+            cx = margin + idx * (card_w + gap)
+            val = st.get("value", "100%")
+            lbl = st.get("label", "Metric")
+            sub = st.get("subtext", "")
+
+            slide.elements.append(ShapeElementIR(
+                id=f"kpi_{idx}_{uuid.uuid4().hex[:6]}",
+                name=f"KPI Card {idx+1}",
+                shape_type="roundRect",
+                x=cx,
+                y=cy,
+                width=card_w,
+                height=card_h,
+                style=ElementStyleIR(
+                    fill=FillStyle(type="solid", color=card_fill),
+                    border=BorderStyle(color=card_border, width=1.5),
+                    radius=16.0
+                ),
+                text_content=TextContentIR.from_plain_text(
+                    f"{val}\n\n{lbl}\n\n{sub}",
+                    font=FontIR(size=22.0, color=text_color, bold=True),
+                    align="center"
+                )
+            ))
+
+    elif layout == "comparison":
+        # Header Title
+        slide.elements.append(TextElementIR(
+            id=f"header_{uuid.uuid4().hex[:6]}",
+            name="Slide Title",
+            x=100,
+            y=60,
+            width=1080,
+            height=50,
+            text_content=TextContentIR.from_plain_text(
+                title,
+                font=FontIR(size=32.0, color=text_color, bold=True),
+                align="left"
+            )
+        ))
+
+        cols = items or [
+            {"title": "传统设计模式", "description": "• 手动反复排版与校对\n• 耗时耗力且样式易冲突\n• 跨平台协同效率低"},
+            {"title": "Agentic AI 架构", "description": "• PPT-IR 核心结构解耦\n• 自然语言驱动自动化生成\n• 实时渲染与无损 OOXML 导出"}
+        ]
+        col_w = 510.0
+        col_h = 460.0
+        cy = 160.0
+
+        for idx, col in enumerate(cols[:2]):
+            cx = 100.0 if idx == 0 else 670.0
+            c_title = col.get("title", f"Column {idx+1}")
+            c_desc = col.get("description", "")
+
+            border_c = primary_color if idx == 1 else card_border
+            slide.elements.append(ShapeElementIR(
+                id=f"col_{idx}_{uuid.uuid4().hex[:6]}",
+                name=f"Column {idx+1}",
+                shape_type="roundRect",
+                x=cx,
+                y=cy,
+                width=col_w,
+                height=col_h,
+                style=ElementStyleIR(
+                    fill=FillStyle(type="solid", color=card_fill),
+                    border=BorderStyle(color=border_c, width=2.0),
+                    radius=14.0
+                ),
+                text_content=TextContentIR.from_plain_text(
+                    f"【{c_title}】\n\n{c_desc}",
+                    font=FontIR(size=17.0, color=text_color),
+                    align="left"
+                )
+            ))
+
+
+@tools.register({
+    "type": "function",
+    "function": {
+        "name": "generate_slide_layout",
+        "description": "Generate a full structured slide layout (card_grid, timeline, kpi_metrics, comparison, title_slide) on the current or targeted slide.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "slide_id": {"type": "string", "description": "Target slide ID or empty for active slide"},
+                "layout_type": {
+                    "type": "string",
+                    "enum": ["card_grid", "timeline", "kpi_metrics", "comparison", "title_slide"],
+                    "default": "card_grid"
+                },
+                "title": {"type": "string", "description": "Slide title"},
+                "subtitle": {"type": "string", "description": "Optional subtitle", "default": ""},
+                "items": {
+                    "type": "array",
+                    "description": "Items data list for the layout",
+                    "items": {"type": "object"}
+                },
+                "clear_existing": {"type": "boolean", "description": "Whether to clear existing elements before populating", "default": True}
+            },
+            "required": ["title", "layout_type"]
+        }
+    }
+})
+def generate_slide_layout(
+    pres: PresentationIR,
+    history: HistoryManager,
+    title: str,
+    layout_type: str = "card_grid",
+    slide_id: Optional[str] = None,
+    subtitle: str = "",
+    items: Optional[List[Dict[str, Any]]] = None,
+    clear_existing: bool = True
+) -> Dict[str, Any]:
+    slide = pres.get_slide(slide_id) if slide_id else pres.get_active_slide()
+    if not slide:
+        return {"success": False, "error": "Slide not found"}
+
+    if clear_existing:
+        slide.elements.clear()
+
+    slide.title = title
+    _build_slide_elements_by_layout(slide, title, layout_type, subtitle, items)
+
+    pres.version += 1
+    history.record(
+        action="generate_slide_layout",
+        description=f"排版生成页面: {layout_type} - {title}",
+        slide_id=slide.id
+    )
+
+    return {
+        "success": True,
+        "slide_id": slide.id,
+        "elements_count": len(slide.elements),
+        "message": f"已在第 {slide.slide_num} 页成功生成 {layout_type} 布局架构"
+    }
+
+
+@tools.register({
+    "type": "function",
+    "function": {
+        "name": "batch_add_cards",
+        "description": "Add multiple neatly arranged cards across the canvas with calculated spacing.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "slide_id": {"type": "string", "description": "Target slide ID or empty for active slide"},
+                "cards": {
+                    "type": "array",
+                    "description": "List of cards with title, description, badge, and optional color",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "title": {"type": "string"},
+                            "description": {"type": "string"},
+                            "badge": {"type": "string"}
+                        },
+                        "required": ["title"]
+                    }
+                },
+                "start_y": {"type": "number", "description": "Top margin for cards", "default": 200},
+                "card_height": {"type": "number", "default": 360}
+            },
+            "required": ["cards"]
+        }
+    }
+})
+def batch_add_cards(
+    pres: PresentationIR,
+    history: HistoryManager,
+    cards: List[Dict[str, Any]],
+    slide_id: Optional[str] = None,
+    start_y: float = 200.0,
+    card_height: float = 360.0
+) -> Dict[str, Any]:
+    slide = pres.get_slide(slide_id) if slide_id else pres.get_active_slide()
+    if not slide:
+        return {"success": False, "error": "Slide not found"}
+
+    n = len(cards)
+    if n == 0:
+        return {"success": False, "error": "Cards list cannot be empty"}
+
+    margin = 100.0
+    gap = 24.0
+    avail_w = 1280.0 - (margin * 2) - (n - 1) * gap
+    card_w = max(avail_w / n, 140.0)
+
+    is_dark = slide.background.color in ["#0A0A0A", "#0B0F19", "#000000", "#121212"]
+    text_c = "#FFFFFF" if is_dark else "#0F172A"
+    card_bg = "#141414" if is_dark else "#FFFFFF"
+    border_c = "#2E2E2E" if is_dark else "#E2E8F0"
+
+    added_ids = []
+    for idx, card in enumerate(cards):
+        cx = margin + idx * (card_w + gap)
+        c_title = card.get("title", f"Card {idx+1}")
+        c_desc = card.get("description", "")
+        c_badge = card.get("badge", f"0{idx+1}")
+
+        elem = ShapeElementIR(
+            id=f"card_{uuid.uuid4().hex[:6]}",
+            name=c_title,
+            shape_type="roundRect",
+            x=cx,
+            y=start_y,
+            width=card_w,
+            height=card_height,
+            style=ElementStyleIR(
+                fill=FillStyle(type="solid", color=card_bg),
+                border=BorderStyle(color=border_c, width=1.5),
+                radius=12.0
+            ),
+            text_content=TextContentIR.from_plain_text(
+                f"[{c_badge}] {c_title}\n\n{c_desc}",
+                font=FontIR(size=16.0, color=text_c),
+                align="left"
+            )
+        )
+        slide.add_element(elem)
+        added_ids.append(elem.id)
+
+    pres.version += 1
+    history.record(
+        action="batch_add_cards",
+        description=f"批量添加 {n} 张卡片",
+        slide_id=slide.id
+    )
+
+    return {"success": True, "added_count": n, "element_ids": added_ids, "message": f"成功批量添加 {n} 个卡片"}
+
+
+# =====================================================================
+# 6. Advanced Modification & Formatting Tools
+# =====================================================================
+
+@tools.register({
+    "type": "function",
+    "function": {
+        "name": "format_text",
+        "description": "Fine-grained text typography formatting for an element (font size, color, bold, alignment).",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "element_id": {"type": "string", "description": "Target element ID"},
+                "slide_id": {"type": "string", "description": "Slide ID or empty for active slide"},
+                "font_family": {"type": "string", "description": "Font family name"},
+                "font_size": {"type": "number", "description": "Font size in px"},
+                "font_color": {"type": "string", "description": "Hex color like #FFFFFF"},
+                "bold": {"type": "boolean"},
+                "align": {"type": "string", "enum": ["left", "center", "right"]}
+            },
+            "required": ["element_id"]
+        }
+    }
+})
+def format_text(
+    pres: PresentationIR,
+    history: HistoryManager,
+    element_id: str,
+    slide_id: Optional[str] = None,
+    font_family: Optional[str] = None,
+    font_size: Optional[float] = None,
+    font_color: Optional[str] = None,
+    bold: Optional[bool] = None,
+    align: Optional[str] = None
+) -> Dict[str, Any]:
+    slide = pres.get_slide(slide_id) if slide_id else pres.get_active_slide()
+    if not slide:
+        return {"success": False, "error": "Slide not found"}
+
+    elem = slide.get_element(element_id)
+    if not elem or not hasattr(elem, "text_content") or not elem.text_content:
+        return {"success": False, "error": f"Element {element_id} has no text content to format"}
+
+    for p in elem.text_content.paragraphs:
+        if align and align in ["left", "center", "right"]:
+            p.align = align
+        for r in p.runs:
+            if not r.font:
+                r.font = FontIR()
+            if font_family is not None:
+                r.font.name = font_family
+            if font_size is not None:
+                r.font.size = font_size
+            if font_color is not None:
+                r.font.color = font_color
+            if bold is not None:
+                r.font.bold = bold
+
+    pres.version += 1
+    history.record(
+        action="format_text",
+        description=f"格式化文本: {element_id}",
+        slide_id=slide.id,
+        element_id=element_id
+    )
+
+    return {"success": True, "element_id": element_id, "message": "文本排版格式已更新"}
+
+
+@tools.register({
+    "type": "function",
+    "function": {
+        "name": "align_elements",
+        "description": "Align or distribute elements on the slide (left, center, right, top, middle, bottom, distribute_h, distribute_v).",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "slide_id": {"type": "string", "description": "Slide ID or empty for active slide"},
+                "element_ids": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "List of element IDs to align. If empty, aligns all shape/card elements."
+                },
+                "alignment": {
+                    "type": "string",
+                    "enum": ["left", "center", "right", "top", "middle", "bottom", "distribute_h", "distribute_v"],
+                    "default": "center"
+                }
+            },
+            "required": ["alignment"]
+        }
+    }
+})
+def align_elements(
+    pres: PresentationIR,
+    history: HistoryManager,
+    alignment: str = "center",
+    slide_id: Optional[str] = None,
+    element_ids: Optional[List[str]] = None
+) -> Dict[str, Any]:
+    slide = pres.get_slide(slide_id) if slide_id else pres.get_active_slide()
+    if not slide:
+        return {"success": False, "error": "Slide not found"}
+
+    targets = []
+    if element_ids:
+        targets = [e for e in slide.elements if e.id in element_ids]
+    else:
+        targets = [e for e in slide.elements if isinstance(e, ShapeElementIR)]
+
+    if len(targets) < 2 and alignment.startswith("distribute"):
+        return {"success": False, "error": "Need at least 2 elements to distribute"}
+    if not targets:
+        return {"success": False, "error": "No elements found to align"}
+
+    if alignment == "left":
+        min_x = min(e.x for e in targets)
+        for e in targets:
+            e.x = min_x
+    elif alignment == "right":
+        max_r = max(e.x + e.width for e in targets)
+        for e in targets:
+            e.x = max_r - e.width
+    elif alignment == "top":
+        min_y = min(e.y for e in targets)
+        for e in targets:
+            e.y = min_y
+    elif alignment == "bottom":
+        max_b = max(e.y + e.height for e in targets)
+        for e in targets:
+            e.y = max_b - e.height
+    elif alignment == "center":
+        avg_cx = sum(e.x + e.width / 2.0 for e in targets) / len(targets)
+        for e in targets:
+            e.x = avg_cx - e.width / 2.0
+    elif alignment == "middle":
+        avg_cy = sum(e.y + e.height / 2.0 for e in targets) / len(targets)
+        for e in targets:
+            e.y = avg_cy - e.height / 2.0
+    elif alignment == "distribute_h":
+        targets.sort(key=lambda e: e.x)
+        min_x = targets[0].x
+        max_x = targets[-1].x + targets[-1].width
+        total_elems_w = sum(e.width for e in targets)
+        if len(targets) > 1 and max_x - min_x > total_elems_w:
+            gap = (max_x - min_x - total_elems_w) / (len(targets) - 1)
+            curr_x = min_x
+            for e in targets:
+                e.x = curr_x
+                curr_x += e.width + gap
+
+    pres.version += 1
+    history.record(
+        action="align_elements",
+        description=f"对齐图元: {alignment}",
+        slide_id=slide.id
+    )
+
+    return {"success": True, "alignment": alignment, "count": len(targets), "message": f"已对 {len(targets)} 个图元执行 {alignment} 对齐"}
+
+
+@tools.register({
+    "type": "function",
+    "function": {
+        "name": "clear_slide_elements",
+        "description": "Clear all elements or non-title elements on a slide to start fresh.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "slide_id": {"type": "string", "description": "Slide ID or empty for active slide"},
+                "keep_title": {"type": "boolean", "default": True}
+            },
+            "required": []
+        }
+    }
+})
+def clear_slide_elements(
+    pres: PresentationIR,
+    history: HistoryManager,
+    slide_id: Optional[str] = None,
+    keep_title: bool = True
+) -> Dict[str, Any]:
+    slide = pres.get_slide(slide_id) if slide_id else pres.get_active_slide()
+    if not slide:
+        return {"success": False, "error": "Slide not found"}
+
+    if keep_title:
+        # Keep title elements (y < 150 and is TextElementIR)
+        slide.elements = [e for e in slide.elements if isinstance(e, TextElementIR) and e.y < 150]
+    else:
+        slide.elements.clear()
+
+    pres.version += 1
+    history.record(
+        action="clear_slide_elements",
+        description=f"清理页面元素 (keep_title={keep_title})",
+        slide_id=slide.id
+    )
+
+    return {"success": True, "remaining": len(slide.elements), "message": f"已清空第 {slide.slide_num} 页内容"}
+
+
+@tools.register({
+    "type": "function",
+    "function": {
+        "name": "duplicate_slide",
+        "description": "Duplicate an existing slide by slide_id.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "slide_id": {"type": "string", "description": "Slide ID to duplicate"}
+            },
+            "required": ["slide_id"]
+        }
+    }
+})
+def duplicate_slide(pres: PresentationIR, history: HistoryManager, slide_id: str) -> Dict[str, Any]:
+    slide = pres.get_slide(slide_id)
+    if not slide:
+        return {"success": False, "error": "Slide not found"}
+
+    idx = pres.slides.index(slide)
+    new_slide_dict = copy.deepcopy(slide.model_dump())
+    new_slide_dict["id"] = f"slide_{uuid.uuid4().hex[:6]}"
+    new_slide_dict["slide_num"] = idx + 2
+    new_slide_dict["title"] = f"{slide.title or 'Slide'} (副本)"
+
+    for el in new_slide_dict.get("elements", []):
+        el["id"] = f"{el.get('type', 'el')}_{uuid.uuid4().hex[:6]}"
+
+    new_slide = SlideIR(**new_slide_dict)
+    pres.slides.insert(idx + 1, new_slide)
+
+    for i, s in enumerate(pres.slides):
+        s.slide_num = i + 1
+
+    pres.active_slide_id = new_slide.id
+    pres.version += 1
+
+    history.record(
+        action="duplicate_slide",
+        description=f"复制幻灯片 #{slide.slide_num}",
+        slide_id=new_slide.id
+    )
+
+    return {"success": True, "new_slide_id": new_slide.id, "slide_num": new_slide.slide_num, "message": f"已成功复制幻灯片为第 {new_slide.slide_num} 页"}

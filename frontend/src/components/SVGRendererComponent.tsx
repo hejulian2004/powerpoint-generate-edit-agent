@@ -7,9 +7,16 @@ import { usePPTStore } from '../store/usePPTStore'
 interface Props {
   slide: SlideIR
   isThumbnail?: boolean
+  onElementMouseDown?: (elemId: string, e: React.MouseEvent) => void
+  onResizeHandleMouseDown?: (handle: 'nw' | 'n' | 'ne' | 'e' | 'se' | 's' | 'sw' | 'w', e: React.MouseEvent) => void
 }
 
-export const SVGRendererComponent: React.FC<Props> = ({ slide, isThumbnail = false }) => {
+export const SVGRendererComponent: React.FC<Props> = ({
+  slide,
+  isThumbnail = false,
+  onElementMouseDown,
+  onResizeHandleMouseDown
+}) => {
   const { selectedElementId, setSelectedElementId } = usePPTStore()
 
   // Generate unique gradient IDs for this slide
@@ -47,7 +54,7 @@ export const SVGRendererComponent: React.FC<Props> = ({ slide, isThumbnail = fal
         width="140%"
         height="140%"
       >
-        <feDropShadow dx="2" dy="4" stdDeviation="4" floodOpacity="0.25" />
+        <feDropShadow dx="0" dy="6" stdDeviation="6" floodColor="#000000" floodOpacity="0.4" />
       </filter>
     ]
 
@@ -95,7 +102,7 @@ export const SVGRendererComponent: React.FC<Props> = ({ slide, isThumbnail = fal
     if (fill.type === 'gradient' && fill.gradient) {
       return `url(#${elemId ? `grad-${elemId}` : `bg-grad-${slide.id}`})`
     }
-    const color = fill.color || '#2A2A2A'
+    const color = fill.color || '#1A1C25'
     if (fill.alpha < 1.0) {
       return hexToRgba(color, fill.alpha)
     }
@@ -106,7 +113,7 @@ export const SVGRendererComponent: React.FC<Props> = ({ slide, isThumbnail = fal
     if (!border || border.style === 'none' || border.width <= 0) {
       return { stroke: 'none', strokeWidth: 0 }
     }
-    let stroke = border.color || '#333333'
+    let stroke = border.color || '#2D303F'
     if (border.alpha < 1.0) {
       stroke = hexToRgba(stroke, border.alpha)
     }
@@ -133,7 +140,7 @@ export const SVGRendererComponent: React.FC<Props> = ({ slide, isThumbnail = fal
   }
 
   // Render text inside shape or textbox
-  const renderTextContent = (tc: any, x: number, y: number, w: number, _h: number, pad: number = 8) => {
+  const renderTextContent = (tc: any, x: number, y: number, w: number, _h: number, pad: number = 10) => {
     if (!tc || !tc.paragraphs || tc.paragraphs.length === 0) return null
 
     let currY = y + pad
@@ -154,7 +161,7 @@ export const SVGRendererComponent: React.FC<Props> = ({ slide, isThumbnail = fal
           para.runs?.forEach((r: any) => {
             if (r.font?.size && r.font.size > maxSize) maxSize = r.font.size
           })
-          const lineSpacing = para.line_spacing || 1.2
+          const lineSpacing = para.line_spacing || 1.25
           currY += maxSize * lineSpacing
 
           return (
@@ -170,11 +177,12 @@ export const SVGRendererComponent: React.FC<Props> = ({ slide, isThumbnail = fal
                 return (
                   <tspan
                     key={rIdx}
-                    fontFamily={font?.name || 'Segoe UI, sans-serif'}
+                    fontFamily={font?.name || '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif'}
                     fontSize={`${font?.size || 16}px`}
-                    fontWeight={font?.bold ? 'bold' : 'normal'}
+                    fontWeight={font?.bold ? '600' : '400'}
                     fontStyle={font?.italic ? 'italic' : 'normal'}
-                    fill={font?.color || '#F8FAFC'}
+                    fill={font?.color || '#F1F2F6'}
+                    letterSpacing="-0.01em"
                   >
                     {run.text}
                   </tspan>
@@ -286,11 +294,12 @@ export const SVGRendererComponent: React.FC<Props> = ({ slide, isThumbnail = fal
             id={elem.id}
             transform={transform}
             opacity={elem.style.opacity ?? 1.0}
-            className={!isThumbnail ? 'cursor-pointer' : undefined}
-            onClick={(e) => {
+            className={!isThumbnail ? 'cursor-move' : undefined}
+            onMouseDown={(e) => {
               if (!isThumbnail) {
                 e.stopPropagation()
                 setSelectedElementId(elem.id)
+                onElementMouseDown?.(elem.id, e)
               }
             }}
           >
@@ -324,7 +333,7 @@ export const SVGRendererComponent: React.FC<Props> = ({ slide, isThumbnail = fal
 
             {elem.type === 'text' && (
               <>
-                {/* Optional background / border for text box */}
+                {/* Background / border for text box */}
                 {(elem.style.fill?.type !== 'none' || elem.style.border?.style !== 'none') && (
                   <rect
                     x={elem.x}
@@ -346,44 +355,75 @@ export const SVGRendererComponent: React.FC<Props> = ({ slide, isThumbnail = fal
               </>
             )}
 
-            {/* Selection Bounding Box & Handles (Crisp Monochrome Hairline) */}
-            {isSelected && (
-              <g className="pointer-events-none">
+            {/* Precision Architectural Selection Frame & Interactive Resize Handles */}
+            {isSelected && !isThumbnail && (
+              <g>
+                {/* Continuous Hairline Bounding Stroke */}
                 <rect
-                  x={elem.x - 2}
-                  y={elem.y - 2}
-                  width={elem.width + 4}
-                  height={elem.height + 4}
+                  x={elem.x - 1.5}
+                  y={elem.y - 1.5}
+                  width={elem.width + 3}
+                  height={elem.height + 3}
                   fill="none"
-                  stroke="#FFFFFF"
-                  strokeWidth="1.5"
-                  strokeDasharray="4,3"
+                  stroke="#F1F2F6"
+                  strokeWidth="1.2"
+                  strokeDasharray="4,2"
+                  pointerEvents="none"
                 />
-                {/* 4 corner handles */}
-                <rect x={elem.x - 5} y={elem.y - 5} width="6" height="6" fill="#FFFFFF" stroke="#000000" strokeWidth="1" />
-                <rect x={elem.x + elem.width - 1} y={elem.y - 5} width="6" height="6" fill="#FFFFFF" stroke="#000000" strokeWidth="1" />
-                <rect x={elem.x - 5} y={elem.y + elem.height - 1} width="6" height="6" fill="#FFFFFF" stroke="#000000" strokeWidth="1" />
-                <rect x={elem.x + elem.width - 1} y={elem.y + elem.height - 1} width="6" height="6" fill="#FFFFFF" stroke="#000000" strokeWidth="1" />
-                {/* Coordinate badge */}
-                <rect
-                  x={elem.x}
-                  y={elem.y - 22}
-                  width="110"
-                  height="18"
-                  rx="3"
-                  fill="#121212"
-                  stroke="#333333"
-                  strokeWidth="1"
-                />
-                <text
-                  x={elem.x + 6}
-                  y={elem.y - 9}
-                  fill="#EDEDED"
-                  fontSize="10px"
-                  fontFamily="monospace"
-                >
-                  {Math.round(elem.width)} × {Math.round(elem.height)} px
-                </text>
+
+                {/* 8 Interactive Resize Handles */}
+                {[
+                  { id: 'nw', cx: elem.x, cy: elem.y, cursor: 'nwse-resize' },
+                  { id: 'n', cx: elem.x + elem.width / 2, cy: elem.y, cursor: 'ns-resize' },
+                  { id: 'ne', cx: elem.x + elem.width, cy: elem.y, cursor: 'nesw-resize' },
+                  { id: 'e', cx: elem.x + elem.width, cy: elem.y + elem.height / 2, cursor: 'ew-resize' },
+                  { id: 'se', cx: elem.x + elem.width, cy: elem.y + elem.height, cursor: 'nwse-resize' },
+                  { id: 's', cx: elem.x + elem.width / 2, cy: elem.y + elem.height, cursor: 'ns-resize' },
+                  { id: 'sw', cx: elem.x, cy: elem.y + elem.height, cursor: 'nesw-resize' },
+                  { id: 'w', cx: elem.x, cy: elem.y + elem.height / 2, cursor: 'ew-resize' },
+                ].map((h) => (
+                  <rect
+                    key={h.id}
+                    x={h.cx - 4.5}
+                    y={h.cy - 4.5}
+                    width={9}
+                    height={9}
+                    rx={2}
+                    fill="#FFFFFF"
+                    stroke="#0D0E13"
+                    strokeWidth={1.5}
+                    style={{ cursor: h.cursor }}
+                    onMouseDown={(e) => {
+                      e.stopPropagation()
+                      onResizeHandleMouseDown?.(h.id as any, e)
+                    }}
+                  />
+                ))}
+
+                {/* Dimension & Coordinates Tooltip Pill */}
+                <g pointerEvents="none">
+                  <rect
+                    x={elem.x}
+                    y={elem.y - 24}
+                    width={112}
+                    height={18}
+                    rx={4}
+                    fill="#12131B"
+                    stroke="#2E3244"
+                    strokeWidth={1}
+                  />
+                  <text
+                    x={elem.x + 56}
+                    y={elem.y - 11}
+                    textAnchor="middle"
+                    fill="#E2E5F0"
+                    fontSize="10px"
+                    fontFamily="'JetBrains Mono', 'SF Mono', Consolas, monospace"
+                    fontWeight="500"
+                  >
+                    {Math.round(elem.width)} × {Math.round(elem.height)} px
+                  </text>
+                </g>
               </g>
             )}
           </g>

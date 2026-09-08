@@ -53,7 +53,7 @@ export const usePPTStore = create<PPTState>((set, get) => ({
     {
       id: 'welcome',
       role: 'assistant',
-      content: '我是你的 PPT 设计助理。你可以在画布上直接选取、调整图元属性，或在下方输入指令由我进行全局规划、配色升级与智能排版。',
+      content: '我是你的 PPT 协同架构师（由 LangGraph 状态机驱动）。我支持一键生成多页主题演示文稿、自动编排时间线/指标/特性卡片、规整排版与图元属性微调。',
       timestamp: Date.now()
     }
   ],
@@ -289,7 +289,73 @@ export const usePPTStore = create<PPTState>((set, get) => ({
   },
 
   updateElementDirect: (elemId, updates) => {
-    const { ws, activeSlideId } = get()
+    const { ws, activeSlideId, presentation } = get()
+
+    // Optimistic local update for instantaneous smooth feedback
+    if (presentation) {
+      const updatedSlides = presentation.slides.map((s) => {
+        if (s.id !== (activeSlideId || presentation.slides[0]?.id)) return s
+        const updatedElements = s.elements.map((el) => {
+          if (el.id !== elemId) return el
+          const updatedEl: any = { ...el, ...updates }
+
+          // Style adjustments
+          if (updates.fill_color !== undefined) {
+            updatedEl.style = {
+              ...updatedEl.style,
+              fill: updates.fill_color ? { type: 'solid', color: updates.fill_color, alpha: 1.0 } : { type: 'none', alpha: 0 }
+            }
+          }
+          if (updates.border_color !== undefined || updates.border_width !== undefined) {
+            updatedEl.style = {
+              ...updatedEl.style,
+              border: {
+                ...updatedEl.style?.border,
+                color: updates.border_color ?? updatedEl.style?.border?.color ?? '#2D303F',
+                width: updates.border_width ?? updatedEl.style?.border?.width ?? 1.0,
+                style: 'solid',
+                alpha: 1.0
+              }
+            }
+          }
+          if (updates.radius !== undefined) {
+            updatedEl.style = { ...updatedEl.style, radius: updates.radius }
+          }
+          if (updates.opacity !== undefined) {
+            updatedEl.style = { ...updatedEl.style, opacity: updates.opacity }
+          }
+
+          // Typography adjustments on text_content
+          if (updatedEl.text_content) {
+            const tc = JSON.parse(JSON.stringify(updatedEl.text_content))
+            if (updates.text !== undefined) {
+              tc.plain_text = updates.text
+              if (tc.paragraphs && tc.paragraphs[0] && tc.paragraphs[0].runs && tc.paragraphs[0].runs[0]) {
+                tc.paragraphs[0].runs[0].text = updates.text
+              }
+            }
+            if (tc.paragraphs) {
+              tc.paragraphs.forEach((p: any) => {
+                if (updates.align) p.align = updates.align
+                p.runs?.forEach((r: any) => {
+                  if (!r.font) r.font = {}
+                  if (updates.font_family !== undefined) r.font.name = updates.font_family
+                  if (updates.font_size !== undefined) r.font.size = updates.font_size
+                  if (updates.font_color !== undefined) r.font.color = updates.font_color
+                  if (updates.bold !== undefined) r.font.bold = updates.bold
+                  if (updates.italic !== undefined) r.font.italic = updates.italic
+                })
+              })
+            }
+            updatedEl.text_content = tc
+          }
+          return updatedEl
+        })
+        return { ...s, elements: updatedElements }
+      })
+      set({ presentation: { ...presentation, slides: updatedSlides } })
+    }
+
     const payload = {
       slide_id: activeSlideId,
       element_id: elemId,
