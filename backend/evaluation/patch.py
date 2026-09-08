@@ -1,23 +1,24 @@
 """Layout Patch Engine (PR12).
 
 Applies deterministic geometric and stylistic patches to LayoutSpec and DeckLayoutSpec
-instances without mutating the underlying SlideSpec or bypassing layout constraints.
+instances with transaction rollback and layout constraint verification.
 """
 
 from __future__ import annotations
 
 import copy
-from typing import List, Optional
+from typing import Callable, List, Optional, Tuple
 
 from ..layout.schema import DeckLayoutSpec, ElementStyle, LayoutElement, LayoutSpec, Rect, TextStyle
-from .schema import LayoutPatch, PatchOperation
+from ..layout.validator import ValidationReport, validate_layout
+from .schema import LayoutPatch, PatchOperation, PatchResult
 
 
 def apply_patch(
     layout_spec: LayoutSpec,
     patch: LayoutPatch,
 ) -> LayoutSpec:
-    """Apply a single LayoutPatch to a LayoutSpec, returning a modified deep copy."""
+    """Apply a single LayoutPatch to a LayoutSpec, returning a modified deep copy without validation."""
     # Ensure patch targets this slide
     if patch.slide_id != layout_spec.slide_id:
         return layout_spec
@@ -123,37 +124,109 @@ def apply_patch(
     return new_spec
 
 
+def apply_patch_transaction(
+    layout_spec: LayoutSpec,
+    patch: LayoutPatch,
+    validator_fn: Optional[Callable[[LayoutSpec], ValidationReport]] = None,
+) -> Tuple[LayoutSpec, PatchResult]:
+    """Apply a patch transactionally with geometric constraint verification.
+
+    If the candidate patch introduces new critical constraint errors (e.g. collision,
+    negative coordinates, or canvas overflow), the patch is rejected and the layout
+    is rolled back to its original state.
+    """
+    validator = validator_fn or (lambda s: validate_layout(s, strict=False))
+
+    # Pre-validation
+    report_before = validator(layout_spec)
+    errors_before = list(report_before.errors)
+
+    # Candidate mutation
+    candidate_spec = apply_patch(layout_spec, patch)
+
+    # Post-validation
+    report_after = validator(candidate_spec)
+    errors_after = list(report_after.errors)
+
+    # Detect newly introduced critical errors
+    new_errors = [err for err in errors_after if err not in errors_before]
+
+    if new_errors:
+        # Transaction rollback: reject candidate patch
+        rejection_msg = f"Patch rejected: introduced {len(new_errors)} new layout violation(s): {'; '.join(new_errors[:2])}"
+        patch_res = PatchResult(
+            success=False,
+            patch=patch,
+            before_valid=report_before.is_valid,
+            after_valid=False,
+            errors_before=errors_before,
+            errors_after=errors_after,
+            rejected_reason=rejection_msg,
+        )
+        return layout_spec, patch_res
+
+    # Transaction commit
+    patch_res = PatchResult(
+        success=True,
+        patch=patch,
+        before_valid=report_before.is_valid,
+        after_valid=report_after.is_valid,
+        errors_before=errors_before,
+        errors_after=errors_after,
+        rejected_reason=None,
+    )
+    return candidate_spec, patch_res
+
+
 def apply_patches(
     layout_spec: LayoutSpec,
     patches: List[LayoutPatch],
-) -> LayoutSpec:
-    """Apply an ordered sequence of patches to a LayoutSpec."""
+    enforce_transaction: bool = True,
+) -> Tuple[LayoutSpec, List[PatchResult]]:
+    """Apply an ordered sequence of patches to a LayoutSpec, optionally with transaction validation."""
     curr = layout_spec
+    results: List[PatchResult] = []
     for patch in patches:
-        curr = apply_patch(curr, patch)
-    return curr
+        if enforce_transaction:
+            curr, res = apply_patch_transaction(curr, patch)
+            results.append(res)
+        else:
+            curr = apply_patch(curr, patch)
+            results.append(
+                PatchResult(
+                    success=True,
+                    patch=patch,
+                    before_valid=True,
+                    after_valid=True,
+                )
+            )
+    return curr, results
 
 
 def apply_deck_patches(
     deck_spec: DeckLayoutSpec,
     patches: List[LayoutPatch],
-) -> DeckLayoutSpec:
-    """Apply patches across matching slides in a DeckLayoutSpec."""
+    enforce_transaction: bool = True,
+) -> Tuple[DeckLayoutSpec, List[PatchResult]]:
+    """Apply patches across matching slides in a DeckLayoutSpec with transactional validation."""
     if not patches:
-        return deck_spec
+        return deck_spec, []
 
     new_deck = deck_spec.model_copy(deep=True)
     patches_by_slide: dict[str, List[LayoutPatch]] = {}
     for p in patches:
         patches_by_slide.setdefault(p.slide_id, []).append(p)
 
+    all_results: List[PatchResult] = []
     updated_slides: List[LayoutSpec] = []
     for slide in new_deck.slides:
         if slide.slide_id in patches_by_slide:
             slide_patches = patches_by_slide[slide.slide_id]
-            updated_slides.append(apply_patches(slide, slide_patches))
+            updated_slide, results = apply_patches(slide, slide_patches, enforce_transaction=enforce_transaction)
+            updated_slides.append(updated_slide)
+            all_results.extend(results)
         else:
             updated_slides.append(slide)
 
     new_deck.slides = updated_slides
-    return new_deck
+    return new_deck, all_results

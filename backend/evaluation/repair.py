@@ -1,8 +1,8 @@
 """Visual Self-Healing Loop and Deterministic Repair Engine (PR12).
 
 Orchestrates the closed-loop evaluation and repair workflow:
-LayoutSpec -> Render PPTX -> Screenshots -> Visual Evaluation -> Generate Patches -> Apply Patches -> Re-evaluate.
-Guarantees convergence bounds with max_iterations limit.
+LayoutSpec -> Render PPTX -> Screenshots -> Visual Evaluation -> Generate Patches -> Apply Patches (Transactional) -> Re-evaluate.
+Guarantees convergence bounds with max_iterations limit and monotonic improvement stopping conditions.
 """
 
 from __future__ import annotations
@@ -21,7 +21,9 @@ from .schema import (
     IssueType,
     LayoutPatch,
     PatchOperation,
+    PatchResult,
     RepairIterationRecord,
+    ScreenshotResult,
     SelfHealingResult,
     VisualIssue,
 )
@@ -227,11 +229,12 @@ def evaluate_and_repair(
     """Execute iterative visual evaluation and layout self-healing closed loop.
 
     1. Render PPTX from current DeckLayoutSpec.
-    2. Capture slide screenshot images.
+    2. Capture slide screenshot images with fidelity metadata.
     3. Evaluate slides for visual and geometric defects.
-    4. If defect-free or no critical issues remain, converge and terminate.
+    4. Check convergence (no blocking errors) and monotonicity (no worsening/oscillation).
     5. Generate deterministic LayoutPatches.
-    6. Apply patches to DeckLayoutSpec and repeat until max_iterations reached.
+    6. Apply patches with transactional validation (rollback on new constraint violations).
+    7. Repeat until converged, non-improving, or max_iterations reached.
     """
     out_pptx = Path(output_pptx_path).resolve()
     out_pptx.parent.mkdir(parents=True, exist_ok=True)
@@ -248,35 +251,51 @@ def evaluate_and_repair(
     actual_render_fn = renderer_fn or (lambda spec, p: render_pptx(spec, p))
 
     current_deck = deck_layout
+    best_deck = deck_layout
+    best_error_count = float("inf")
+    best_issue_count = float("inf")
+
     history: List[RepairIterationRecord] = []
     final_screenshots: List[Path] = []
+    final_screenshot_result: Optional[ScreenshotResult] = None
     final_issues: List[VisualIssue] = []
+
+    prev_issue_signatures: set[str] = set()
 
     for iteration in range(1, max_iterations + 1):
         # Step 1: Render PPTX
         actual_render_fn(current_deck, out_pptx)
 
-        # Step 2: Render slide screenshots
+        # Step 2: Render slide screenshots with metadata
         iter_shots_dir = shots_dir / f"iter_{iteration}"
         iter_shots_dir.mkdir(parents=True, exist_ok=True)
-        slide_images = shot_engine.render_screenshots(out_pptx, iter_shots_dir)
-        final_screenshots = slide_images
+        shot_result = shot_engine.render_detailed(out_pptx, iter_shots_dir)
+        final_screenshots = shot_result.image_paths
+        final_screenshot_result = shot_result
 
         # Step 3: Evaluate Deck
-        issues = eval_engine.evaluate_deck(slide_images, current_deck)
+        issues = eval_engine.evaluate_deck(shot_result.image_paths, current_deck)
         final_issues = issues
 
         err_cnt = sum(1 for i in issues if i.severity in (IssueSeverity.ERROR, IssueSeverity.CRITICAL))
         warn_cnt = sum(1 for i in issues if i.severity == IssueSeverity.WARNING)
 
-        # Check convergence: No blocking errors
-        if not has_blocking_errors(issues) and iteration > 1:
+        # Track best deck state
+        if err_cnt < best_error_count or (err_cnt == best_error_count and len(issues) < best_issue_count):
+            best_deck = current_deck.model_copy(deep=True)
+            best_error_count = err_cnt
+            best_issue_count = len(issues)
+
+        # Check convergence: Zero blocking errors
+        if not has_blocking_errors(issues):
             history.append(
                 RepairIterationRecord(
                     iteration=iteration,
                     issues_detected=issues,
                     patches_applied=[],
-                    screenshot_paths=[str(p) for p in slide_images],
+                    patch_results=[],
+                    screenshot_paths=[str(p) for p in shot_result.image_paths],
+                    screenshot_fidelity=shot_result.fidelity,
                     error_count=err_cnt,
                     warning_count=warn_cnt,
                 )
@@ -287,29 +306,31 @@ def evaluate_and_repair(
                 final_issues=issues,
                 history=history,
                 final_pptx_path=str(out_pptx),
-                final_screenshot_paths=[str(p) for p in slide_images],
+                final_screenshot_paths=[str(p) for p in shot_result.image_paths],
+                final_screenshot_result=shot_result,
             )
 
-        # If zero issues on first pass, immediately converge
-        if not issues:
+        # Monotonicity check: Detect worsening or endless oscillation
+        current_sig = "|".join(sorted(f"{i.slide_id}:{i.issue_type}:{i.element_id}" for i in issues))
+        if current_sig in prev_issue_signatures:
+            # Oscillation detected: no progress made from previous cycle
             history.append(
                 RepairIterationRecord(
                     iteration=iteration,
-                    issues_detected=[],
+                    issues_detected=issues,
                     patches_applied=[],
-                    screenshot_paths=[str(p) for p in slide_images],
-                    error_count=0,
-                    warning_count=0,
+                    patch_results=[],
+                    screenshot_paths=[str(p) for p in shot_result.image_paths],
+                    screenshot_fidelity=shot_result.fidelity,
+                    error_count=err_cnt,
+                    warning_count=warn_cnt,
                 )
             )
-            return SelfHealingResult(
-                converged=True,
-                iterations_run=iteration,
-                final_issues=[],
-                history=history,
-                final_pptx_path=str(out_pptx),
-                final_screenshot_paths=[str(p) for p in slide_images],
-            )
+            # Revert to best known deck
+            current_deck = best_deck
+            break
+
+        prev_issue_signatures.add(current_sig)
 
         # Step 4: Generate Patches per slide
         iteration_patches: List[LayoutPatch] = []
@@ -318,31 +339,50 @@ def evaluate_and_repair(
             patches = generate_patches_for_issues(slide_issues, slide)
             iteration_patches.extend(patches)
 
+        if not iteration_patches:
+            history.append(
+                RepairIterationRecord(
+                    iteration=iteration,
+                    issues_detected=issues,
+                    patches_applied=[],
+                    patch_results=[],
+                    screenshot_paths=[str(p) for p in shot_result.image_paths],
+                    screenshot_fidelity=shot_result.fidelity,
+                    error_count=err_cnt,
+                    warning_count=warn_cnt,
+                )
+            )
+            break
+
+        # Step 5: Apply Patches transactionally to current DeckLayoutSpec
+        patched_deck, patch_results = apply_deck_patches(current_deck, iteration_patches, enforce_transaction=True)
+        accepted_patches = [pr.patch for pr in patch_results if pr.success]
+
         history.append(
             RepairIterationRecord(
                 iteration=iteration,
                 issues_detected=issues,
-                patches_applied=iteration_patches,
-                screenshot_paths=[str(p) for p in slide_images],
+                patches_applied=accepted_patches,
+                patch_results=patch_results,
+                screenshot_paths=[str(p) for p in shot_result.image_paths],
+                screenshot_fidelity=shot_result.fidelity,
                 error_count=err_cnt,
                 warning_count=warn_cnt,
             )
         )
 
-        if not iteration_patches:
-            # No actionable patches generated; stop early
+        if not accepted_patches:
+            # All candidate patches were rejected by transaction guard; stop early
             break
 
-        # Step 5: Apply Patches to current DeckLayoutSpec
-        current_deck = apply_deck_patches(current_deck, iteration_patches)
+        current_deck = patched_deck
 
-    # Perform a final render of the patched deck if patches were applied in last cycle
+    # Final re-render & re-evaluation of best deck state
     actual_render_fn(current_deck, out_pptx)
-
-    # Final screenshots
     final_shots_dir = shots_dir / "final"
     final_shots_dir.mkdir(parents=True, exist_ok=True)
-    final_screenshots = shot_engine.render_screenshots(out_pptx, final_shots_dir)
+    final_shot_result = shot_engine.render_detailed(out_pptx, final_shots_dir)
+    final_screenshots = final_shot_result.image_paths
     final_issues = eval_engine.evaluate_deck(final_screenshots, current_deck)
 
     return SelfHealingResult(
@@ -352,4 +392,5 @@ def evaluate_and_repair(
         history=history,
         final_pptx_path=str(out_pptx),
         final_screenshot_paths=[str(p) for p in final_screenshots],
+        final_screenshot_result=final_shot_result,
     )

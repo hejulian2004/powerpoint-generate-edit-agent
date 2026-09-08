@@ -155,7 +155,9 @@ def test_apply_deck_patches(base_slide: LayoutSpec) -> None:
         ),
     ]
 
-    patched_deck = apply_deck_patches(deck, patches)
+    patched_deck, results = apply_deck_patches(deck, patches)
+    assert len(results) == 2
+    assert all(r.success for r in results)
     assert patched_deck.slides[0].get_element("fig_main").geometry.x == 150.0
     assert patched_deck.slides[1].get_element("txt_title").style.text.font_size == 32.0
 
@@ -222,5 +224,45 @@ def test_patch_apply_when_style_is_none(base_slide: LayoutSpec) -> None:
     elem = patched.get_element("txt_title")
     assert elem.style is not None
     assert elem.style.text.font_size == 22.0
+
+
+def test_patch_transaction_rollback_on_constraint_violation(base_slide: LayoutSpec) -> None:
+    """Must-have Test 1: Patch transaction detects newly introduced layout violations and rolls back cleanly."""
+    from backend.evaluation.patch import apply_patch_transaction
+
+    # Candidate patch: Move figure violently so it crashes into the title box or off the canvas
+    bad_patch = LayoutPatch(
+        slide_id="slide_test",
+        target_element="fig_main",
+        operation=PatchOperation.MOVE,
+        parameters={"dx": 0.0, "dy": -70.0},  # From y=100 to y=30, colliding with txt_title (y=40..90)
+    )
+
+    result_spec, patch_res = apply_patch_transaction(base_slide, bad_patch)
+
+    # Must be rejected and rolled back
+    assert patch_res.success is False
+    assert patch_res.rejected_reason is not None
+    assert "Patch rejected" in patch_res.rejected_reason
+    # Geometry must remain unmutated (y=100, not 30)
+    assert result_spec.get_element("fig_main").geometry.y == 100.0
+
+
+def test_patch_transaction_commits_valid_patch(base_slide: LayoutSpec) -> None:
+    """Verify that a harmless patch commits successfully under apply_patch_transaction."""
+    from backend.evaluation.patch import apply_patch_transaction
+
+    good_patch = LayoutPatch(
+        slide_id="slide_test",
+        target_element="txt_title",
+        operation=PatchOperation.CHANGE_FONT_SIZE,
+        parameters={"delta": -2.0},
+    )
+
+    result_spec, patch_res = apply_patch_transaction(base_slide, good_patch)
+    assert patch_res.success is True
+    assert patch_res.rejected_reason is None
+    assert result_spec.get_element("txt_title").style.text.font_size == 26.0
+
 
 

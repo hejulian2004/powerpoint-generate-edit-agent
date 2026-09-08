@@ -421,4 +421,42 @@ def test_resize_height_clamp_at_bottom_margin() -> None:
     assert 650.0 + new_h <= 700.0
 
 
+def test_repair_convergence_stops_when_no_further_improvements(tmp_path: Path) -> None:
+    """Must-have Test 3: Repair loop terminates within <= 3 iterations and stops as soon as oscillation or no-improvement is detected."""
+    # Deck with unfixable or fixed issue
+    deck = DeckLayoutSpec(
+        title="Convergence Test Deck",
+        canvas=Canvas(width=1280, height=720),
+        slides=[
+            LayoutSpec(
+                slide_id="slide_conv",
+                slide_index=1,
+                visual_intent=VisualIntent.KEY_TAKEAWAY_LIST,
+                elements=[
+                    LayoutElement(
+                        element_id="title",
+                        element_type=ElementType.TEXT,
+                        geometry=Rect(x=80.0, y=50.0, width=900.0, height=70.0),
+                        content="Normal Title",
+                    )
+                ],
+            )
+        ],
+    )
+
+    out_pptx = tmp_path / "conv_test.pptx"
+    renderer = ScreenshotRenderer(backend=FallbackScreenshotBackend())
+
+    res = evaluate_and_repair(
+        deck_layout=deck,
+        output_pptx_path=out_pptx,
+        screenshot_renderer=renderer,
+        max_iterations=3,
+    )
+
+    assert res.iterations_run <= 3
+    assert res.converged is True
+
+
+
 

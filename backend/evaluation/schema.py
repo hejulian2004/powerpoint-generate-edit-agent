@@ -1,9 +1,10 @@
 """Visual Evaluation and Layout Self-Healing Data Schemas (PR12).
 
 Defines core contracts for:
-- Visual issue categorization, severity, and evidence (VisualIssue)
-- Layout patch representation and atomic operations (LayoutPatch)
-- Evaluation loop diagnostics and self-healing telemetry (SelfHealingResult)
+- Visual issue categorization, severity, and evidence (VisualIssue, VLMEvaluationResponse)
+- Layout patch representation and atomic operations (LayoutPatch, PatchResult)
+- Screenshot metadata and fidelity categorization (ScreenshotBackendType, ScreenshotFidelity, ScreenshotResult)
+- Evaluation loop diagnostics and self-healing telemetry (SelfHealingResult, RepairIterationRecord)
 """
 
 from __future__ import annotations
@@ -71,6 +72,13 @@ class VisualIssue(BaseModel):
         return cls.model_validate_json(json_str)
 
 
+class VLMEvaluationResponse(BaseModel):
+    """Strict container schema enforcing structured VLM critique response."""
+
+    issues: List[VisualIssue] = Field(default_factory=list, description="Validated visual issues extracted from VLM")
+    summary: Optional[str] = Field(None, description="Optional high-level evaluation narrative")
+
+
 class PatchOperation(str, Enum):
     """Atomic geometric or stylistic transformation applied to a LayoutSpec element."""
 
@@ -108,13 +116,61 @@ class LayoutPatch(BaseModel):
         return cls.model_validate_json(json_str)
 
 
+class PatchResult(BaseModel):
+    """Transactional outcome of applying a patch with geometric constraint verification."""
+
+    success: bool = Field(..., description="Whether patch was accepted and committed")
+    patch: LayoutPatch = Field(..., description="The patch attempted")
+    before_valid: bool = Field(..., description="Layout validation status prior to patch")
+    after_valid: bool = Field(..., description="Layout validation status after candidate patch")
+    errors_before: List[str] = Field(default_factory=list, description="Validation errors before patch")
+    errors_after: List[str] = Field(default_factory=list, description="Validation errors after candidate patch")
+    rejected_reason: Optional[str] = Field(None, description="Explanation if candidate patch was rejected/rolled back")
+
+
+class ScreenshotBackendType(str, Enum):
+    """Rendering backend used to produce slide screenshots."""
+
+    POWERPOINT = "powerpoint"
+    LIBREOFFICE = "libreoffice"
+    FALLBACK = "fallback"
+
+
+class ScreenshotFidelity(str, Enum):
+    """Confidence level of rendered screenshot relative to native PowerPoint rasterization."""
+
+    REAL = "real"
+    APPROXIMATE = "approximate"
+
+
+class ScreenshotResult(BaseModel):
+    """Structured result of PPTX slide screenshot rendering."""
+
+    image_paths: List[Path] = Field(default_factory=list, description="List of exported PNG paths")
+    backend: ScreenshotBackendType = Field(..., description="Backend engine utilized")
+    fidelity: ScreenshotFidelity = Field(..., description="Visual fidelity level: real vs approximate")
+    metadata: Dict[str, Any] = Field(default_factory=dict, description="Resolution, execution time, etc.")
+
+    def __iter__(self):
+        """Allow unpacking or direct iteration over image paths for backward compatibility."""
+        return iter(self.image_paths)
+
+    def __len__(self) -> int:
+        return len(self.image_paths)
+
+    def __getitem__(self, index: int) -> Path:
+        return self.image_paths[index]
+
+
 class RepairIterationRecord(BaseModel):
     """Snapshot of a single evaluation-and-repair cycle."""
 
     iteration: int = Field(..., description="1-based iteration counter")
     issues_detected: List[VisualIssue] = Field(default_factory=list, description="Issues before repair")
     patches_applied: List[LayoutPatch] = Field(default_factory=list, description="Patches generated and applied")
+    patch_results: List[PatchResult] = Field(default_factory=list, description="Transactional outcomes of patches")
     screenshot_paths: List[str] = Field(default_factory=list, description="Rendered screenshot image paths")
+    screenshot_fidelity: Optional[ScreenshotFidelity] = Field(None, description="Fidelity of screenshots evaluated")
     error_count: int = Field(0, description="Count of ERROR and CRITICAL severity issues")
     warning_count: int = Field(0, description="Count of WARNING severity issues")
 
@@ -128,6 +184,7 @@ class SelfHealingResult(BaseModel):
     history: List[RepairIterationRecord] = Field(default_factory=list, description="Per-iteration audit log")
     final_pptx_path: Optional[str] = Field(None, description="Path to the final exported PPTX file")
     final_screenshot_paths: List[str] = Field(default_factory=list, description="Paths to final slide screenshots")
+    final_screenshot_result: Optional[ScreenshotResult] = Field(None, description="Full screenshot metadata")
 
     def to_json_file(self, path: Union[str, Path]) -> Path:
         out = Path(path)

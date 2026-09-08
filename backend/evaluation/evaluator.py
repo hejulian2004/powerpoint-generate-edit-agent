@@ -2,8 +2,8 @@
 
 Provides:
 - VisualEvaluator (Abstract Base Class)
-- RuleBasedEvaluator (Deterministic geometric and spatial rule engine)
-- OpenAICompatibleVisionEvaluator (VLM multimodal adapter for external vision LLMs)
+- RuleBasedEvaluator (Deterministic geometric and spatial rule engine leveraging LayoutValidator)
+- OpenAICompatibleVisionEvaluator (VLM multimodal adapter with strict schema enforcement)
 """
 
 from __future__ import annotations
@@ -21,8 +21,9 @@ from PIL import Image
 
 from ..layout.constraints import estimate_text_lines
 from ..layout.schema import DeckLayoutSpec, ElementType, LayoutElement, LayoutSpec, Rect
+from ..layout.validator import validate_layout
 from .issues import deduplicate_issues
-from .schema import IssueSeverity, IssueType, VisualIssue
+from .schema import IssueSeverity, IssueType, VisualIssue, VLMEvaluationResponse
 
 logger = logging.getLogger(__name__)
 
@@ -56,7 +57,8 @@ class VisualEvaluator(ABC):
 class RuleBasedEvaluator(VisualEvaluator):
     """Deterministic, rule-based visual and spatial constraint evaluator.
 
-    Detects:
+    Integrates with `backend.layout.validator.validate_layout` to avoid duplicate constraint
+    evaluations, and adds high-level visual perceptual rules:
     - OVERFLOW: Elements exceeding canvas boundaries (x < 0, y < 0, r > W, b > H)
     - OVERLAP: Unintended overlap/collisions between foreground elements
     - TEXT_OVERFLOW: Text content clearly exceeding container bounding box
@@ -86,75 +88,49 @@ class RuleBasedEvaluator(VisualEvaluator):
         canvas = layout_spec.canvas
         canvas_area = canvas.width * canvas.height
 
-        # 1. Canvas Bounds & Overflow Check
-        for el in layout_spec.elements:
-            geo = el.geometry
-            if geo.x < -1e-2 or geo.y < -1e-2:
-                issues.append(
-                    VisualIssue(
-                        slide=layout_spec.slide_id,
-                        issue=IssueType.OVERFLOW,
-                        severity=IssueSeverity.ERROR,
-                        element=el.element_id,
-                        description=f"Element '{el.element_id}' has negative coordinates (x={geo.x:.1f}, y={geo.y:.1f})",
-                        evidence={"geometry": geo.model_dump(), "violation": "negative_origin"},
-                    )
-                )
-            elif geo.right > canvas.width + 1e-2 or geo.bottom > canvas.height + 1e-2:
-                issues.append(
-                    VisualIssue(
-                        slide=layout_spec.slide_id,
-                        issue=IssueType.OVERFLOW,
-                        severity=IssueSeverity.ERROR,
-                        element=el.element_id,
-                        description=(
-                            f"Element '{el.element_id}' exceeds canvas bounds: "
-                            f"right={geo.right:.1f}>{canvas.width}, bottom={geo.bottom:.1f}>{canvas.height}"
-                        ),
-                        evidence={
-                            "geometry": geo.model_dump(),
-                            "canvas": {"width": canvas.width, "height": canvas.height},
-                            "violation": "exceeds_canvas",
-                        },
-                    )
-                )
-
-        # 2. Collision / Overlap Check
-        fg_elements = [el for el in layout_spec.elements if el.element_type != ElementType.CONTAINER]
-        for i in range(len(fg_elements)):
-            for j in range(i + 1, len(fg_elements)):
-                el_a = fg_elements[i]
-                el_b = fg_elements[j]
-                if el_a.geometry.intersects(el_b.geometry):
-                    inter = el_a.geometry.intersection(el_b.geometry)
-                    if inter and (inter.width > 2.0 and inter.height > 2.0):
-                        inter_area = inter.width * inter.height
-                        min_area = min(
-                            el_a.geometry.width * el_a.geometry.height,
-                            el_b.geometry.width * el_b.geometry.height,
+        # 1. Base geometric validation using canonical layout validator
+        val_report = validate_layout(layout_spec, strict=False)
+        for constraint in val_report.evaluated_constraints:
+            if not constraint.satisfied and constraint.message:
+                target_id = constraint.target_element_ids[0] if constraint.target_element_ids else None
+                if constraint.constraint_type == "CANVAS_BOUNDS":
+                    issues.append(
+                        VisualIssue(
+                            slide=layout_spec.slide_id,
+                            issue=IssueType.OVERFLOW,
+                            severity=IssueSeverity.ERROR,
+                            element=target_id,
+                            description=constraint.message,
+                            evidence=constraint.parameters,
                         )
-                        overlap_ratio = inter_area / max(1.0, min_area)
-                        if overlap_ratio > 0.05:
-                            issues.append(
-                                VisualIssue(
-                                    slide=layout_spec.slide_id,
-                                    issue=IssueType.OVERLAP,
-                                    severity=IssueSeverity.ERROR,
-                                    element=el_a.element_id,
-                                    description=(
-                                        f"Visual overlap detected between '{el_a.element_id}' "
-                                        f"and '{el_b.element_id}' (overlap area={inter.width:.0f}x{inter.height:.0f})"
-                                    ),
-                                    evidence={
-                                        "element_a": el_a.element_id,
-                                        "element_b": el_b.element_id,
-                                        "intersection": inter.model_dump(),
-                                        "overlap_ratio": round(overlap_ratio, 3),
-                                    },
-                                )
-                            )
+                    )
+                elif constraint.constraint_type == "NO_OVERLAP":
+                    el_a = constraint.target_element_ids[0] if len(constraint.target_element_ids) > 0 else None
+                    el_b = constraint.target_element_ids[1] if len(constraint.target_element_ids) > 1 else None
+                    # Compute intersection geometry if elements exist
+                    obj_a = layout_spec.get_element(el_a) if el_a else None
+                    obj_b = layout_spec.get_element(el_b) if el_b else None
+                    inter_dict = {}
+                    if obj_a and obj_b:
+                        inter = obj_a.geometry.intersection(obj_b.geometry)
+                        if inter:
+                            inter_dict = inter.model_dump()
+                    issues.append(
+                        VisualIssue(
+                            slide=layout_spec.slide_id,
+                            issue=IssueType.OVERLAP,
+                            severity=IssueSeverity.ERROR,
+                            element=el_a,
+                            description=constraint.message,
+                            evidence={
+                                "element_a": el_a,
+                                "element_b": el_b,
+                                "intersection": inter_dict,
+                            },
+                        )
+                    )
 
-        # 3. Text Overflow & Density Check
+        # 2. Perceptual Text Overflow & Density Check
         for el in layout_spec.elements:
             if el.element_type in (ElementType.TEXT, ElementType.BADGE):
                 content_str = self._extract_text_content(el.content)
@@ -219,7 +195,7 @@ class RuleBasedEvaluator(VisualEvaluator):
                         )
                     )
 
-        # 4. Under-utilized Space / Too Small Media Check
+        # 3. Under-utilized Space / Too Small Media Check
         for el in layout_spec.elements:
             if el.element_type == ElementType.FIGURE:
                 geo = el.geometry
@@ -277,7 +253,7 @@ class RuleBasedEvaluator(VisualEvaluator):
 
 
 class OpenAICompatibleVisionEvaluator(VisualEvaluator):
-    """Multimodal Vision Language Model adapter for OpenAI-compatible chat completion APIs."""
+    """Multimodal Vision Language Model adapter for OpenAI-compatible chat completion APIs with strict schema validation."""
 
     def __init__(
         self,
@@ -350,10 +326,10 @@ class OpenAICompatibleVisionEvaluator(VisualEvaluator):
             )
 
         prompt_text += (
-            "\nAnalyze for: OVERFLOW, OVERLAP, TEXT_OVERFLOW, TOO_SMALL, BAD_ALIGNMENT, LOW_CONTRAST. "
-            "Respond strictly in JSON array format: "
-            '[{"slide": "<slide_id>", "issue": "<ISSUE_TYPE>", "severity": "WARNING|ERROR", '
-            '"element": "<element_id>", "description": "<details>", "evidence": {}}]'
+            "\nAnalyze for visual issues. You must respond strictly in valid JSON object matching this schema:\n"
+            '{"issues": [{"slide": "<slide_id>", "issue": "OVERFLOW|OVERLAP|TEXT_OVERFLOW|TOO_SMALL|BAD_ALIGNMENT|LOW_CONTRAST", '
+            '"severity": "WARNING|ERROR", "element": "<element_id>", "description": "<details>", "evidence": {}}]}\n'
+            "Do not output plain narrative or conversational text without JSON."
         )
         user_content.append({"type": "text", "text": prompt_text})
 
@@ -371,7 +347,7 @@ class OpenAICompatibleVisionEvaluator(VisualEvaluator):
         return {
             "model": self.model,
             "messages": [
-                {"role": "system", "content": "You are an automated slide visual critique evaluator."},
+                {"role": "system", "content": "You are an automated slide visual critique evaluator that outputs strict JSON."},
                 {"role": "user", "content": user_content},
             ],
             "temperature": 0.0,
@@ -393,7 +369,7 @@ class OpenAICompatibleVisionEvaluator(VisualEvaluator):
 
     @staticmethod
     def parse_vlm_response(response: Dict[str, Any], default_slide_id: str) -> List[VisualIssue]:
-        """Extract and validate VisualIssue objects from VLM response JSON."""
+        """Extract and strictly validate VisualIssue objects from VLM response JSON using VLMEvaluationResponse."""
         try:
             choices = response.get("choices", [])
             if not choices:
@@ -409,18 +385,24 @@ class OpenAICompatibleVisionEvaluator(VisualEvaluator):
                 content = content[:-3]
             content = content.strip()
 
-            raw_issues = json.loads(content)
-            if isinstance(raw_issues, dict) and "issues" in raw_issues:
-                raw_issues = raw_issues["issues"]
-            if not isinstance(raw_issues, list):
-                raw_issues = [raw_issues]
+            parsed = json.loads(content)
 
-            issues: List[VisualIssue] = []
-            for item in raw_issues:
-                if not item.get("slide"):
+            # Normalization to VLMEvaluationResponse schema
+            if isinstance(parsed, list):
+                payload_dict = {"issues": parsed}
+            elif isinstance(parsed, dict) and "issues" in parsed:
+                payload_dict = parsed
+            else:
+                # Disallow arbitrary text dicts without issues
+                return []
+
+            # Ensure slide_id fallback
+            for item in payload_dict.get("issues", []):
+                if isinstance(item, dict) and not item.get("slide") and not item.get("slide_id"):
                     item["slide"] = default_slide_id
-                issues.append(VisualIssue.from_dict(item))
-            return issues
+
+            vlm_container = VLMEvaluationResponse.model_validate(payload_dict)
+            return vlm_container.issues
         except Exception as exc:
-            logger.warning("Failed to parse VLM response JSON: %s", exc)
+            logger.warning("Failed to parse/validate VLM response schema: %s", exc)
             return []

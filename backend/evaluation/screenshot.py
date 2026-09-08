@@ -18,9 +18,14 @@ from typing import List, Optional, Tuple, Union
 
 from PIL import Image, ImageDraw, ImageFont
 
+from .schema import ScreenshotBackendType, ScreenshotFidelity, ScreenshotResult
+
 
 class ScreenshotBackend(ABC):
     """Abstract base class for PPTX slide rendering backends."""
+
+    backend_type: ScreenshotBackendType = ScreenshotBackendType.FALLBACK
+    fidelity: ScreenshotFidelity = ScreenshotFidelity.APPROXIMATE
 
     @abstractmethod
     def is_available(self) -> bool:
@@ -46,6 +51,9 @@ class PowerPointBackend(ScreenshotBackend):
 
     Guarantees native Office typography and fidelity when run on Windows.
     """
+
+    backend_type = ScreenshotBackendType.POWERPOINT
+    fidelity = ScreenshotFidelity.REAL
 
     def is_available(self) -> bool:
         if os.name != "nt":
@@ -129,6 +137,9 @@ try {{
 class LibreOfficeBackend(ScreenshotBackend):
     """Linux/cross-platform headless LibreOffice + pypdfium2 renderer."""
 
+    backend_type = ScreenshotBackendType.LIBREOFFICE
+    fidelity = ScreenshotFidelity.REAL
+
     def __init__(self) -> None:
         self.soffice_cmd = shutil.which("soffice") or shutil.which("libreoffice")
 
@@ -193,8 +204,11 @@ class FallbackScreenshotBackend(ScreenshotBackend):
     """Deterministic fallback rasterizer when neither PowerPoint nor LibreOffice is present.
 
     Reads the presentation via python-pptx and generates deterministic slide layouts
-    using Pillow. Ensures tests and CI pipelines run without external software dependencies.
+    using Pillow. Note: This produces APPROXIMATE fidelity screenshots.
     """
+
+    backend_type = ScreenshotBackendType.FALLBACK
+    fidelity = ScreenshotFidelity.APPROXIMATE
 
     def is_available(self) -> bool:
         return True
@@ -284,6 +298,34 @@ class ScreenshotRenderer:
             return lo_be
         return FallbackScreenshotBackend()
 
+    def render_detailed(
+        self,
+        pptx_path: Union[str, Path],
+        output_dir: Union[str, Path],
+        resolution: Tuple[int, int] = (1280, 720),
+    ) -> ScreenshotResult:
+        """Render presentation slides returning full ScreenshotResult with fidelity metadata."""
+        p_path = Path(pptx_path).resolve()
+        o_dir = Path(output_dir).resolve()
+        if not p_path.is_file():
+            raise FileNotFoundError(f"PPTX file not found: {p_path}")
+
+        o_dir.mkdir(parents=True, exist_ok=True)
+        active_backend = self.backend
+        paths = active_backend.render(p_path, o_dir, resolution=resolution)
+
+        # If primary backend yielded nothing, gracefully retry with fallback
+        if not paths and not isinstance(active_backend, FallbackScreenshotBackend):
+            active_backend = FallbackScreenshotBackend()
+            paths = active_backend.render(p_path, o_dir, resolution=resolution)
+
+        return ScreenshotResult(
+            image_paths=paths,
+            backend=active_backend.backend_type,
+            fidelity=active_backend.fidelity,
+            metadata={"resolution": f"{resolution[0]}x{resolution[1]}", "count": len(paths)},
+        )
+
     def render_screenshots(
         self,
         pptx_path: Union[str, Path],
@@ -291,20 +333,8 @@ class ScreenshotRenderer:
         resolution: Tuple[int, int] = (1280, 720),
     ) -> List[Path]:
         """Render presentation slides to deterministic PNG images."""
-        p_path = Path(pptx_path).resolve()
-        o_dir = Path(output_dir).resolve()
-        if not p_path.is_file():
-            raise FileNotFoundError(f"PPTX file not found: {p_path}")
-
-        o_dir.mkdir(parents=True, exist_ok=True)
-        results = self.backend.render(p_path, o_dir, resolution=resolution)
-
-        # If primary backend yielded nothing, gracefully retry with fallback
-        if not results and not isinstance(self.backend, FallbackScreenshotBackend):
-            fallback = FallbackScreenshotBackend()
-            results = fallback.render(p_path, o_dir, resolution=resolution)
-
-        return results
+        result = self.render_detailed(pptx_path, output_dir, resolution=resolution)
+        return result.image_paths
 
     @staticmethod
     def compute_image_hash(image_path: Union[str, Path]) -> str:
