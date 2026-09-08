@@ -49,17 +49,24 @@ This document defines the current baseline state, active developments, and futur
 - **Rule-First Architecture with Optional LLM Refinement (`enricher.py`)**: Guarantees deterministic structure and bullet points with non-destructive LLM wording refinement and safe zero-network degradation.
 - **Comprehensive Test Suite**: 13 unit and acceptance tests covering schema roundtrip, ranking, figure selection, profile slots, and deterministic plan generation.
 
+### Slide Semantic IR & Academic Layout Contract (PR9)
+- **SlideSpec & DeckSpec Models**: Strongly-typed semantic intermediate representation (`SlideSpec`, `DeckSpec`) decoupling communicative intent from pixel geometry.
+- **Visual Intent Archetypes (`VisualIntent`)**: `TITLE_HERO`, `PIPELINE_ARCHITECTURE`, `BENCHMARK_COMPARISON`, `TWO_COLUMN_CONTRAST`, `METRIC_CARD_GRID`, `KEY_TAKEAWAY_LIST`.
+- **Polymorphic Content Blocks (`ContentBlock`)**: `TextBlock` (with `BlockRole` hierarchy: heading, subheading, lead summary, bullet item, caption, badge, callout), `FigureBlock`, `TableBlock`, and `BadgeBlock`.
+- **Deterministic Semantic Mapper (`mapper.py`)**: Transforms `PresentationPlan` + `PaperIR` into fully grounded `DeckSpec` with asset linkage and provenance.
+- **Complete Test Suite (`tests/slidespec/`)**: 8 tests covering polymorphic block serialization, deck roundtrip, intent mapping, and end-to-end PDF -> PaperIR -> PresentationPlan -> DeckSpec -> JSON pipeline.
+
 ---
 
 ## 2. In Progress
 
-### Research Paper Presentation Agent (PR7)
-- **PR7.3 Slide Semantic IR & Asset Understanding**:
-  - `SlideSpec` semantic blocks (pipeline, comparison, metric highlights).
-  - Figure classification (architecture, experiment, ablation) and table best-cell highlighting.
-- **PR7.4 End-to-End Paper-to-PPTX Generation**:
-  - Academic design themes (blue-accent minimal, dark keynote).
-  - Unified PDF -> PPTX generation pipeline combining PR7 Planner + PR6 Fidelity Engine.
+### Research Paper Presentation Agent Pipeline
+- **PR10 Layout Engine & Academic Geometry Synthesis**:
+  - Layout solver translating `SlideSpec` semantic blocks into normalized coordinates (1280×720 ViewBox standard).
+  - Academic typography rules (font scale ladders, line spacing, margins, visual hierarchy).
+- **PR11 End-to-End Paper-to-PPTX Exporter**:
+  - Academic themes (blue-accent minimal, dark keynote, LaTeX-clean).
+  - Unified PDF -> PPTX generation pipeline connecting PR9 SlideSpec + PR10 Layout + PR6 Fidelity Engine.
 
 ---
 
