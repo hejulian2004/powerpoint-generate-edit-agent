@@ -1,6 +1,6 @@
-# Paper Understanding Layer (PR7.1)
+# Paper Understanding & Presentation Planning (PR7.1 & PR7.2)
 
-The Paper Understanding Layer establishes the first stage of the **Research Paper Presentation Agent Pipeline**:
+The Research Paper Presentation Agent establishes the bridge from academic papers to conference presentations:
 
 ```text
 Paper PDF
@@ -12,7 +12,10 @@ Paper Understanding Core (PR7.1: backend.paper)
 PaperIR (paper_ir.json)
     |
     v
-Research Presentation Planner (PR7.2)
+Research Presentation Planner (PR7.2: backend.presentation)
+    |
+    v
+PresentationPlan (presentation_plan.json)
     |
     v
 Slide Semantic IR (PR7.3)
@@ -24,19 +27,30 @@ Layout Engine & Fidelity Exporter (PR6)
 PPTX
 ```
 
-Rather than feeding raw PDF text into an LLM to dump PowerPoint slides directly, this layer builds a clean, canonical **Paper Intermediate Representation (`PaperIR`)** with deterministic structural grounding (metadata, abstract, sections in reading order, figure and table captions, and raster image bounding boxes).
+Rather than feeding raw PDF text into an LLM to dump PowerPoint slides directly, this pipeline decouples content understanding and presentation planning from visual generation.
 
 ---
 
 ## 1. Architecture
 
 ```text
-backend/paper/
-├── __init__.py           # Stable public facade
-├── schema.py             # PaperIR / PaperMetadata / PaperSection / PaperFigure / PaperTable
-├── section_extractor.py  # Deterministic layout heuristics (lines, reading order, headings, captions)
-├── parser.py             # Orchestrates extraction into PaperIR
-└── enricher.py           # Optional LLM structured-output semantic enrichment
+backend/
+├── paper/                    # PR7.1 Paper Understanding Core
+│   ├── __init__.py           # Stable public facade (extract_paper, PaperIR, etc.)
+│   ├── schema.py             # PaperIR / PaperMetadata / PaperSection / PaperFigure / PaperTable
+│   ├── section_extractor.py  # Deterministic layout heuristics (lines, reading order, headings, captions)
+│   ├── parser.py             # Orchestrates extraction into PaperIR
+│   └── enricher.py           # Optional LLM structured-output semantic enrichment
+└── presentation/             # PR7.2 Research Presentation Planner
+    ├── __init__.py           # Stable public facade (generate_presentation_plan, PresentationPlan, etc.)
+    ├── schema.py             # SlideType, SlidePlan, PresentationPlan
+    ├── ranking.py            # Section importance scoring & academic role classification
+    ├── figure_selector.py    # Figure & table communicative role assignment
+    ├── planner.py            # Deterministic slot synthesis & orchestration
+    ├── enricher.py           # Optional LLM wording refinement (rule-first architecture)
+    └── templates/
+        ├── __init__.py
+        └── research_default.py  # 15min (12 slides) and 10min (8 slides) profile templates
 ```
 
 ### Public API Facade
@@ -157,7 +171,70 @@ When a live OpenAI-compatible API key is present, `enrich_paper(paper)` calls th
 
 ---
 
-## 5. Verification & Acceptance
+## 6. Research Presentation Planner (PR7.2)
+
+The Presentation Planner answers: **"How should this paper be presented in an academic seminar?"**
+
+### Public API Facade
+
+External modules should import from `backend.presentation`:
+
+```python
+from backend.presentation import (
+    generate_presentation_plan,   # (PaperIR, profile="research_15min", enrich=False) -> PresentationPlan
+    agenerate_presentation_plan,  # Async equivalent
+    PresentationPlan,             # Pydantic v2 presentation plan model
+    SlidePlan,                    # Individual slide plan
+    SlideType,                    # Canonical slide taxonomy enum
+    rank_sections,                # Section importance ranker
+    select_visuals_for_slide,     # Figure & table selector
+)
+```
+
+### Presentation Profiles
+
+- **`research_15min` (12 slides)**: Standard 15-minute lab seminar:
+  1. `TITLE`: Topic, authors, and main proposition
+  2. `BACKGROUND`: Problem context and practical importance
+  3. `PROBLEM`: Problem formulation and bottlenecks of existing methods
+  4. `MOTIVATION`: Key conceptual intuition
+  5. `RELATED_WORK`: Contrasting prior art
+  6. `METHOD_OVERVIEW`: End-to-end framework walk-through (bound to architecture figure)
+  7. `METHOD_DETAIL`: Core mechanism & mathematical formulation
+  8. `METHOD_DETAIL`: Training pipeline & optimization
+  9. `EXPERIMENT_SETUP`: Benchmarks, metrics, and baselines
+  10. `RESULT`: Empirical findings and comparative evaluation (bound to main table)
+  11. `ABLATION`: Module breakdown and parameter sensitivity (bound to ablation table/figure)
+  12. `CONCLUSION`: Summary, implications, and future directions
+
+- **`research_10min` (8 slides)**: Spotlight presentation:
+  1. `TITLE`
+  2. `BACKGROUND`
+  3. `METHOD_OVERVIEW`
+  4. `METHOD_DETAIL`
+  5. `EXPERIMENT_SETUP`
+  6. `RESULT`
+  7. `LIMITATION`
+  8. `CONCLUSION`
+
+### Rule-First Architecture & LLM Refinement
+
+```text
+Rule-First Deterministic Planner
+       |
+       v
+Candidate PresentationPlan (exact slide count, types, figure bindings, initial points)
+       |
+       v (optional, enrich=True)
+LLM Refinement (enricher.py)
+       |
+       v
+Refined PresentationPlan (crisp academic wording, structure 100% preserved)
+```
+
+- **Guaranteed Structure**: The slide count, `slide_type`, index, `source_sections`, `source_figures`, and `source_tables` are computed deterministically.
+- **Zero-Network Degradation**: If no live key is set or the LLM call fails, the deterministic candidate plan is returned immediately.
+
 
 Run the test suite:
 
