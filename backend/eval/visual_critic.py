@@ -86,10 +86,15 @@ class VisualCritic:
         needs_correction = len(remediation_plan.auto_executable_actions) > 0
 
         # 4. Multimodal Vision Model critique with clear fallback state reporting
+        from .renderer_snapshot import SlideSnapshotRenderer, RendererMode
+        meta = SlideSnapshotRenderer.get_render_metadata(slide, mode=RendererMode.DETERMINISTIC)
+
         multimodal_feedback = None
         vision_status: Dict[str, Any] = {
             "vision_available": False,
-            "mode": "geometry_only",
+            "mode": meta.quality,
+            "renderer": meta.renderer,
+            "capability": meta.capability.to_dict(),
             "fallback": None,
             "message": "未配置或未启用 Vision 模型客户端，采用纯几何与对比度定量评测"
         }
@@ -104,6 +109,8 @@ class VisualCritic:
                 )
                 if health_report.defects:
                     prompt += f" 检测到缺陷: {'; '.join(d.description for d in health_report.defects[:3])}。"
+                if meta.renderer == "pillow" or meta.quality == "geometry_only":
+                    prompt += " 当前截图可能缺少字体和特效信息。请优先依据element manifest判断结构。"
                 prompt += " 请提供一到两句专业排版优化指导。"
 
                 multimodal_feedback = await VisionEngine.review_slide_visually(
@@ -114,6 +121,8 @@ class VisualCritic:
                 vision_status = {
                     "vision_available": True,
                     "mode": "multimodal",
+                    "renderer": meta.renderer,
+                    "capability": meta.capability.to_dict(),
                     "fallback": None,
                     "message": "Vision 多模态模型评审完成"
                 }
@@ -123,6 +132,8 @@ class VisualCritic:
                 vision_status = {
                     "vision_available": False,
                     "mode": "geometry_only",
+                    "renderer": meta.renderer,
+                    "capability": meta.capability.to_dict(),
                     "fallback": "geometry_only",
                     "message": f"Vision 模型调用异常 ({str(e)})，自动回退到几何与对比度规则评测"
                 }

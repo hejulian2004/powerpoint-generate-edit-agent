@@ -428,10 +428,19 @@ class LayoutDiffEngine:
                 if clipped_bottom: clip_dirs.append(f"底部溢出 {(box.bottom - canvas_h):.1f}px")
 
                 # Suggested fix: clamp coordinates into view
-                new_x = max(cls.SAFE_MARGIN_X, min(box.x, canvas_w - box.width - cls.SAFE_MARGIN_X))
-                new_y = max(cls.SAFE_MARGIN_Y, min(box.y, canvas_h - box.height - cls.SAFE_MARGIN_Y))
-                new_w = min(box.width, canvas_w - (cls.SAFE_MARGIN_X * 2))
-                new_h = min(box.height, canvas_h - (cls.SAFE_MARGIN_Y * 2))
+                if box.x <= canvas_w - cls.SAFE_MARGIN_X - 100.0:
+                    new_x = max(cls.SAFE_MARGIN_X, box.x)
+                    new_w = min(box.width, canvas_w - new_x - cls.SAFE_MARGIN_X)
+                else:
+                    new_x = max(cls.SAFE_MARGIN_X, min(box.x, canvas_w - box.width - cls.SAFE_MARGIN_X))
+                    new_w = min(box.width, canvas_w - (cls.SAFE_MARGIN_X * 2))
+
+                if box.y <= canvas_h - cls.SAFE_MARGIN_Y - 50.0:
+                    new_y = max(cls.SAFE_MARGIN_Y, box.y)
+                    new_h = min(box.height, canvas_h - new_y - cls.SAFE_MARGIN_Y)
+                else:
+                    new_y = max(cls.SAFE_MARGIN_Y, min(box.y, canvas_h - box.height - cls.SAFE_MARGIN_Y))
+                    new_h = min(box.height, canvas_h - (cls.SAFE_MARGIN_Y * 2))
 
                 defects.append(LayoutDefect(
                     defect_type="viewport_clipping",

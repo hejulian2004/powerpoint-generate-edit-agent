@@ -156,3 +156,105 @@ def test_visual_critic_includes_raster_snapshot():
         assert review_dict["snapshot_uri"] == review.snapshot_uri
 
     asyncio.run(_run())
+
+
+def test_golden_pipeline_academic_title_move_and_diff(tmp_path: Path):
+    """PR4.1 Task 6: Golden test for academic.pptx real editing.
+
+    Verifies that moving the title to the right updates title x to 900.0,
+    leaves all other elements unchanged at their original coordinates,
+    records MutationEvent history, and exports valid OOXML PPTX.
+    """
+    in_fixture = Path("tests/fixtures/academic.pptx")
+    if not in_fixture.exists():
+        pytest.skip("tests/fixtures/academic.pptx not found")
+
+    out_file = tmp_path / "academic_title_right.pptx"
+
+    # 1. Parse baseline presentation and record original element coordinates
+    orig_pres = import_pptx(in_fixture)
+    orig_slide = orig_pres.slides[0]
+    orig_elements = {e.id: (e.x, e.y, e.width, e.height) for e in orig_slide.elements}
+
+    # Locate title element (id='3' with largest font size 48.0)
+    title_elem = next(
+        (e for e in orig_slide.elements if getattr(e, "text_content", None) and
+         any(r.font and r.font.size and r.font.size >= 36.0
+             for p in e.text_content.paragraphs for r in p.runs)),
+        None
+    )
+    assert title_elem is not None
+    title_id = title_elem.id
+    assert title_elem.x != 900.0
+
+    async def _run():
+        pipeline = PPTEndToEndPipeline()
+        result: PipelineResult = await pipeline.process_deck(
+            input_path=in_fixture,
+            user_instruction="把标题移动到右侧，并保持整体布局",
+            output_path=out_file,
+            target_slide_num=1
+        )
+
+        assert result.success is True
+        assert result.validation_valid is True
+        assert out_file.exists()
+
+        # 2. Check exported presentation IR diff
+        edited_pres = import_pptx(out_file)
+        edited_slide = edited_pres.slides[0]
+
+        edited_title = edited_slide.get_element(title_id)
+        assert edited_title is not None
+        # Title element x moved to 900.0
+        assert edited_title.x == 900.0
+
+        # All other slide elements maintain original coordinates
+        for elem in edited_slide.elements:
+            if elem.id != title_id:
+                orig_x, orig_y, _, _ = orig_elements[elem.id]
+                assert elem.x == orig_x, f"Element '{elem.id}' x changed from {orig_x} to {elem.x}"
+                assert elem.y == orig_y, f"Element '{elem.id}' y changed from {orig_y} to {elem.y}"
+
+        # 3. Mutation history records update_element event with before/after coordinates
+        assert len(result.mutation_history) >= 1
+        title_mutation_events = [
+            m for m in result.mutation_history
+            if m.action == "update_element" and m.element_id == title_id
+        ]
+        assert len(title_mutation_events) >= 1
+        agent_event = title_mutation_events[0]
+        assert agent_event.source == "agent_tool"
+        assert agent_event.after.get("x") == 900.0
+        assert agent_event.before.get("x") == orig_elements[title_id][0]
+
+    asyncio.run(_run())
+
+
+def test_golden_pipeline_result_serialization(tmp_path: Path):
+    """Verifies that PipelineResult serializes cleanly to JSON and dictionary formats."""
+    in_fixture = Path("tests/fixtures/simple.pptx")
+    if not in_fixture.exists():
+        pytest.skip("tests/fixtures/simple.pptx not found")
+
+    out_file = tmp_path / "simple_serialized.pptx"
+
+    async def _run():
+        pipeline = PPTEndToEndPipeline()
+        result: PipelineResult = await pipeline.process_deck(
+            input_path=in_fixture,
+            user_instruction="优化当前页面",
+            output_path=out_file
+        )
+
+        res_dict = result.to_dict()
+        assert isinstance(res_dict, dict)
+        assert res_dict["success"] is True
+        assert res_dict["validation_valid"] is True
+        assert "mutation_history" in res_dict
+        assert isinstance(res_dict["mutation_history"], list)
+        assert "tools_executed" in res_dict
+        assert "initial_score" in res_dict
+        assert "final_score" in res_dict
+
+    asyncio.run(_run())

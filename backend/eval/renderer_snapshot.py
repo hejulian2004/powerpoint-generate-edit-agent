@@ -11,7 +11,9 @@ from __future__ import annotations
 import io
 import base64
 import logging
-from typing import Optional, Tuple, Dict, Any
+from enum import Enum
+from dataclasses import dataclass
+from typing import Optional, Tuple, Dict, Any, Union
 from ..ir.models import (
     SlideIR, ElementIR, ShapeElementIR, TextElementIR, ConnectorElementIR,
     ImageElementIR, GroupElementIR, TableElementIR
@@ -21,6 +23,7 @@ from ..ir.svg_renderer import SVGRenderer
 logger = logging.getLogger(__name__)
 
 # Check optional external rasterizers
+async_playwright = None
 _PLAYWRIGHT_AVAILABLE = False
 try:
     from playwright.async_api import async_playwright
@@ -28,6 +31,7 @@ try:
 except ImportError:
     pass
 
+cairosvg = None
 _CAIROSVG_AVAILABLE = False
 try:
     import cairosvg
@@ -41,6 +45,44 @@ try:
     _PIL_AVAILABLE = True
 except ImportError:
     pass
+
+
+class RendererMode(str, Enum):
+    """Execution mode governing rendering determinism and allowed rasterization engines."""
+    DETERMINISTIC = "deterministic"
+    PREVIEW = "preview"
+
+
+@dataclass
+class RenderCapability:
+    """Explicit capability matrix of the underlying rasterizer."""
+    geometry: bool = True
+    typography: bool = False
+    effects: bool = False
+
+    def to_dict(self) -> Dict[str, bool]:
+        return {
+            "geometry": self.geometry,
+            "typography": self.typography,
+            "effects": self.effects
+        }
+
+
+@dataclass
+class RenderMetadata:
+    """Metadata describing the active renderer, quality tier, and capabilities."""
+    renderer: str
+    quality: str
+    capability: RenderCapability
+    mode: RendererMode
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "renderer": self.renderer,
+            "quality": self.quality,
+            "capability": self.capability.to_dict(),
+            "mode": self.mode.value
+        }
 
 
 def _hex_to_rgb(hex_str: Optional[str], default: Tuple[int, int, int] = (255, 255, 255)) -> Tuple[int, int, int]:
@@ -216,8 +258,37 @@ class PillowSlideRasterizer:
 class SlideSnapshotRenderer:
     """Unified Slide Snapshot Renderer.
 
-    Provides synchronous and asynchronous methods to capture slide screenshots as PNG bytes or data URIs.
+    Provides deterministic rendering from SlideIR to PNG bytes and base64 data URIs.
+    Supports DETERMINISTIC mode (CairoSVG -> Pillow/SVG URI, never Playwright)
+    and PREVIEW mode (Playwright allowed for live user viewing).
     """
+
+    default_mode: RendererMode = RendererMode.DETERMINISTIC
+
+    @classmethod
+    def get_render_metadata(cls, slide: Optional[SlideIR] = None, mode: Optional[RendererMode] = None) -> RenderMetadata:
+        """Inspects environment and mode to produce the active renderer metadata and capability matrix."""
+        target_mode = mode or cls.default_mode
+        if target_mode == RendererMode.PREVIEW and _PLAYWRIGHT_AVAILABLE:
+            return RenderMetadata(
+                renderer="playwright",
+                quality="full",
+                capability=RenderCapability(geometry=True, typography=True, effects=True),
+                mode=target_mode
+            )
+        if _CAIROSVG_AVAILABLE:
+            return RenderMetadata(
+                renderer="cairosvg",
+                quality="high_fidelity",
+                capability=RenderCapability(geometry=True, typography=True, effects=True),
+                mode=target_mode
+            )
+        return RenderMetadata(
+            renderer="pillow",
+            quality="geometry_only",
+            capability=RenderCapability(geometry=True, typography=False, effects=False),
+            mode=target_mode
+        )
 
     @classmethod
     def render_svg(cls, slide: SlideIR) -> str:
@@ -225,11 +296,26 @@ class SlideSnapshotRenderer:
         return SVGRenderer.render_slide(slide)
 
     @classmethod
-    def render_png_bytes(cls, slide: SlideIR, scale: float = 1.0) -> bytes:
+    def render_svg_data_uri(cls, slide: SlideIR) -> str:
+        """Returns valid RFC 2397 SVG data URI: data:image/svg+xml;base64,..."""
+        svg_code = cls.render_svg(slide)
+        b64_svg = base64.b64encode(svg_code.encode("utf-8")).decode("utf-8")
+        return f"data:image/svg+xml;base64,{b64_svg}"
+
+    @classmethod
+    def render_png_bytes(cls, slide: SlideIR, scale: float = 1.0, mode: Optional[RendererMode] = None) -> bytes:
         """Synchronously renders SlideIR into PNG bytes.
 
-        Uses CairoSVG if available, otherwise built-in Pillow rasterizer.
+        In DETERMINISTIC mode:
+        SlideIR -> SVG -> CairoSVG -> PNG.
+        If CairoSVG is not available, falls back to Pillow with geometry_only capability metadata.
+        Playwright is strictly prohibited in DETERMINISTIC mode to preserve CI determinism.
+
+        In PREVIEW mode:
+        Falls back through CairoSVG and Pillow synchronously.
         """
+        target_mode = mode or cls.default_mode
+
         if _CAIROSVG_AVAILABLE:
             try:
                 svg_code = cls.render_svg(slide)
@@ -243,24 +329,43 @@ class SlideSnapshotRenderer:
             img.save(buf, format="PNG")
             return buf.getvalue()
 
-        raise RuntimeError("No image rasterization engine available (neither Pillow nor CairoSVG found).")
+        raise RuntimeError("No image rasterization engine available (neither CairoSVG nor Pillow found).")
 
     @classmethod
-    def render_base64(cls, slide: SlideIR, scale: float = 1.0) -> str:
+    def render_base64(cls, slide: SlideIR, scale: float = 1.0, mode: Optional[RendererMode] = None) -> str:
         """Returns base64 encoded PNG string (without data: prefix)."""
-        png_bytes = cls.render_png_bytes(slide, scale=scale)
+        png_bytes = cls.render_png_bytes(slide, scale=scale, mode=mode)
         return base64.b64encode(png_bytes).decode("utf-8")
 
     @classmethod
-    def render_data_uri(cls, slide: SlideIR, scale: float = 1.0) -> str:
-        """Returns valid RFC 2397 data URI: data:image/png;base64,..."""
-        b64 = cls.render_base64(slide, scale=scale)
+    def render_data_uri(
+        cls,
+        slide: SlideIR,
+        scale: float = 1.0,
+        mode: Optional[RendererMode] = None,
+        fallback_to_svg: bool = False
+    ) -> str:
+        """Returns valid RFC 2397 data URI: data:image/png;base64,... or data:image/svg+xml;base64,...
+
+        If fallback_to_svg is True and CairoSVG is not available in DETERMINISTIC mode,
+        returns SVG data URI directly per Task 1 specification.
+        """
+        target_mode = mode or cls.default_mode
+        if target_mode == RendererMode.DETERMINISTIC and fallback_to_svg and not _CAIROSVG_AVAILABLE:
+            return cls.render_svg_data_uri(slide)
+
+        b64 = cls.render_base64(slide, scale=scale, mode=target_mode)
         return f"data:image/png;base64,{b64}"
 
     @classmethod
-    async def render_png_bytes_async(cls, slide: SlideIR, scale: float = 1.0) -> bytes:
-        """Asynchronously renders slide, using Playwright if available, else synchronous rasterizer."""
-        if _PLAYWRIGHT_AVAILABLE:
+    async def render_png_bytes_async(cls, slide: SlideIR, scale: float = 1.0, mode: Optional[RendererMode] = None) -> bytes:
+        """Asynchronously renders slide.
+
+        In PREVIEW mode: uses Playwright headless browser if available, else synchronous rasterizer.
+        In DETERMINISTIC mode: Playwright is NEVER invoked; strictly uses deterministic CairoSVG / Pillow.
+        """
+        target_mode = mode or cls.default_mode
+        if target_mode == RendererMode.PREVIEW and _PLAYWRIGHT_AVAILABLE:
             try:
                 svg_code = cls.render_svg(slide)
                 w = int(slide.width * scale)
@@ -285,6 +390,6 @@ class SlideSnapshotRenderer:
                     await browser.close()
                     return png_bytes
             except Exception as e:
-                logger.debug(f"Playwright screenshot failed, falling back to sync rasterizer: {e}")
+                logger.debug(f"Playwright screenshot failed in preview, falling back: {e}")
 
-        return cls.render_png_bytes(slide, scale=scale)
+        return cls.render_png_bytes(slide, scale=scale, mode=target_mode)

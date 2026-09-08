@@ -80,9 +80,16 @@ class VisionEngine:
         prompt: str = "请分析当前 PPT 页面的排版布局，检查是否有文字重叠、元素拥挤或边距失衡问题，并给出简明优化意见。"
     ) -> str:
         """Sends visual snapshot to Vision Model for analysis."""
+        from ..eval.renderer_snapshot import SlideSnapshotRenderer, RendererMode
+        meta = SlideSnapshotRenderer.get_render_metadata(slide, mode=RendererMode.DETERMINISTIC)
         snapshot_uri = await cls.capture_slide_snapshot(slide)
         manifest = cls.format_slide_element_manifest(slide)
-        full_text_prompt = f"{prompt}\n\n【画布图元坐标清单】:\n{manifest}"
+
+        prompt_text = prompt
+        if meta.renderer == "pillow" or meta.quality == "geometry_only":
+            prompt_text += "\n当前截图可能缺少字体和特效信息。请优先依据element manifest判断结构。"
+
+        full_text_prompt = f"{prompt_text}\n\n【画布图元坐标清单】:\n{manifest}"
 
         messages = [
             {
@@ -101,4 +108,5 @@ class VisionEngine:
             res = await client.chat_completion(messages, role="vision", max_tokens=600)
             return res["choices"][0]["message"].get("content", "视觉分析完成")
         except Exception as e:
-            return f"视觉检查跳过 ({str(e)})"
+            logger.warning(f"Vision API error in review_slide_visually: {e}")
+            raise

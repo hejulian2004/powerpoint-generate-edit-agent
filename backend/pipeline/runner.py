@@ -1,9 +1,9 @@
-"""End-to-End PPT Understanding, IR Editing & Visual Self-Healing Pipeline.
+"""End-to-End PPT Understanding, IR Editing & Visual Self-Healing Pipeline Runner.
 
-Coordinates the complete architectural loop:
+Coordinates the complete closed architectural loop:
 input.pptx -> PPT Parser -> PresentationIR -> Vision Analyzer ->
 Agent Decision -> Tool Mutations -> Deterministic Rendering ->
-Visual Evaluation -> Self-Healing Loop -> output.pptx
+Visual Evaluation -> Self-Healing Loop -> Rollback / Commit -> output.pptx -> Validation
 """
 
 from __future__ import annotations
@@ -12,62 +12,29 @@ import asyncio
 import json
 import logging
 import sys
-from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, Any, List, Optional, Union, Callable
 
-from .ir.models import PresentationIR, SlideIR
-from .ir.converter import import_pptx, export_pptx
-from .ir.patch import HistoryManager
-from .agent.runtime import AgentRuntime
-from .eval.visual_critic import VisualCritic, VisualReviewResult
-from .eval.renderer_snapshot import SlideSnapshotRenderer
-from pptx_agent_converter.validation import validate_pptx
+from ..ir.models import PresentationIR, SlideIR
+from ..ir.patch import HistoryManager
+from ..agent.runtime import AgentRuntime
+from ..agent.remediation_runner import RemediationRunner
+from .result import PipelineResult
+from .importer import PPTImporter
+from .evaluator import PipelineEvaluator
+from .exporter import PPTExporter
 
-logger = logging.getLogger("backend.pipeline")
-
-
-@dataclass
-class PipelineResult:
-    """Consolidated outcome of the end-to-end PPT editing pipeline."""
-    input_path: Optional[str]
-    output_path: str
-    user_instruction: str
-    success: bool
-    validation_valid: bool
-    initial_score: float
-    final_score: float
-    tools_executed: List[Dict[str, Any]]
-    agent_summary: str
-    slide_count: int
-    presentation_title: str
-    snapshot_uri: Optional[str] = None
-    error: Optional[str] = None
-
-    def to_dict(self) -> Dict[str, Any]:
-        return {
-            "input_path": self.input_path,
-            "output_path": self.output_path,
-            "user_instruction": self.user_instruction,
-            "success": self.success,
-            "validation_valid": self.validation_valid,
-            "initial_score": self.initial_score,
-            "final_score": self.final_score,
-            "score_diff": round(self.final_score - self.initial_score, 2),
-            "tools_executed": self.tools_executed,
-            "agent_summary": self.agent_summary,
-            "slide_count": self.slide_count,
-            "presentation_title": self.presentation_title,
-            "snapshot_uri": self.snapshot_uri,
-            "error": self.error
-        }
+logger = logging.getLogger("backend.pipeline.runner")
 
 
 class PPTEndToEndPipeline:
-    """Executes end-to-end PPT parsing, agent editing, visual critique, self-healing and export."""
+    """Executes end-to-end PPT parsing, agent editing, visual critique, self-healing loop and export."""
 
     def __init__(self, agent_runtime: Optional[AgentRuntime] = None):
         self.runtime = agent_runtime or AgentRuntime()
+        self.importer = PPTImporter
+        self.evaluator = PipelineEvaluator
+        self.exporter = PPTExporter
 
     async def process_deck(
         self,
@@ -78,56 +45,44 @@ class PPTEndToEndPipeline:
         on_event: Optional[Callable[[Dict[str, Any]], Any]] = None,
         max_iterations: int = 5
     ) -> PipelineResult:
-        """Processes a presentation through the complete agent understanding and editing loop."""
+        """Processes a presentation through the complete agent understanding, editing, and self-healing loop."""
         out_p = Path(output_path)
         out_p.parent.mkdir(parents=True, exist_ok=True)
 
         history = HistoryManager()
-        pres: PresentationIR
-        in_path_str: Optional[str] = None
 
         # 1. Parse or initialize PresentationIR
-        if input_path and Path(input_path).exists():
-            in_p = Path(input_path)
-            in_path_str = str(in_p)
-            try:
-                pres = import_pptx(in_p)
-                logger.info(f"Loaded existing presentation '{pres.title}' with {len(pres.slides)} slides from {in_path_str}")
-            except Exception as e:
-                return PipelineResult(
-                    input_path=in_path_str,
-                    output_path=str(out_p),
-                    user_instruction=user_instruction,
-                    success=False,
-                    validation_valid=False,
-                    initial_score=0.0,
-                    final_score=0.0,
-                    tools_executed=[],
-                    agent_summary="",
-                    slide_count=0,
-                    presentation_title="",
-                    error=f"Failed to import input PPTX: {str(e)}"
-                )
-        else:
-            pres = PresentationIR(title="Untitled Presentation")
-            logger.info("Initializing new PresentationIR workspace")
+        pres, in_path_str, import_err = self.importer.load_presentation(input_path, target_slide_num)
+        if import_err:
+            return PipelineResult(
+                input_path=in_path_str,
+                output_path=str(out_p),
+                user_instruction=user_instruction,
+                success=False,
+                validation_valid=False,
+                initial_score=0.0,
+                final_score=0.0,
+                tools_executed=[],
+                agent_summary="",
+                slide_count=0,
+                presentation_title="",
+                error=import_err
+            )
 
-        # 2. Configure target active slide
-        if target_slide_num is not None and 1 <= target_slide_num <= len(pres.slides):
-            pres.active_slide_id = pres.slides[target_slide_num - 1].id
-        elif pres.slides and not pres.active_slide_id:
-            pres.active_slide_id = pres.slides[0].id
+        # Create baseline state snapshot for failure rollback protection
+        initial_snapshot = pres.create_snapshot(history=history)
 
+        # 2. Baseline layout evaluation
         active_slide = pres.get_active_slide()
         initial_score = 100.0
         if active_slide and active_slide.elements:
             try:
-                pre_critique = await VisualCritic.review_slide(active_slide, include_multimodal=False)
+                pre_critique = await self.evaluator.evaluate_slide(active_slide, include_multimodal=False)
                 initial_score = pre_critique.health_report.score
             except Exception as e:
                 logger.debug(f"Pre-edit critique failed: {e}")
 
-        # 3. Execute LangGraph Agent Turn (Observe -> Plan -> Execute -> Critique -> Heal)
+        # 3. Execute LangGraph Agent Turn
         try:
             agent_result = await self.runtime.run_turn(
                 user_message=user_instruction,
@@ -137,8 +92,15 @@ class PPTEndToEndPipeline:
                 max_iterations=max_iterations
             )
             agent_summary = agent_result.get("reply", "处理完成。")
-            executed_tools = agent_result.get("tools_executed", [])
+            executed_tools = list(agent_result.get("tools_executed", []))
         except Exception as e:
+            logger.error(f"Agent execution error, restoring initial state: {e}")
+            pres.restore_snapshot(initial_snapshot, history=history)
+            # Re-export clean initial state if requested on fatal error
+            try:
+                self.exporter.export_and_validate(pres, out_p)
+            except Exception:
+                pass
             return PipelineResult(
                 input_path=in_path_str,
                 output_path=str(out_p),
@@ -146,31 +108,68 @@ class PPTEndToEndPipeline:
                 success=False,
                 validation_valid=False,
                 initial_score=initial_score,
-                final_score=0.0,
+                final_score=initial_score,
                 tools_executed=[],
                 agent_summary="",
                 slide_count=len(pres.slides),
                 presentation_title=pres.title,
+                mutation_history=history.get_mutation_events(),
                 error=f"Agent execution failed: {str(e)}"
             )
 
-        # 4. Post-edit evaluation and screenshot capture
+        # 4. Iterative Self-Healing Loop (Observation -> Evaluation -> Remediation -> Verification)
+        curr_slide = pres.get_active_slide() or (pres.slides[0] if pres.slides else None)
+        for _ in range(max_iterations):
+            if not curr_slide or not curr_slide.elements:
+                break
+
+            critique = await self.evaluator.evaluate_slide(curr_slide, include_multimodal=False)
+            # Break if slide layout is already healthy without critical defects
+            if not critique.needs_auto_correction or not critique.remediation_plan.has_critical:
+                break
+
+            plan = critique.remediation_plan
+            if not plan.auto_executable_actions:
+                break
+
+            rem_res = RemediationRunner.apply_plan(
+                pres=pres,
+                history=history,
+                plan=plan,
+                slide_id=curr_slide.id,
+                only_critical=True,
+                on_event=on_event
+            )
+
+            # Record any remediation tool actions into executed_tools telemetry
+            for fix in rem_res.get("applied_records", []):
+                executed_tools.append({
+                    "tool": fix["tool"],
+                    "arguments": fix.get("args", {}),
+                    "result": fix.get("result", {}),
+                    "source": "remediation"
+                })
+
+            if rem_res.get("rolled_back"):
+                logger.info("Remediation triggered quality safety rollback; stopping self-healing loop.")
+                break
+
+        # 5. Final Post-edit evaluation and snapshot capture
         final_slide = pres.get_active_slide() or (pres.slides[0] if pres.slides else None)
-        final_score = 100.0
+        final_score = initial_score
         snapshot_uri = None
 
         if final_slide and final_slide.elements:
             try:
-                post_critique = await VisualCritic.review_slide(final_slide, include_multimodal=False)
+                post_critique = await self.evaluator.evaluate_slide(final_slide, include_multimodal=False)
                 final_score = post_critique.health_report.score
-                snapshot_uri = post_critique.snapshot_uri or SlideSnapshotRenderer.render_data_uri(final_slide)
+                snapshot_uri = post_critique.snapshot_uri or self.evaluator.capture_snapshot_uri(final_slide)
             except Exception as e:
                 logger.debug(f"Post-edit critique failed: {e}")
 
-        # 5. Export PresentationIR to OOXML .pptx
-        try:
-            export_pptx(pres, out_p)
-        except Exception as e:
+        # 6. Export PresentationIR to OOXML .pptx and validate
+        exp_success, is_valid, exp_err = self.exporter.export_and_validate(pres, out_p)
+        if not exp_success:
             return PipelineResult(
                 input_path=in_path_str,
                 output_path=str(out_p),
@@ -184,12 +183,9 @@ class PPTEndToEndPipeline:
                 slide_count=len(pres.slides),
                 presentation_title=pres.title,
                 snapshot_uri=snapshot_uri,
-                error=f"Failed to export PPTX: {str(e)}"
+                mutation_history=history.get_mutation_events(),
+                error=exp_err
             )
-
-        # 6. Validate generated OOXML package
-        val_res = validate_pptx(out_p)
-        is_valid = bool(val_res.get("valid", False))
 
         return PipelineResult(
             input_path=in_path_str,
@@ -203,7 +199,8 @@ class PPTEndToEndPipeline:
             agent_summary=agent_summary,
             slide_count=len(pres.slides),
             presentation_title=pres.title,
-            snapshot_uri=snapshot_uri
+            snapshot_uri=snapshot_uri,
+            mutation_history=history.get_mutation_events()
         )
 
 
@@ -239,7 +236,6 @@ def main():
     result = asyncio.run(_run())
 
     if args.json:
-        # Strip long snapshot URI for clean console JSON output unless requested
         res_dict = result.to_dict()
         if res_dict.get("snapshot_uri"):
             res_dict["snapshot_uri"] = res_dict["snapshot_uri"][:40] + "..."
@@ -256,6 +252,7 @@ def main():
         print(f"Tools Executed:     {len(result.tools_executed)}")
         for i, t in enumerate(result.tools_executed, 1):
             print(f"  {i}. {t.get('tool')} ({t.get('result', {}).get('message', 'ok')})")
+        print(f"Mutation Events:    {len(result.mutation_history)}")
         print(f"\nAgent Summary:\n{result.agent_summary}")
         print(f"\nSaved Output:       {result.output_path}")
         print("=" * 60 + "\n")

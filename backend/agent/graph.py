@@ -23,6 +23,21 @@ from ..config import settings
 logger = logging.getLogger(__name__)
 
 
+async def _safe_emit(on_event: Optional[Callable], data: Dict[str, Any]):
+    if not on_event:
+        return
+    import inspect
+    try:
+        if inspect.iscoroutinefunction(on_event):
+            await on_event(data)
+        else:
+            res = on_event(data)
+            if inspect.isawaitable(res):
+                await res
+    except Exception as e:
+        logger.debug(f"Event emission ignored: {e}")
+
+
 # =====================================================================
 # 1. State Definition
 # =====================================================================
@@ -58,7 +73,7 @@ async def router_node(state: PPTAgentState, config: RunnableConfig) -> Dict[str,
     query_lower = user_query.lower()
 
     if on_event:
-        await on_event({"type": "agent_thinking", "status": "routing", "text": "分析用户需求意图与画布状态..."})
+        await _safe_emit(on_event,{"type": "agent_thinking", "status": "routing", "text": "分析用户需求意图与画布状态..."})
 
     # Rule & keyword-assisted intent classification
     intent = "chat"
@@ -72,7 +87,7 @@ async def router_node(state: PPTAgentState, config: RunnableConfig) -> Dict[str,
         intent = "optimize_layout"
     elif any(k in user_query for k in ["主题", "配色", "黑曜", "深色", "科技蓝", "浅色", "风格"]):
         intent = "apply_theme"
-    elif any(k in user_query for k in ["修改", "改成", "换成", "变大", "变小", "调为", "更新", "删除", "添加", "标题", "文字", "复制"]):
+    elif any(k in user_query for k in ["修改", "改成", "换成", "变大", "变小", "调为", "更新", "删除", "添加", "标题", "文字", "复制", "移动", "位置", "右侧", "左侧"]):
         intent = "modify_elements"
     elif len(user_query) > 5:
         # Default action-oriented queries to modify or generate
@@ -93,7 +108,7 @@ async def planner_node(state: PPTAgentState, config: RunnableConfig) -> Dict[str
     user_query = state.get("user_query", "")
 
     if on_event:
-        await on_event({"type": "agent_thinking", "status": "planning", "text": f"规划设计策略 ({intent})，计算 1280x720 坐标体系..."})
+        await _safe_emit(on_event,{"type": "agent_thinking", "status": "planning", "text": f"规划设计策略 ({intent})，计算 1280x720 坐标体系..."})
 
     plan_desc = ""
     if intent == "generate_presentation":
@@ -318,11 +333,47 @@ def _heuristic_tool_planner(intent: str, user_query: str, pres: Optional[Present
     elif intent == "modify_elements":
         # Target elements on active slide
         if active_slide and active_slide.elements:
-            # If user asks to update text/title
-            title_elem = next((e for e in active_slide.elements if "title" in e.id.lower() or (e.type == "text" and e.y < 120)), None)
+            # Locate title element with multi-strategy resolution
+            title_elem = None
+            for e in active_slide.elements:
+                if "title" in e.id.lower():
+                    title_elem = e
+                    break
+            if not title_elem:
+                max_font = 0.0
+                for e in active_slide.elements:
+                    tc = getattr(e, "text_content", None)
+                    if tc and tc.paragraphs:
+                        for p in tc.paragraphs:
+                            for r in p.runs:
+                                if r.font and r.font.size and r.font.size > max_font:
+                                    max_font = r.font.size
+                                    title_elem = e
+                if not (title_elem and max_font >= 24.0):
+                    title_elem = next((e for e in active_slide.elements if e.type == "text" and e.y < 160), None)
+
             card_elems = [e for e in active_slide.elements if e.type == "shape"]
 
-            if ("标题" in user_query or "字号" in user_query) and title_elem:
+            # 1. Element repositioning / layout moving instructions
+            if ("移动" in user_query or "move" in user_query.lower() or "位置" in user_query) and ("右" in user_query or "right" in user_query.lower()) and title_elem:
+                tool_calls.append({
+                    "name": "update_element",
+                    "arguments": {
+                        "element_id": title_elem.id,
+                        "x": 900.0
+                    },
+                    "id": f"call_{uuid.uuid4().hex[:6]}"
+                })
+            elif ("移动" in user_query or "move" in user_query.lower() or "位置" in user_query) and ("左" in user_query or "left" in user_query.lower()) and title_elem:
+                tool_calls.append({
+                    "name": "update_element",
+                    "arguments": {
+                        "element_id": title_elem.id,
+                        "x": 100.0
+                    },
+                    "id": f"call_{uuid.uuid4().hex[:6]}"
+                })
+            elif ("标题" in user_query or "字号" in user_query) and title_elem:
                 tool_calls.append({
                     "name": "format_text",
                     "arguments": {
@@ -401,7 +452,7 @@ async def tools_node(state: PPTAgentState, config: RunnableConfig) -> Dict[str, 
         args = tc.get("arguments", {})
 
         if on_event:
-            await on_event({
+            await _safe_emit(on_event,{
                 "type": "tool_executing",
                 "tool": fn_name,
                 "arguments": args
@@ -417,7 +468,7 @@ async def tools_node(state: PPTAgentState, config: RunnableConfig) -> Dict[str, 
         })
 
         if on_event:
-            await on_event({
+            await _safe_emit(on_event,{
                 "type": "tool_completed",
                 "tool": fn_name,
                 "result": res,
@@ -447,14 +498,14 @@ async def vision_critic_node(state: PPTAgentState, config: RunnableConfig) -> Di
     if active_slide and len(active_slide.elements) > 0:
         if settings.enable_vision_loop:
             if on_event:
-                await on_event({
+                await _safe_emit(on_event,{
                     "type": "visual_remediation",
                     "phase": "evaluating",
                     "status": "evaluating",
                     "slide_id": active_slide.id,
                     "text": "排版几何与视觉多模态评估自检中..."
                 })
-                await on_event({"type": "vision_loop", "status": "reviewing", "text": "排版几何与视觉平衡多模态自检中..."})
+                await _safe_emit(on_event,{"type": "vision_loop", "status": "reviewing", "text": "排版几何与视觉平衡多模态自检中..."})
 
             from ..eval.visual_critic import VisualCritic
             # Review slide geometry and contrast
@@ -468,7 +519,7 @@ async def vision_critic_node(state: PPTAgentState, config: RunnableConfig) -> Di
 
             if on_event:
                 # Standardized visual_remediation telemetry event
-                await on_event({
+                await _safe_emit(on_event,{
                     "type": "visual_remediation",
                     "phase": "diagnosed",
                     "status": "diagnosed",
@@ -482,7 +533,7 @@ async def vision_critic_node(state: PPTAgentState, config: RunnableConfig) -> Di
                     "needs_auto_correction": review_res.needs_auto_correction,
                     "text": f"排版体检完成: 健康分 {review_res.health_report.score:.1f}/100 [几何:{review_res.health_report.quality_score.geometry:.0f}, 可读:{review_res.health_report.quality_score.readability:.0f}, 对比:{review_res.health_report.quality_score.contrast:.0f}, 平衡:{review_res.health_report.quality_score.balance:.0f}]"
                 })
-                await on_event({
+                await _safe_emit(on_event,{
                     "type": "vision_critique_completed",
                     "score": review_res.health_report.score,
                     "quality_score": review_res.health_report.quality_score.to_dict(),
@@ -509,7 +560,7 @@ async def auto_correct_node(state: PPTAgentState, config: RunnableConfig) -> Dic
     correction_count = state.get("correction_count", 0) + 1
 
     if on_event:
-        await on_event({
+        await _safe_emit(on_event,{
             "type": "vision_loop",
             "status": "auto_correcting",
             "text": "排版自愈中: 开启事务安全执行关键缺陷修复..."
@@ -560,7 +611,7 @@ async def auto_correct_node(state: PPTAgentState, config: RunnableConfig) -> Dic
             "reason": rec["reason"]
         })
         if on_event:
-            await on_event({
+            await _safe_emit(on_event,{
                 "type": "tool_completed",
                 "tool": rec["tool"],
                 "result": rec["result"],
@@ -568,7 +619,7 @@ async def auto_correct_node(state: PPTAgentState, config: RunnableConfig) -> Dic
             })
 
     if runner_res.get("rolled_back") and on_event:
-        await on_event({
+        await _safe_emit(on_event,{
             "type": "vision_loop",
             "status": "rolled_back",
             "text": runner_res.get("message", "自愈因质量未达标已安全回滚")
@@ -614,7 +665,7 @@ async def summary_node(state: PPTAgentState, config: RunnableConfig) -> Dict[str
         final_text += f"\n\n[视觉自愈闭环] 检测并自动纠偏了几何重叠与边缘贴靠缺陷，当前页面健康度达 {score_val:.1f}/100。"
 
     if on_event:
-        await on_event({
+        await _safe_emit(on_event,{
             "type": "agent_finished",
             "summary": final_text,
             "tools_executed": tool_results,
