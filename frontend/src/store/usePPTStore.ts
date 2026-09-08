@@ -7,7 +7,8 @@ import type {
   VisualRemediationEvent,
   VisualQualityScore,
   PPTEditorState,
-  PatchRecord
+  PatchRecord,
+  MutationStatus
 } from '../types/ppt'
 
 interface PPTState {
@@ -30,6 +31,7 @@ interface PPTState {
   previewScore: number | null
   qualityScore: VisualQualityScore | null
   history: PatchRecord[]
+  mutationStatus: MutationStatus
 
   // Actions
   setSessionId: (id: string) => void
@@ -40,6 +42,7 @@ interface PPTState {
   setSettingsOpen: (open: boolean) => void
   setZoom: (zoom: number) => void
   setShowGrid: (show: boolean) => void
+  setMutationStatus: (status: MutationStatus) => void
   addMessage: (msg: ChatMessage) => void
   updateLastMessage: (partial: Partial<ChatMessage>) => void
   setAgentThinking: (thinking: boolean, status?: string) => void
@@ -88,9 +91,11 @@ export const usePPTStore = create<PPTState>((set, get) => ({
   previewScore: null,
   qualityScore: null,
   history: [],
+  mutationStatus: 'idle',
   ws: null,
 
   setSessionId: (id: string) => set({ sessionId: id }),
+  setMutationStatus: (status) => set({ mutationStatus: status }),
 
   setPresentation: (pres) => set({
     presentation: pres,
@@ -194,7 +199,8 @@ export const usePPTStore = create<PPTState>((set, get) => ({
           set({
             previewSvg: data.svg,
             previewScore: data.score,
-            qualityScore: data.quality_score
+            qualityScore: data.quality_score,
+            mutationStatus: 'committed'
           })
         } else if (type === 'presentation_updated') {
           set((state) => ({
@@ -202,7 +208,8 @@ export const usePPTStore = create<PPTState>((set, get) => ({
             presentation: data.presentation,
             activeSlideId: data.active_slide_id || state.activeSlideId || data.presentation.slides[0]?.id,
             canUndo: data.can_undo ?? state.canUndo,
-            canRedo: data.can_redo ?? state.canRedo
+            canRedo: data.can_redo ?? state.canRedo,
+            mutationStatus: 'committed'
           }))
         } else if (type === 'active_slide_changed') {
           set({ activeSlideId: data.active_slide_id })
@@ -232,7 +239,7 @@ export const usePPTStore = create<PPTState>((set, get) => ({
             visualReview: data.visual_review
           })
         } else if (type === 'agent_error') {
-          set({ isAgentThinking: false, thinkingStatus: '', visualRemediation: null })
+          set({ isAgentThinking: false, thinkingStatus: '', visualRemediation: null, mutationStatus: 'failed' })
           get().addMessage({
             id: `err_${Date.now()}`,
             role: 'assistant',
@@ -404,7 +411,7 @@ export const usePPTStore = create<PPTState>((set, get) => ({
         if (s.id !== (activeSlideId || presentation.slides[0]?.id)) return s
         return { ...s, elements: updateElInArray(s.elements) }
       })
-      set({ presentation: { ...presentation, slides: updatedSlides } })
+      set({ presentation: { ...presentation, slides: updatedSlides }, mutationStatus: 'pending' })
     }
 
     const payload = {
@@ -458,7 +465,8 @@ export const usePPTStore = create<PPTState>((set, get) => ({
       isAgentThinking,
       thinkingStatus,
       visualRemediation,
-      activeSlideId
+      activeSlideId,
+      mutationStatus
     } = get()
 
     return {
@@ -475,7 +483,8 @@ export const usePPTStore = create<PPTState>((set, get) => ({
         isThinking: isAgentThinking,
         thinkingStatus,
         visualRemediation
-      }
+      },
+      mutationStatus
     }
   }
 }))

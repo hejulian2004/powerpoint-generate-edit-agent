@@ -263,6 +263,8 @@ export interface ChatMessage {
   isStreaming?: boolean
 }
 
+export type MutationStatus = 'idle' | 'pending' | 'committed' | 'rolled_back' | 'failed'
+
 export interface PreviewUpdateEvent {
   type: 'preview_update'
   session_id: string
@@ -288,4 +290,5 @@ export interface PPTEditorState {
     thinkingStatus: string
     visualRemediation?: VisualRemediationEvent | null
   }
+  mutationStatus?: MutationStatus
 }

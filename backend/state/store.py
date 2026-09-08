@@ -232,6 +232,8 @@ class PresentationStore:
         self.session_manager.get_or_create(self.active_session_id, pres_factory=lambda: default_pres)
         self.agent_runtime = AgentRuntime()
         self.active_websockets: List[WebSocket] = []
+        self.session_websockets: Dict[str, List[WebSocket]] = {}
+        self.ws_session_map: Dict[WebSocket, str] = {}
 
     @property
     def active_session(self) -> PPTSession:
@@ -318,17 +320,36 @@ class PresentationStore:
             return patch.to_dict()
         return dict(patch)
 
-    # WebSocket registration
-    async def connect_ws(self, ws: WebSocket):
+    # WebSocket registration with session isolation
+    async def connect_ws(self, ws: WebSocket, session_id: Optional[str] = None):
         await ws.accept()
-        self.active_websockets.append(ws)
+        sid = session_id or self.active_session_id
+        if ws not in self.active_websockets:
+            self.active_websockets.append(ws)
+        self.ws_session_map[ws] = sid
+        if sid not in self.session_websockets:
+            self.session_websockets[sid] = []
+        if ws not in self.session_websockets[sid]:
+            self.session_websockets[sid].append(ws)
 
     def disconnect_ws(self, ws: WebSocket):
         if ws in self.active_websockets:
             self.active_websockets.remove(ws)
+        sid = self.ws_session_map.pop(ws, None)
+        if sid and sid in self.session_websockets:
+            if ws in self.session_websockets[sid]:
+                self.session_websockets[sid].remove(ws)
+            if not self.session_websockets[sid]:
+                del self.session_websockets[sid]
 
-    async def broadcast(self, message: Dict[str, Any]):
-        for ws in list(self.active_websockets):
+    async def broadcast(self, message: Dict[str, Any], session_id: Optional[str] = None):
+        sid = session_id or message.get("session_id")
+        if sid:
+            targets = list(self.session_websockets.get(sid, []))
+        else:
+            targets = list(self.active_websockets)
+
+        for ws in targets:
             try:
                 await ws.send_json(message)
             except Exception as e:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 import uuid
 import copy
+import asyncio
 from datetime import datetime, timezone
 from dataclasses import dataclass, field
 from typing import Dict, Any, Optional, List
@@ -26,6 +27,7 @@ class PPTSession:
     updated_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     last_target_id: Optional[str] = None
     last_action_type: Optional[str] = None
+    mutation_lock: asyncio.Lock = field(default_factory=asyncio.Lock, repr=False)
 
     def __post_init__(self):
         self.checkpoint_mgr = CheckpointManager(session_id=self.session_id)
@@ -91,16 +93,18 @@ class PPTSession:
         self.updated_at = datetime.now(timezone.utc)
         return cp
 
-    def restore_checkpoint(self, checkpoint_id: str) -> bool:
+    def restore_checkpoint(self, checkpoint_id: str, clear_history: bool = True) -> bool:
         restored = self.checkpoint_mgr.restore(checkpoint_id)
         if restored:
             self.pres = restored
-            # Record a restoration mutation event in history
-            self.history.record(
-                action="restore_checkpoint",
-                description=f"Restored to checkpoint {checkpoint_id}",
-                source="session_checkpoint"
-            )
+            if clear_history:
+                self.history.clear()
+            else:
+                self.history.record(
+                    action="restore_checkpoint",
+                    description=f"Restored to checkpoint {checkpoint_id}",
+                    source="session_checkpoint"
+                )
             self.updated_at = datetime.now(timezone.utc)
             return True
         return False

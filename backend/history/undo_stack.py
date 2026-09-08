@@ -80,20 +80,30 @@ class UndoRedoStack:
         if not self.undo_stack:
             return None
         cmd = self.undo_stack.pop()
-        cmd.undo(presentation)
-        self.redo_stack.append(cmd)
-        presentation.version += 1
-        return cmd
+        success = cmd.undo(presentation)
+        if success:
+            self.redo_stack.append(cmd)
+            presentation.version += 1
+            return cmd
+        else:
+            # Restore to undo stack on failure, do not corrupt redo stack
+            self.undo_stack.append(cmd)
+            return None
 
     def redo(self, presentation: PresentationIR) -> Optional[MutationCommand]:
         """Re-applies the most recently reverted command on the presentation."""
         if not self.redo_stack:
             return None
         cmd = self.redo_stack.pop()
-        cmd.redo(presentation)
-        self.undo_stack.append(cmd)
-        presentation.version += 1
-        return cmd
+        success = cmd.redo(presentation)
+        if success:
+            self.undo_stack.append(cmd)
+            presentation.version += 1
+            return cmd
+        else:
+            # Restore to redo stack on failure, do not corrupt undo stack
+            self.redo_stack.append(cmd)
+            return None
 
     def can_undo(self) -> bool:
         return len(self.undo_stack) > 0

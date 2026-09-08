@@ -315,11 +315,15 @@ class BatchMutationCommand(MutationCommand):
         self.after = {}
 
     def execute(self, pres: PresentationIR) -> bool:
-        success = True
+        executed: List[MutationCommand] = []
         for cmd in self.commands:
             if not cmd.execute(pres):
-                success = False
-        return success
+                # Rollback already executed sub-commands in reverse order to ensure atomicity
+                for prev_cmd in reversed(executed):
+                    prev_cmd.undo(pres)
+                return False
+            executed.append(cmd)
+        return True
 
     def undo(self, pres: PresentationIR) -> bool:
         success = True
@@ -330,11 +334,15 @@ class BatchMutationCommand(MutationCommand):
         return success
 
     def redo(self, pres: PresentationIR) -> bool:
-        success = True
+        redone: List[MutationCommand] = []
         for cmd in self.commands:
             if not cmd.redo(pres):
-                success = False
-        return success
+                # Rollback already redone sub-commands in reverse order to ensure atomicity
+                for prev_cmd in reversed(redone):
+                    prev_cmd.undo(pres)
+                return False
+            redone.append(cmd)
+        return True
 
     def to_event(self) -> MutationEvent:
         combined_before = {}

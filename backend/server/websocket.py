@@ -53,7 +53,7 @@ async def websocket_endpoint(websocket: WebSocket):
         pres_factory=create_default_demo_presentation
     )
 
-    await store.connect_ws(websocket)
+    await store.connect_ws(websocket, session_id=session.session_id)
     logger.info(f"WebSocket client connected to session '{session.session_id}'")
 
     try:
@@ -90,30 +90,111 @@ async def websocket_endpoint(websocket: WebSocket):
                 if not user_message:
                     continue
 
-                session.add_message(role="user", content=user_message)
+                async with session.mutation_lock:
+                    session.add_message(role="user", content=user_message)
 
-                # Event streaming callback
-                async def on_event(ev: dict):
-                    await store.broadcast(ev)
+                    # Event streaming callback
+                    async def on_event(ev: dict):
+                        if "session_id" not in ev:
+                            ev["session_id"] = session.session_id
+                        await store.broadcast(ev, session_id=session.session_id)
 
-                try:
-                    result = await store.agent_runtime.run_turn(
-                        user_message=user_message,
-                        pres=session.pres,
-                        history=session.history,
-                        session=session,
-                        on_event=on_event
-                    )
+                    try:
+                        result = await store.agent_runtime.run_turn(
+                            user_message=user_message,
+                            pres=session.pres,
+                            history=session.history,
+                            session=session,
+                            on_event=on_event
+                        )
 
-                    reply_text = result.get("reply", "处理完成。")
-                    session.add_message(
-                        role="assistant",
-                        content=reply_text,
-                        tool_calls=result.get("tools_executed"),
-                        vision_critique=result.get("vision_critique")
-                    )
+                        reply_text = result.get("reply", "处理完成。")
+                        session.add_message(
+                            role="assistant",
+                            content=reply_text,
+                            tool_calls=result.get("tools_executed"),
+                            vision_critique=result.get("vision_critique")
+                        )
 
-                    # Broadcast refreshed state & preview
+                        # Broadcast refreshed state & preview
+                        await store.broadcast({
+                            "type": "presentation_updated",
+                            "session_id": session.session_id,
+                            "presentation": session.pres.model_dump(),
+                            "can_undo": session.history.can_undo(),
+                            "can_redo": session.history.can_redo(),
+                            "active_slide_id": session.active_slide_id,
+                            "last_target_id": session.last_target_id
+                        }, session_id=session.session_id)
+
+                        new_preview = build_preview_update(session)
+                        if new_preview:
+                            await store.broadcast(new_preview, session_id=session.session_id)
+
+                    except Exception as e:
+                        logger.error(f"Error in agent turn: {e}", exc_info=True)
+                        await websocket.send_json({
+                            "type": "agent_error",
+                            "session_id": session.session_id,
+                            "error": str(e)
+                        })
+
+            # User selected a slide thumbnail
+            elif msg_type == "select_slide":
+                slide_id = data.get("slide_id")
+                async with session.mutation_lock:
+                    if slide_id and session.set_active_slide(slide_id):
+                        await store.broadcast({
+                            "type": "active_slide_changed",
+                            "session_id": session.session_id,
+                            "active_slide_id": slide_id
+                        }, session_id=session.session_id)
+                        new_preview = build_preview_update(session, slide_id)
+                        if new_preview:
+                            await store.broadcast(new_preview, session_id=session.session_id)
+
+            # User triggered Undo
+            elif msg_type == "undo":
+                async with session.mutation_lock:
+                    cmd = session.undo()
+                    if cmd:
+                        await store.broadcast({
+                            "type": "presentation_updated",
+                            "session_id": session.session_id,
+                            "presentation": session.pres.model_dump(),
+                            "can_undo": session.history.can_undo(),
+                            "can_redo": session.history.can_redo(),
+                            "active_slide_id": session.active_slide_id
+                        }, session_id=session.session_id)
+                        new_preview = build_preview_update(session)
+                        if new_preview:
+                            await store.broadcast(new_preview, session_id=session.session_id)
+
+            # User triggered Redo
+            elif msg_type == "redo":
+                async with session.mutation_lock:
+                    cmd = session.redo()
+                    if cmd:
+                        await store.broadcast({
+                            "type": "presentation_updated",
+                            "session_id": session.session_id,
+                            "presentation": session.pres.model_dump(),
+                            "can_undo": session.history.can_undo(),
+                            "can_redo": session.history.can_redo(),
+                            "active_slide_id": session.active_slide_id
+                        }, session_id=session.session_id)
+                        new_preview = build_preview_update(session)
+                        if new_preview:
+                            await store.broadcast(new_preview, session_id=session.session_id)
+
+            # User edited element on canvas directly
+            elif msg_type == "direct_update_element":
+                args = data.get("payload", {})
+                async with session.mutation_lock:
+                    res = tools.execute("update_element", args, session.pres, session.history)
+                    if args.get("element_id"):
+                        session.last_target_id = args.get("element_id")
+
                     await store.broadcast({
                         "type": "presentation_updated",
                         "session_id": session.session_id,
@@ -122,83 +203,10 @@ async def websocket_endpoint(websocket: WebSocket):
                         "can_redo": session.history.can_redo(),
                         "active_slide_id": session.active_slide_id,
                         "last_target_id": session.last_target_id
-                    })
-
+                    }, session_id=session.session_id)
                     new_preview = build_preview_update(session)
                     if new_preview:
-                        await store.broadcast(new_preview)
-
-                except Exception as e:
-                    logger.error(f"Error in agent turn: {e}", exc_info=True)
-                    await websocket.send_json({
-                        "type": "agent_error",
-                        "error": str(e)
-                    })
-
-            # User selected a slide thumbnail
-            elif msg_type == "select_slide":
-                slide_id = data.get("slide_id")
-                if slide_id and session.set_active_slide(slide_id):
-                    await store.broadcast({
-                        "type": "active_slide_changed",
-                        "session_id": session.session_id,
-                        "active_slide_id": slide_id
-                    })
-                    new_preview = build_preview_update(session, slide_id)
-                    if new_preview:
-                        await store.broadcast(new_preview)
-
-            # User triggered Undo
-            elif msg_type == "undo":
-                cmd = session.undo()
-                if cmd:
-                    await store.broadcast({
-                        "type": "presentation_updated",
-                        "session_id": session.session_id,
-                        "presentation": session.pres.model_dump(),
-                        "can_undo": session.history.can_undo(),
-                        "can_redo": session.history.can_redo(),
-                        "active_slide_id": session.active_slide_id
-                    })
-                    new_preview = build_preview_update(session)
-                    if new_preview:
-                        await store.broadcast(new_preview)
-
-            # User triggered Redo
-            elif msg_type == "redo":
-                cmd = session.redo()
-                if cmd:
-                    await store.broadcast({
-                        "type": "presentation_updated",
-                        "session_id": session.session_id,
-                        "presentation": session.pres.model_dump(),
-                        "can_undo": session.history.can_undo(),
-                        "can_redo": session.history.can_redo(),
-                        "active_slide_id": session.active_slide_id
-                    })
-                    new_preview = build_preview_update(session)
-                    if new_preview:
-                        await store.broadcast(new_preview)
-
-            # User edited element on canvas directly
-            elif msg_type == "direct_update_element":
-                args = data.get("payload", {})
-                res = tools.execute("update_element", args, session.pres, session.history)
-                if args.get("element_id"):
-                    session.last_target_id = args.get("element_id")
-
-                await store.broadcast({
-                    "type": "presentation_updated",
-                    "session_id": session.session_id,
-                    "presentation": session.pres.model_dump(),
-                    "can_undo": session.history.can_undo(),
-                    "can_redo": session.history.can_redo(),
-                    "active_slide_id": session.active_slide_id,
-                    "last_target_id": session.last_target_id
-                })
-                new_preview = build_preview_update(session)
-                if new_preview:
-                    await store.broadcast(new_preview)
+                        await store.broadcast(new_preview, session_id=session.session_id)
 
             # Client requested immediate preview
             elif msg_type == "preview_request":
@@ -210,28 +218,31 @@ async def websocket_endpoint(websocket: WebSocket):
             # Checkpoint operations
             elif msg_type == "create_checkpoint":
                 desc = data.get("description", "手动快照")
-                health = LayoutDiffEngine.evaluate_slide(session.get_active_slide()) if session.get_active_slide() else None
-                score = health.score if health else None
-                cp = session.create_checkpoint(description=desc, score=score)
-                await websocket.send_json({
-                    "type": "checkpoint_created",
-                    "checkpoint": cp.to_dict()
-                })
+                async with session.mutation_lock:
+                    health = LayoutDiffEngine.evaluate_slide(session.get_active_slide()) if session.get_active_slide() else None
+                    score = health.score if health else None
+                    cp = session.create_checkpoint(description=desc, score=score)
+                    await websocket.send_json({
+                        "type": "checkpoint_created",
+                        "session_id": session.session_id,
+                        "checkpoint": cp.to_dict()
+                    })
 
             elif msg_type == "restore_checkpoint":
                 cp_id = data.get("checkpoint_id")
-                if cp_id and session.restore_checkpoint(cp_id):
-                    await store.broadcast({
-                        "type": "presentation_updated",
-                        "session_id": session.session_id,
-                        "presentation": session.pres.model_dump(),
-                        "can_undo": session.history.can_undo(),
-                        "can_redo": session.history.can_redo(),
-                        "active_slide_id": session.active_slide_id
-                    })
-                    new_preview = build_preview_update(session)
-                    if new_preview:
-                        await store.broadcast(new_preview)
+                async with session.mutation_lock:
+                    if cp_id and session.restore_checkpoint(cp_id):
+                        await store.broadcast({
+                            "type": "presentation_updated",
+                            "session_id": session.session_id,
+                            "presentation": session.pres.model_dump(),
+                            "can_undo": session.history.can_undo(),
+                            "can_redo": session.history.can_redo(),
+                            "active_slide_id": session.active_slide_id
+                        }, session_id=session.session_id)
+                        new_preview = build_preview_update(session)
+                        if new_preview:
+                            await store.broadcast(new_preview, session_id=session.session_id)
 
     except WebSocketDisconnect:
         logger.info(f"WebSocket client disconnected from session '{session.session_id}'")

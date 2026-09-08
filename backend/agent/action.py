@@ -95,12 +95,12 @@ class ActionResolver:
             if cards:
                 return cards[0]
 
-        # 5. Fallback to last target or first element
+        # 5. Fallback to last target only if explicitly valid
         if last_target_id:
             for el in slide.elements:
                 if el.id == last_target_id:
                     return el
-        return slide.elements[0] if slide.elements else None
+        return None
 
     @classmethod
     def action_to_tool_call(
@@ -112,10 +112,11 @@ class ActionResolver:
         """Converts an AgentAction into an executable tool call dict."""
         active_slide = pres.get_active_slide()
         target_elem = cls.resolve_target_element(action.target, active_slide, last_target_id)
-        element_id = target_elem.id if target_elem else action.target
 
-        # 1. Relative movement resolution
-        if action.relative and target_elem:
+        # Guard: Relative movement requires a valid target element
+        if action.relative:
+            if not target_elem:
+                return None
             resolved_params = dict(action.parameters)
             if "x" in resolved_params:
                 resolved_params["x"] = round(target_elem.x + resolved_params["x"], 1)
@@ -133,14 +134,18 @@ class ActionResolver:
             return {
                 "name": "update_element",
                 "arguments": {
-                    "element_id": element_id,
+                    "element_id": target_elem.id,
                     "slide_id": active_slide.id if active_slide else None,
                     **resolved_params
                 }
             }
 
+        element_id = target_elem.id if target_elem else action.target
+
         # 2. Text formatting / resizing
         if action.action_type in ["resize_text", "format_text", "highlight_text"]:
+            if not target_elem and action.target:
+                return None
             args = {"element_id": element_id}
             if active_slide:
                 args["slide_id"] = active_slide.id
@@ -152,6 +157,8 @@ class ActionResolver:
 
         # 3. Element update / move
         if action.action_type in ["update_element", "move_element", "reposition_element"]:
+            if not target_elem and action.target:
+                return None
             args = {"element_id": element_id}
             if active_slide:
                 args["slide_id"] = active_slide.id
@@ -177,6 +184,10 @@ class ActionResolver:
                 "name": "apply_theme",
                 "arguments": action.parameters
             }
+
+        # Guard: Other element-specific actions targeting an unknown element should fail cleanly
+        if not target_elem and action.target and action.action_type not in ["add_element", "create_element"]:
+            return None
 
         # Generic passthrough
         args = {"element_id": element_id, **action.parameters}
