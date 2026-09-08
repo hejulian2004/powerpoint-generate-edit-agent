@@ -447,6 +447,13 @@ async def vision_critic_node(state: PPTAgentState, config: RunnableConfig) -> Di
     if active_slide and len(active_slide.elements) > 0:
         if settings.enable_vision_loop:
             if on_event:
+                await on_event({
+                    "type": "visual_remediation",
+                    "phase": "evaluating",
+                    "status": "evaluating",
+                    "slide_id": active_slide.id,
+                    "text": "排版几何与视觉多模态评估自检中..."
+                })
                 await on_event({"type": "vision_loop", "status": "reviewing", "text": "排版几何与视觉平衡多模态自检中..."})
 
             from ..eval.visual_critic import VisualCritic
@@ -460,9 +467,25 @@ async def vision_critic_node(state: PPTAgentState, config: RunnableConfig) -> Di
             review_dict = review_res.to_dict()
 
             if on_event:
+                # Standardized visual_remediation telemetry event
+                await on_event({
+                    "type": "visual_remediation",
+                    "phase": "diagnosed",
+                    "status": "diagnosed",
+                    "slide_id": active_slide.id,
+                    "score": review_res.health_report.score,
+                    "quality_score": review_res.health_report.quality_score.to_dict(),
+                    "defects_count": len(review_res.health_report.defects),
+                    "critical_count": review_res.health_report.critical_count,
+                    "auto_executable_count": len(review_res.remediation_plan.auto_executable_actions),
+                    "actions": [a.to_dict() for a in review_res.remediation_plan.actions],
+                    "needs_auto_correction": review_res.needs_auto_correction,
+                    "text": f"排版体检完成: 健康分 {review_res.health_report.score:.1f}/100 [几何:{review_res.health_report.quality_score.geometry:.0f}, 可读:{review_res.health_report.quality_score.readability:.0f}, 对比:{review_res.health_report.quality_score.contrast:.0f}, 平衡:{review_res.health_report.quality_score.balance:.0f}]"
+                })
                 await on_event({
                     "type": "vision_critique_completed",
                     "score": review_res.health_report.score,
+                    "quality_score": review_res.health_report.quality_score.to_dict(),
                     "defects_count": len(review_res.health_report.defects),
                     "summary": review_res.critique_summary,
                     "needs_auto_correction": review_res.needs_auto_correction
@@ -506,7 +529,9 @@ async def auto_correct_node(state: PPTAgentState, config: RunnableConfig) -> Dic
                 target_ids=a.get("target_ids", []),
                 parameters=a.get("parameters", {}),
                 reason=a.get("reason", ""),
-                priority=a.get("priority", 1)
+                priority=a.get("priority", 1),
+                confidence=a.get("confidence", 1.0),
+                source=a.get("source", "geometry_rule")
             ))
         except Exception:
             pass
@@ -522,7 +547,8 @@ async def auto_correct_node(state: PPTAgentState, config: RunnableConfig) -> Dic
         history=history,
         plan=plan,
         slide_id=state.get("active_slide_id"),
-        only_critical=True
+        only_critical=True,
+        on_event=on_event
     )
 
     for rec in runner_res.get("applied_records", []):
@@ -670,11 +696,14 @@ def should_auto_correct(state: PPTAgentState) -> str:
 
     plan_dict = visual_review.get("remediation_plan", {})
     has_critical = plan_dict.get("has_critical", False) or visual_review.get("has_critical_defects", False)
-    critical_count = plan_dict.get("critical_count", len(visual_review.get("proposed_actions", [])))
+    auto_count = plan_dict.get("auto_executable_count", plan_dict.get("critical_count", len(visual_review.get("proposed_actions", []))))
+    needs_correction = visual_review.get("needs_auto_correction", False)
     correction_count = state.get("correction_count", 0)
+    max_allowed = getattr(settings, "max_visual_iterations", 3)
 
-    # Policy: only critical defects (clipping, collisions, severe overflow) trigger auto-correction (max 2 iterations)
-    if has_critical and critical_count > 0 and correction_count < 2:
+    # Policy: only critical defects (clipping, collisions, severe overflow) with confidence >= 0.9
+    # trigger auto-correction up to settings.max_visual_iterations
+    if (has_critical or needs_correction) and auto_count > 0 and correction_count < max_allowed:
         return "auto_correct_node"
     return "summary_node"
 

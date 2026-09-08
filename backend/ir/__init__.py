@@ -2,6 +2,8 @@
 
 from .models import (
     PresentationIR,
+    PresentationSnapshot,
+    PresentationTransaction,
     SlideIR,
     ElementIR,
     ShapeElementIR,
@@ -28,6 +30,8 @@ from .svg_renderer import SVGRenderer
 
 __all__ = [
     "PresentationIR",
+    "PresentationSnapshot",
+    "PresentationTransaction",
     "SlideIR",
     "ElementIR",
     "ShapeElementIR",

@@ -211,6 +211,35 @@ export interface PatchRecord {
   element_id?: string
 }
 
+export interface VisualQualityScore {
+  geometry: number
+  readability: number
+  contrast: number
+  balance: number
+  total: number
+}
+
+export interface VisualRemediationEvent {
+  type: 'visual_remediation'
+  phase: 'evaluating' | 'diagnosed' | 'fixing' | 'committed' | 'rolled_back'
+  status: string
+  slide_id?: string
+  text: string
+  score?: number
+  quality_score?: VisualQualityScore
+  defects_count?: number
+  critical_count?: number
+  auto_executable_count?: number
+  action?: Record<string, any>
+  applied_count?: number
+  applied_fixes?: any[]
+  iteration?: number
+  max_iterations?: number
+  score_before?: number
+  score_after?: number
+  delta?: number
+}
+
 export interface ChatMessage {
   id: string
   role: 'user' | 'assistant' | 'system'
@@ -220,7 +249,16 @@ export interface ChatMessage {
     tool: string
     arguments: any
     result?: any
+    auto_correct?: boolean
+    reason?: string
   }>
   visionCritique?: string
+  visualReview?: {
+    score: number
+    quality_score?: VisualQualityScore
+    defects_count?: number
+    needs_auto_correction?: boolean
+    critique_summary?: string
+  }
   isStreaming?: boolean
 }

@@ -171,6 +171,32 @@ def calculate_contrast_ratio(color1: Union[str, Tuple[int, int, int]], color2: U
 # =====================================================================
 
 @dataclass
+class VisualQualityScore:
+    """Multidimensional visual quality score evaluation.
+
+    Weights:
+    - geometry: 40% (viewport boundary, margin intrusion, collision & overlap)
+    - readability: 25% (text overflow, container fitting, font size)
+    - contrast: 15% (WCAG 2.1 contrast ratios)
+    - balance: 20% (alignment consistency, distribution, spacing)
+    """
+    geometry: float = 100.0
+    readability: float = 100.0
+    contrast: float = 100.0
+    balance: float = 100.0
+    total: float = 100.0
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "geometry": round(self.geometry, 1),
+            "readability": round(self.readability, 1),
+            "contrast": round(self.contrast, 1),
+            "balance": round(self.balance, 1),
+            "total": round(self.total, 1),
+        }
+
+
+@dataclass
 class LayoutDefect:
     """Defect detected during visual inspection."""
     defect_type: str  # "collision_overlap" | "viewport_clipping" | "margin_intrusion" | "text_overflow" | "low_contrast" | "misaligned"
@@ -195,7 +221,8 @@ class LayoutDefect:
 class LayoutHealthReport:
     """Consolidated layout quality and accessibility audit report."""
     slide_id: str
-    score: float                         # 0.0 - 100.0
+    score: float                         # 0.0 - 100.0 (composite total)
+    quality_score: VisualQualityScore = field(default_factory=VisualQualityScore)
     defects: List[LayoutDefect] = field(default_factory=list)
     passed_checks: List[str] = field(default_factory=list)
     stats: Dict[str, Any] = field(default_factory=dict)
@@ -223,12 +250,17 @@ class LayoutHealthReport:
         warn = f"{self.warning_count} 个警告" if self.warning_count > 0 else ""
         counts = ", ".join(filter(bool, [crit, warn]))
         top_defects = "; ".join(d.description for d in self.defects[:3])
-        return f"页面健康分: {self.score:.1f}/100 ({counts})。主要建议: {top_defects}"
+        return (
+            f"页面健康分: {self.score:.1f}/100 [几何:{self.quality_score.geometry:.0f}, "
+            f"可读:{self.quality_score.readability:.0f}, 对比:{self.quality_score.contrast:.0f}, "
+            f"平衡:{self.quality_score.balance:.0f}] ({counts})。主要建议: {top_defects}"
+        )
 
     def to_dict(self) -> Dict[str, Any]:
         return {
             "slide_id": self.slide_id,
             "score": round(self.score, 1),
+            "quality_score": self.quality_score.to_dict(),
             "critical_count": self.critical_count,
             "warning_count": self.warning_count,
             "info_count": self.info_count,
@@ -294,17 +326,48 @@ class LayoutDiffEngine:
         else:
             passed_checks.append("clean_grid_alignment")
 
-        # Calculate score (start at 100.0, deduct based on defects)
-        penalty = 0.0
-        for d in defects:
-            if d.severity == "critical":
-                penalty += 15.0
-            elif d.severity == "warning":
-                penalty += 6.0
-            elif d.severity == "info":
-                penalty += 2.0
+        # Multidimensional Quality Scoring (Geometry 40%, Readability 25%, Contrast 15%, Balance 20%)
+        # 1. Geometry dimension (clipping & overlaps)
+        geom_penalty = 0.0
+        for d in clipping_defects:
+            geom_penalty += 20.0 if d.severity == "critical" else 8.0
+        for d in overlap_defects:
+            geom_penalty += 20.0 if d.severity == "critical" else 8.0
+        geometry_score = max(0.0, min(100.0, 100.0 - geom_penalty))
 
-        score = max(0.0, min(100.0, 100.0 - penalty))
+        # 2. Readability dimension (text overflows)
+        read_penalty = 0.0
+        for d in overflow_defects:
+            read_penalty += 25.0 if d.severity == "critical" else 10.0
+        readability_score = max(0.0, min(100.0, 100.0 - read_penalty))
+
+        # 3. Contrast dimension (WCAG 2.1 color contrast)
+        contrast_penalty = 0.0
+        for d in contrast_defects:
+            contrast_penalty += 30.0 if d.severity == "critical" else 15.0
+        contrast_score = max(0.0, min(100.0, 100.0 - contrast_penalty))
+
+        # 4. Balance dimension (grid alignment & distribution)
+        balance_penalty = 0.0
+        for d in align_defects:
+            balance_penalty += 15.0 if d.severity == "warning" else 8.0
+        balance_score = max(0.0, min(100.0, 100.0 - balance_penalty))
+
+        # 5. Weighted composite total
+        total_score = round(
+            0.40 * geometry_score +
+            0.25 * readability_score +
+            0.15 * contrast_score +
+            0.20 * balance_score,
+            1
+        )
+        quality_score = VisualQualityScore(
+            geometry=round(geometry_score, 1),
+            readability=round(readability_score, 1),
+            contrast=round(contrast_score, 1),
+            balance=round(balance_score, 1),
+            total=total_score
+        )
 
         stats = {
             "total_elements": len(slide.elements),
@@ -317,7 +380,8 @@ class LayoutDiffEngine:
 
         return LayoutHealthReport(
             slide_id=slide.id,
-            score=score,
+            score=total_score,
+            quality_score=quality_score,
             defects=defects,
             passed_checks=passed_checks,
             stats=stats

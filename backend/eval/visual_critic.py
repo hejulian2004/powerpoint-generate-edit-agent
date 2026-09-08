@@ -79,9 +79,9 @@ class VisualCritic:
         # 2. Formulate tool-agnostic remediation plan
         remediation_plan = cls.plan_remediations(slide, health_report)
 
-        # 3. Policy: ONLY critical defects (viewport clipping, severe collisions, text overflows)
+        # 3. Policy: ONLY critical defects with confidence >= 0.9 (viewport clipping, severe collisions, text overflows)
         # trigger auto-correction in the background loop. Aesthetic / structural styling is never forced.
-        needs_correction = remediation_plan.has_critical and len(remediation_plan.critical_actions) > 0
+        needs_correction = len(remediation_plan.auto_executable_actions) > 0
 
         # 4. Multimodal Vision Model critique with clear fallback state reporting
         multimodal_feedback = None
@@ -151,8 +151,30 @@ class VisualCritic:
 
             action_type_str = fix.get("action")
 
-            # 1. Viewport Clipping (CRITICAL)
-            if defect.defect_type == "viewport_clipping":
+            # 1. Text Overflow (CRITICAL: container/font sizes must resolve first)
+            if defect.defect_type == "text_overflow":
+                eid = fix.get("element_id")
+                suggested_h = fix.get("suggested_height")
+                suggested_font_sz = fix.get("suggested_font_size")
+                if eid and eid not in handled_elements:
+                    actions.append(FixAction(
+                        action_type=FixActionType.RESIZE_CONTAINER,
+                        category=DefectCategory.CRITICAL,
+                        target_ids=[eid],
+                        parameters={
+                            "element_id": eid,
+                            "height": suggested_h,
+                            "font_size": suggested_font_sz
+                        },
+                        reason=f"扩展容器避免文字裁剪溢出: {defect.description}",
+                        priority=10,
+                        confidence=0.96,
+                        source="geometry_rule"
+                    ))
+                    handled_elements.add(eid)
+
+            # 2. Viewport Clipping (CRITICAL: pull back into view boundaries)
+            elif defect.defect_type == "viewport_clipping":
                 eid = fix.get("element_id")
                 if eid and eid not in handled_elements:
                     actions.append(FixAction(
@@ -167,11 +189,13 @@ class VisualCritic:
                             "height": fix.get("height")
                         },
                         reason=f"修正视口边缘溢出: {defect.description}",
-                        priority=10
+                        priority=9,
+                        confidence=0.98,
+                        source="geometry_rule"
                     ))
                     handled_elements.add(eid)
 
-            # 2. Collision & Overlap (CRITICAL)
+            # 3. Collision & Overlap (CRITICAL: separate cards or layout mode)
             elif defect.defect_type == "collision_overlap":
                 cards = [
                     e for e in slide.elements
@@ -189,7 +213,9 @@ class VisualCritic:
                             "gap": 30.0
                         },
                         reason=f"规整多卡片相互重叠: {defect.description}",
-                        priority=9
+                        priority=8,
+                        confidence=0.92,
+                        source="geometry_rule"
                     ))
                 elif action_type_str == "adjust_spacing":
                     eid_b = fix.get("element_id_b")
@@ -204,29 +230,11 @@ class VisualCritic:
                                 "x": suggested_x
                             },
                             reason=f"平移分离异常重叠图元: {defect.description}",
-                            priority=8
+                            priority=8,
+                            confidence=0.92,
+                            source="geometry_rule"
                         ))
                         handled_elements.add(eid_b)
-
-            # 3. Text Overflow (CRITICAL)
-            elif defect.defect_type == "text_overflow":
-                eid = fix.get("element_id")
-                suggested_h = fix.get("suggested_height")
-                suggested_font_sz = fix.get("suggested_font_size")
-                if eid and eid not in handled_elements:
-                    actions.append(FixAction(
-                        action_type=FixActionType.RESIZE_CONTAINER,
-                        category=DefectCategory.CRITICAL,
-                        target_ids=[eid],
-                        parameters={
-                            "element_id": eid,
-                            "height": suggested_h,
-                            "font_size": suggested_font_sz
-                        },
-                        reason=f"扩展容器避免文字裁剪溢出: {defect.description}",
-                        priority=7
-                    ))
-                    handled_elements.add(eid)
 
             # 4. Low Contrast (CRITICAL or STRUCTURAL based on severity)
             elif defect.defect_type == "low_contrast":
@@ -234,6 +242,8 @@ class VisualCritic:
                 font_color = fix.get("font_color", "#FFFFFF")
                 if eid and eid not in handled_elements:
                     cat = DefectCategory.CRITICAL if defect.severity == "critical" else DefectCategory.STRUCTURAL
+                    conf = 0.95 if cat == DefectCategory.CRITICAL else 0.75
+                    prio = 7 if cat == DefectCategory.CRITICAL else 4
                     actions.append(FixAction(
                         action_type=FixActionType.ENHANCE_CONTRAST,
                         category=cat,
@@ -243,7 +253,9 @@ class VisualCritic:
                             "font_color": font_color
                         },
                         reason=f"提升文字 WCAG 可读对比度: {defect.description}",
-                        priority=6 if cat == DefectCategory.CRITICAL else 3
+                        priority=prio,
+                        confidence=conf,
+                        source="geometry_rule"
                     ))
                     handled_elements.add(eid)
 
@@ -260,7 +272,9 @@ class VisualCritic:
                             "alignment": fix.get("align_type", "top")
                         },
                         reason=f"对齐规整几何卡片: {defect.description}",
-                        priority=2
+                        priority=2,
+                        confidence=0.65,
+                        source="geometry_rule"
                     ))
 
         # Sort actions by priority descending

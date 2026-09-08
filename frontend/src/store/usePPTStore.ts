@@ -1,5 +1,5 @@
 import { create } from 'zustand'
-import type { PresentationIR, SlideIR, ElementIR, ChatMessage } from '../types/ppt'
+import type { PresentationIR, SlideIR, ElementIR, ChatMessage, VisualRemediationEvent } from '../types/ppt'
 
 interface PPTState {
   presentation: PresentationIR | null
@@ -10,6 +10,7 @@ interface PPTState {
   wsConnected: boolean
   isAgentThinking: boolean
   thinkingStatus: string
+  visualRemediation: VisualRemediationEvent | null
   canUndo: boolean
   canRedo: boolean
   settingsOpen: boolean
@@ -60,6 +61,7 @@ export const usePPTStore = create<PPTState>((set, get) => ({
   wsConnected: false,
   isAgentThinking: false,
   thinkingStatus: '',
+  visualRemediation: null,
   canUndo: false,
   canRedo: false,
   settingsOpen: false,
@@ -179,20 +181,27 @@ export const usePPTStore = create<PPTState>((set, get) => ({
           set({ isAgentThinking: true, thinkingStatus: `执行工具: ${data.tool}...` })
         } else if (type === 'tool_completed') {
           set({ isAgentThinking: true, thinkingStatus: `工具完成: ${data.tool}` })
+        } else if (type === 'visual_remediation') {
+          set({
+            isAgentThinking: true,
+            thinkingStatus: data.text || '视觉排版自愈中...',
+            visualRemediation: data
+          })
         } else if (type === 'vision_loop') {
           set({ isAgentThinking: true, thinkingStatus: data.text || '视觉多模态校验中...' })
         } else if (type === 'agent_finished') {
-          set({ isAgentThinking: false, thinkingStatus: '' })
+          set({ isAgentThinking: false, thinkingStatus: '', visualRemediation: null })
           get().addMessage({
             id: `msg_${Date.now()}`,
             role: 'assistant',
             content: data.summary || '已根据要求完成修改。',
             timestamp: Date.now(),
             toolCalls: data.tools_executed,
-            visionCritique: data.vision_critique
+            visionCritique: data.vision_critique,
+            visualReview: data.visual_review
           })
         } else if (type === 'agent_error') {
-          set({ isAgentThinking: false, thinkingStatus: '' })
+          set({ isAgentThinking: false, thinkingStatus: '', visualRemediation: null })
           get().addMessage({
             id: `err_${Date.now()}`,
             role: 'assistant',

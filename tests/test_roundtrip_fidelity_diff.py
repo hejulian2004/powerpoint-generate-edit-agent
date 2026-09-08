@@ -374,8 +374,8 @@ def test_remediation_transaction_rollback_guard():
 
     # Slide must be completely restored to pre-modification state
     after_dump = pres.create_snapshot()
-    assert after_dump["slides"][0]["elements"][1]["x"] == initial_dump["slides"][0]["elements"][1]["x"]
-    assert after_dump["slides"][0]["elements"][1]["y"] == initial_dump["slides"][0]["elements"][1]["y"]
+    assert after_dump.slides[0].elements[1].x == initial_dump.slides[0].elements[1].x
+    assert after_dump.slides[0].elements[1].y == initial_dump.slides[0].elements[1].y
 
     current_score = LayoutDiffEngine.evaluate_slide(slide).score
     assert abs(current_score - initial_score) < 1e-4

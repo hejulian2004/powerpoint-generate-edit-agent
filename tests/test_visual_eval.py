@@ -16,6 +16,7 @@ from backend.ir.models import (
 from backend.eval.layout_diff import (
     BoundingBox,
     LayoutDiffEngine,
+    VisualQualityScore,
     calculate_relative_luminance,
     calculate_contrast_ratio,
     compare_slides
@@ -342,3 +343,38 @@ def test_langgraph_vision_critique_closed_loop():
         assert c_clipped.x + c_clipped.width <= 1280.0
 
     asyncio.run(_run())
+
+
+# =====================================================================
+# 9. Multidimensional Visual Quality Score Tests
+# =====================================================================
+
+def test_multidimensional_visual_quality_score_weights():
+    """Verify that VisualQualityScore breaks down into geometry 40%, readability 25%, contrast 15%, balance 20%."""
+    slide = SlideIR(id="score_slide", slide_num=1, width=1280, height=720)
+
+    # Clean slide: 100 on all dimensions
+    clean_report = LayoutDiffEngine.evaluate_slide(slide)
+    qs = clean_report.quality_score
+    assert qs.geometry == 100.0
+    assert qs.readability == 100.0
+    assert qs.contrast == 100.0
+    assert qs.balance == 100.0
+    assert qs.total == 100.0
+    assert clean_report.score == 100.0
+
+    # Introduce a viewport clipping defect (affects geometry dimension)
+    clip_elem = ShapeElementIR(id="clip_e", x=1250.0, y=100.0, width=100.0, height=100.0)
+    slide.add_element(clip_elem)
+
+    clip_report = LayoutDiffEngine.evaluate_slide(slide)
+    qs_clip = clip_report.quality_score
+    assert qs_clip.geometry < 100.0
+    assert qs_clip.readability == 100.0
+    assert qs_clip.contrast == 100.0
+    # Expected weighted composite: 0.40 * G + 0.25 * 100 + 0.15 * 100 + 0.20 * 100
+    expected_total = round(0.40 * qs_clip.geometry + 0.25 * 100.0 + 0.15 * 100.0 + 0.20 * 100.0, 1)
+    assert qs_clip.total == expected_total
+    assert clip_report.score == expected_total
+    assert "quality_score" in clip_report.to_dict()
+

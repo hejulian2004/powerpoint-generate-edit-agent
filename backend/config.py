@@ -33,5 +33,8 @@ class AppSettings(BaseModel):
     # Vision Loop toggle
     enable_vision_loop: bool = os.getenv("ENABLE_VISION_LOOP", "true").lower() == "true"
 
+    # Visual Self-Healing Auto-Fix Loop
+    max_visual_iterations: int = int(os.getenv("MAX_VISUAL_ITERATIONS", "3"))
+
 
 settings = AppSettings()

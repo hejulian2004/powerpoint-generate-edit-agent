@@ -16,6 +16,7 @@ Features in v2:
 
 from __future__ import annotations
 import copy
+from dataclasses import dataclass, field as dc_field
 from contextlib import contextmanager
 from typing import List, Dict, Any, Optional, Union, Literal, Generator
 from pydantic import BaseModel, Field, model_validator
@@ -479,13 +480,40 @@ class SlideIR(BaseModel):
         return grp.children
 
 
-class PresentationTransaction:
-    """Represents a transaction session on a PresentationIR with rollback capability."""
+@dataclass
+class PresentationSnapshot:
+    """Complete, isolated state snapshot of PresentationIR and history stack depth."""
+    id: str
+    title: str
+    width: int
+    height: int
+    theme: Dict[str, Any]
+    master: Optional[Dict[str, Any]]
+    slides: List[SlideIR]
+    active_slide_id: Optional[str]
+    version: int
+    assets: Dict[str, str]
+    asset_metadata: Dict[str, Any]
+    metadata: Dict[str, Any]
+    undo_stack_depth: Optional[int] = None
+    redo_stack_depth: Optional[int] = None
+    raw_dump: Optional[Dict[str, Any]] = None
 
-    def __init__(self, presentation: PresentationIR, name: str, snapshot: Dict[str, Any]):
+
+class PresentationTransaction:
+    """Represents an atomic transaction session on a PresentationIR with rollback capability."""
+
+    def __init__(
+        self,
+        presentation: PresentationIR,
+        name: str,
+        snapshot: Union[PresentationSnapshot, Dict[str, Any]],
+        history: Optional[Any] = None
+    ):
         self.presentation = presentation
         self.name = name
         self.snapshot = snapshot
+        self.history = history
         self.is_aborted: bool = False
         self.is_committed: bool = False
         self.rollback_reason: Optional[str] = None
@@ -494,11 +522,22 @@ class PresentationTransaction:
         """Explicitly abort and revert changes to pre-transaction snapshot."""
         self.is_aborted = True
         self.rollback_reason = reason
-        self.presentation.restore_snapshot(self.snapshot)
+        self.presentation.restore_snapshot(self.snapshot, history=self.history)
 
     def commit(self):
         """Mark transaction as committed successfully."""
         self.is_committed = True
+
+    def __enter__(self) -> PresentationTransaction:
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        if exc_type is not None:
+            self.rollback(reason=str(exc_val) if exc_val else "Exception during transaction")
+            return False
+        if self.is_aborted:
+            self.presentation.restore_snapshot(self.snapshot, history=self.history)
+        return False
 
 
 class PresentationIR(BaseModel):
@@ -541,50 +580,100 @@ class PresentationIR(BaseModel):
     asset_metadata: Dict[str, Any] = Field(default_factory=dict, description="asset_id -> {mime_type, width, height, hash}")
     metadata: Dict[str, Any] = Field(default_factory=dict, description="Custom metadata e.g. fix iterations, user preferences")
 
-    def create_snapshot(self) -> Dict[str, Any]:
-        """Creates a deep serializable snapshot of the current presentation state."""
-        return copy.deepcopy(self.model_dump())
+    def create_snapshot(self, history: Optional[Any] = None) -> PresentationSnapshot:
+        """Creates a deep isolated snapshot of the entire presentation state and history depth."""
+        return PresentationSnapshot(
+            id=self.id,
+            title=self.title,
+            width=self.width,
+            height=self.height,
+            theme=copy.deepcopy(self.theme),
+            master=copy.deepcopy(self.master),
+            slides=[copy.deepcopy(s) for s in self.slides],
+            active_slide_id=self.active_slide_id,
+            version=self.version,
+            assets=copy.deepcopy(self.assets),
+            asset_metadata=copy.deepcopy(self.asset_metadata),
+            metadata=copy.deepcopy(self.metadata),
+            undo_stack_depth=len(history.undo_stack) if (history is not None and hasattr(history, "undo_stack")) else None,
+            redo_stack_depth=len(history.redo_stack) if (history is not None and hasattr(history, "redo_stack")) else None,
+            raw_dump=copy.deepcopy(self.model_dump())
+        )
 
-    def restore_snapshot(self, snapshot: Dict[str, Any]) -> None:
+    def restore_snapshot(
+        self,
+        snapshot: Union[PresentationSnapshot, Dict[str, Any]],
+        history: Optional[Any] = None
+    ) -> None:
         """Restores presentation state entirely from snapshot, preserving slide references in-place."""
-        rebuilt = PresentationIR.model_validate(snapshot)
-        self.id = rebuilt.id
-        self.title = rebuilt.title
-        self.width = rebuilt.width
-        self.height = rebuilt.height
-        self.theme = rebuilt.theme
-        self.master = rebuilt.master
+        if isinstance(snapshot, dict):
+            rebuilt = PresentationIR.model_validate(snapshot)
+            snap_slides = rebuilt.slides
+            self.id = rebuilt.id
+            self.title = rebuilt.title
+            self.width = rebuilt.width
+            self.height = rebuilt.height
+            self.theme = rebuilt.theme
+            self.master = rebuilt.master
+            self.active_slide_id = rebuilt.active_slide_id
+            self.version = rebuilt.version
+            self.assets = rebuilt.assets
+            self.asset_metadata = rebuilt.asset_metadata
+            self.metadata = rebuilt.metadata
+            undo_depth = None
+            redo_depth = None
+        else:
+            snap_slides = snapshot.slides
+            self.id = snapshot.id
+            self.title = snapshot.title
+            self.width = snapshot.width
+            self.height = snapshot.height
+            self.theme = copy.deepcopy(snapshot.theme)
+            self.master = copy.deepcopy(snapshot.master)
+            self.active_slide_id = snapshot.active_slide_id
+            self.version = snapshot.version
+            self.assets = copy.deepcopy(snapshot.assets)
+            self.asset_metadata = copy.deepcopy(snapshot.asset_metadata)
+            self.metadata = copy.deepcopy(snapshot.metadata)
+            undo_depth = snapshot.undo_stack_depth
+            redo_depth = snapshot.redo_stack_depth
 
         # In-place slide state update to keep active references valid
         slide_map = {s.id: s for s in self.slides}
         updated_slides = []
-        for new_s in rebuilt.slides:
+        for new_s in snap_slides:
             if new_s.id in slide_map:
                 old_s = slide_map[new_s.id]
                 for f_name in SlideIR.model_fields.keys():
-                    setattr(old_s, f_name, getattr(new_s, f_name))
+                    setattr(old_s, f_name, copy.deepcopy(getattr(new_s, f_name)))
                 updated_slides.append(old_s)
             else:
-                updated_slides.append(new_s)
+                updated_slides.append(copy.deepcopy(new_s))
 
         self.slides = updated_slides
-        self.active_slide_id = rebuilt.active_slide_id
-        self.version = rebuilt.version
-        self.assets = rebuilt.assets
-        self.asset_metadata = rebuilt.asset_metadata
-        self.metadata = rebuilt.metadata
+
+        # Rollback history stacks if history manager is provided
+        if history is not None and hasattr(history, "undo_stack"):
+            if undo_depth is not None and len(history.undo_stack) > undo_depth:
+                del history.undo_stack[undo_depth:]
+            if redo_depth is not None and len(history.redo_stack) > redo_depth:
+                del history.redo_stack[redo_depth:]
 
     @contextmanager
-    def transaction(self, name: str = "transaction") -> Generator[PresentationTransaction, None, None]:
+    def transaction(
+        self,
+        name: str = "transaction",
+        history: Optional[Any] = None
+    ) -> Generator[PresentationTransaction, None, None]:
         """Context manager providing atomicity, commit, and rollback capabilities."""
-        snapshot = self.create_snapshot()
-        tx = PresentationTransaction(self, name, snapshot)
+        snapshot = self.create_snapshot(history=history)
+        tx = PresentationTransaction(self, name, snapshot, history=history)
         try:
             yield tx
             if tx.is_aborted:
-                self.restore_snapshot(snapshot)
+                self.restore_snapshot(snapshot, history=history)
         except Exception:
-            self.restore_snapshot(snapshot)
+            self.restore_snapshot(snapshot, history=history)
             raise
 
     def get_slide(self, slide_id_or_num: Union[str, int]) -> Optional[SlideIR]:
