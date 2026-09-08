@@ -67,8 +67,8 @@ def generate_patches_for_issues(
             req_h = float(evidence.get("required_height", element.geometry.height * 1.5))
             act_h = float(evidence.get("actual_height", element.geometry.height))
 
-            # If severe overflow (>1.5x), calculate proportional font reduction directly
-            if req_h > act_h * 1.5 and curr_fs > 10.0:
+            # Guard against zero or negative values in evidence
+            if req_h > 0 and act_h > 0 and req_h > act_h * 1.5 and curr_fs > 10.0:
                 prop_fs = max(8.0, curr_fs * (act_h / req_h) * 1.1)
                 patches.append(
                     LayoutPatch(
@@ -90,8 +90,10 @@ def generate_patches_for_issues(
                     )
                 )
             else:
-                # If font size is already small, expand box height
-                max_allowed_h = max(act_h * 1.3, min(req_h * 1.15, layout_spec.canvas.height - element.geometry.y - 20.0))
+                # If font size is already small, expand box height cleanly within canvas bounds
+                max_canvas_h = max(act_h, layout_spec.canvas.height - element.geometry.y - 20.0)
+                desired_h = max(act_h * 1.3, req_h * 1.15)
+                max_allowed_h = min(desired_h, max_canvas_h)
                 patches.append(
                     LayoutPatch(
                         slide_id=layout_spec.slide_id,
@@ -137,20 +139,31 @@ def generate_patches_for_issues(
             other_id = evidence.get("element_b") if evidence.get("element_a") == target_id else evidence.get("element_a")
             other_el = layout_spec.get_element(other_id) if other_id else None
 
+            canvas_w = layout_spec.canvas.width
+            canvas_h = layout_spec.canvas.height
+            margin = 20.0
+
             if inter_w < inter_h:
                 # Minimal separation along horizontal axis
                 if other_el and element.geometry.center_x < other_el.geometry.center_x:
-                    dx = -(inter_w + 8.0)
+                    desired_dx = -(inter_w + 8.0)
+                    # Clamp so element doesn't go below left margin
+                    dx = max(desired_dx, margin - element.geometry.x)
                 else:
-                    dx = (inter_w + 8.0)
+                    desired_dx = (inter_w + 8.0)
+                    # Clamp so element doesn't exceed right canvas bound
+                    dx = min(desired_dx, (canvas_w - margin) - element.geometry.right)
                 dy = 0.0
             else:
                 # Minimal separation along vertical axis
                 if other_el and element.geometry.center_y < other_el.geometry.center_y:
-                    # Move upward only if there is sufficient top margin, else downward
-                    dy = -(inter_h + 8.0) if element.geometry.y > (inter_h + 30.0) else (inter_h + 8.0)
+                    desired_dy = -(inter_h + 8.0)
+                    # Move upward clamped to top margin
+                    dy = max(desired_dy, margin - element.geometry.y)
                 else:
-                    dy = (inter_h + 8.0)
+                    desired_dy = (inter_h + 8.0)
+                    # Clamp so element doesn't exceed bottom canvas bound
+                    dy = min(desired_dy, (canvas_h - margin) - element.geometry.bottom)
                 dx = 0.0
 
             patches.append(
@@ -168,28 +181,32 @@ def generate_patches_for_issues(
             if element.element_type == ElementType.FIGURE:
                 curr_ratio = element.geometry.aspect_ratio
                 if curr_ratio > 4.5:
-                    # Excessively wide -> expand height to normalize
+                    # Excessively wide -> expand height cleanly within canvas bounds
                     target_ratio = 16.0 / 9.0
-                    new_h = min(element.geometry.width / target_ratio, layout_spec.canvas.height - element.geometry.y - 20.0)
+                    max_canvas_h = max(element.geometry.height, layout_spec.canvas.height - element.geometry.y - 20.0)
+                    desired_h = max(element.geometry.height * 1.3, element.geometry.width / target_ratio)
+                    new_h = min(desired_h, max_canvas_h)
                     patches.append(
                         LayoutPatch(
                             slide_id=layout_spec.slide_id,
                             target_element=target_id,
                             operation=PatchOperation.RESIZE,
-                            parameters={"height": round(max(element.geometry.height * 1.3, new_h), 1)},
+                            parameters={"height": round(new_h, 1)},
                             description=f"Increase height of wide figure '{target_id}'",
                         )
                     )
-                else:
-                    # Excessively tall -> expand width to normalize
+                elif curr_ratio < 0.25:
+                    # Excessively tall -> expand width cleanly within canvas bounds
                     target_ratio = 4.0 / 3.0
-                    new_w = min(element.geometry.height * target_ratio, layout_spec.canvas.width - element.geometry.x - 20.0)
+                    max_canvas_w = max(element.geometry.width, layout_spec.canvas.width - element.geometry.x - 20.0)
+                    desired_w = max(element.geometry.width * 1.3, element.geometry.height * target_ratio)
+                    new_w = min(desired_w, max_canvas_w)
                     patches.append(
                         LayoutPatch(
                             slide_id=layout_spec.slide_id,
                             target_element=target_id,
                             operation=PatchOperation.RESIZE,
-                            parameters={"width": round(max(element.geometry.width * 1.3, new_w), 1)},
+                            parameters={"width": round(new_w, 1)},
                             description=f"Increase width of tall figure '{target_id}'",
                         )
                     )

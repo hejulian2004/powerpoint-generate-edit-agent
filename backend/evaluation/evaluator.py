@@ -193,6 +193,7 @@ class RuleBasedEvaluator(VisualEvaluator):
                     box_width=geo.width,
                     font_size=font_size,
                     padding=padding,
+                    char_width_ratio=self.char_width_ratio,
                 )
 
                 line_h = font_size * 1.25

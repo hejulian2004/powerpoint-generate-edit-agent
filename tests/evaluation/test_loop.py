@@ -340,3 +340,85 @@ def test_severe_text_overflow_proportional_reduction() -> None:
     assert patches[0].parameters["font_size"] <= 12.0
 
 
+def test_overlap_shift_left_and_top_margins_clamped() -> None:
+    """Verify that shifting overlapping elements never pushes them into negative coordinates."""
+    from backend.evaluation.repair import generate_patches_for_issues
+
+    slide = LayoutSpec(
+        slide_id="slide_edge_overlap",
+        slide_index=1,
+        visual_intent=VisualIntent.TWO_COLUMN_CONTRAST,
+        canvas=Canvas(width=1280, height=720),
+        elements=[
+            LayoutElement(
+                element_id="left_edge_el",
+                element_type=ElementType.TEXT,
+                geometry=Rect(x=10.0, y=10.0, width=200, height=200),
+                content="Edge Left",
+            ),
+            LayoutElement(
+                element_id="right_el",
+                element_type=ElementType.TEXT,
+                geometry=Rect(x=150.0, y=10.0, width=200, height=200),
+                content="Edge Right",
+            ),
+        ],
+    )
+
+    issue = VisualIssue(
+        slide="slide_edge_overlap",
+        issue=IssueType.OVERLAP,
+        element="left_edge_el",
+        description="Collision near left margin",
+        evidence={
+            "element_a": "left_edge_el",
+            "element_b": "right_el",
+            "intersection": {"width": 60.0, "height": 200.0},
+        },
+    )
+
+    patches = generate_patches_for_issues([issue], slide)
+    assert len(patches) == 1
+    # Desired shift would be -(60 + 8) = -68, which from x=10 would be x=-58
+    # Clamped to margin - x = 20 - 10 = +10, so x + dx >= 20.0
+    dx = patches[0].parameters["dx"]
+    assert 10.0 + dx >= 20.0
+
+
+def test_resize_height_clamp_at_bottom_margin() -> None:
+    """Verify expanding height near canvas bottom never pushes element outside canvas."""
+    from backend.evaluation.repair import generate_patches_for_issues
+
+    slide = LayoutSpec(
+        slide_id="slide_bottom_edge",
+        slide_index=1,
+        visual_intent=VisualIntent.KEY_TAKEAWAY_LIST,
+        canvas=Canvas(width=1280, height=720),
+        elements=[
+            LayoutElement(
+                element_id="bottom_box",
+                element_type=ElementType.TEXT,
+                geometry=Rect(x=100.0, y=650.0, width=500.0, height=40.0),
+                style=ElementStyle(text=TextStyle(font_size=8.0)),  # already small, will trigger height expansion
+                content="Bottom overflow",
+            )
+        ],
+    )
+
+    issue = VisualIssue(
+        slide="slide_bottom_edge",
+        issue=IssueType.TEXT_OVERFLOW,
+        element="bottom_box",
+        description="Overflow near bottom edge",
+        evidence={"required_height": 100.0, "actual_height": 40.0},
+    )
+
+    patches = generate_patches_for_issues([issue], slide)
+    assert len(patches) == 1
+    assert patches[0].operation.value == "RESIZE"
+    # Canvas height is 720, y is 650, margin is 20 -> max allowed height is 720 - 650 - 20 = 50
+    new_h = patches[0].parameters["height"]
+    assert 650.0 + new_h <= 700.0
+
+
+
