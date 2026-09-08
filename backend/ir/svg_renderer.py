@@ -12,7 +12,7 @@ import math
 from typing import List, Dict, Any, Optional
 from .models import (
     SlideIR, ElementIR, ShapeElementIR, TextElementIR, ConnectorElementIR,
-    ImageElementIR, TableElementIR, ElementStyleIR, FillStyle, BorderStyle,
+    ImageElementIR, TableElementIR, GroupElementIR, ElementStyleIR, FillStyle, BorderStyle,
     ShadowStyle, TextContentIR, ParagraphIR
 )
 
@@ -104,6 +104,15 @@ class SVGRenderer:
                 text_svg = cls._render_text(elem.text_content, elem.x, elem.y, elem.width, elem.height, elem.style.padding)
 
             return f'<g id="{elem.id}"{transform}{opacity_attr}>{shape_geom}{text_svg}</g>'
+
+        elif isinstance(elem, GroupElementIR):
+            child_svgs = []
+            for child in elem.children:
+                c_svg = cls._render_element(child, defs)
+                if c_svg:
+                    child_svgs.append(c_svg)
+            inner = "\n".join(child_svgs)
+            return f'<g id="{elem.id}" class="group-container"{transform}{opacity_attr}>\n{inner}\n</g>'
 
         return ""
 

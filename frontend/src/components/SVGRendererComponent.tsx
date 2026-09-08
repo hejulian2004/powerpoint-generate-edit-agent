@@ -1,6 +1,6 @@
 import type {
-  SlideIR, ShapeElementIR, TextElementIR,
-  ConnectorElementIR, ImageElementIR, FillStyle, BorderStyle
+  SlideIR, ElementIR, ShapeElementIR, TextElementIR,
+  ConnectorElementIR, ImageElementIR, GroupElementIR, FillStyle, BorderStyle
 } from '../types/ppt'
 import { usePPTStore } from '../store/usePPTStore'
 
@@ -58,20 +58,26 @@ export const SVGRendererComponent: React.FC<Props> = ({
       </filter>
     ]
 
-    // Scan for gradients in background and elements
+    // Scan for gradients in background and elements recursively
     if (slide.background.type === 'gradient' && slide.background.gradient) {
       defs.push(
         renderLinearGradient(`bg-grad-${slide.id}`, slide.background.gradient)
       )
     }
 
-    slide.elements.forEach((elem) => {
-      if (elem.style.fill?.type === 'gradient' && elem.style.fill.gradient) {
-        defs.push(
-          renderLinearGradient(`grad-${elem.id}`, elem.style.fill.gradient)
-        )
-      }
-    })
+    const collectGradients = (elements: ElementIR[]) => {
+      elements.forEach((elem) => {
+        if (elem.style?.fill?.type === 'gradient' && elem.style.fill.gradient) {
+          defs.push(
+            renderLinearGradient(`grad-${elem.id}`, elem.style.fill.gradient)
+          )
+        }
+        if (elem.type === 'group' && (elem as GroupElementIR).children) {
+          collectGradients((elem as GroupElementIR).children)
+        }
+      })
+    }
+    collectGradients(slide.elements)
 
     return <defs>{defs}</defs>
   }
@@ -265,6 +271,158 @@ export const SVGRendererComponent: React.FC<Props> = ({
     )
   }
 
+  const renderElementNode = (elem: ElementIR) => {
+    const isSelected = !isThumbnail && selectedElementId === elem.id
+    const transform = elem.rotation ? `rotate(${elem.rotation} ${elem.x + elem.width / 2} ${elem.y + elem.height / 2})` : undefined
+
+    return (
+      <g
+        key={elem.id}
+        id={elem.id}
+        transform={transform}
+        opacity={elem.style.opacity ?? 1.0}
+        className={!isThumbnail ? 'cursor-move' : undefined}
+        onMouseDown={(e) => {
+          if (!isThumbnail) {
+            e.stopPropagation()
+            setSelectedElementId(elem.id)
+            onElementMouseDown?.(elem.id, e)
+          }
+        }}
+      >
+        {elem.type === 'connector' && renderConnector(elem as ConnectorElementIR)}
+
+        {elem.type === 'image' && (
+          <image
+            href={(elem as ImageElementIR).src}
+            x={elem.x}
+            y={elem.y}
+            width={elem.width}
+            height={elem.height}
+            preserveAspectRatio="xMidYMid meet"
+          />
+        )}
+
+        {elem.type === 'shape' && (
+          <>
+            {renderShapeGeometry(elem as ShapeElementIR)}
+            {(elem as ShapeElementIR).text_content &&
+              renderTextContent(
+                (elem as ShapeElementIR).text_content,
+                elem.x,
+                elem.y,
+                elem.width,
+                elem.height,
+                elem.style.padding
+              )}
+          </>
+        )}
+
+        {elem.type === 'text' && (
+          <>
+            {/* Background / border for text box */}
+            {(elem.style.fill?.type !== 'none' || elem.style.border?.style !== 'none') && (
+              <rect
+                x={elem.x}
+                y={elem.y}
+                width={elem.width}
+                height={elem.height}
+                fill={getFillValue(elem.style.fill, elem.id)}
+                {...getStrokeProps(elem.style.border)}
+              />
+            )}
+            {renderTextContent(
+              (elem as TextElementIR).text_content,
+              elem.x,
+              elem.y,
+              elem.width,
+              elem.height,
+              elem.style.padding
+            )}
+          </>
+        )}
+
+        {elem.type === 'group' && (
+          <g id={`group-content-${elem.id}`} className="group-container">
+            {(elem as GroupElementIR).children?.map((child) => renderElementNode(child))}
+          </g>
+        )}
+
+        {/* Precision Architectural Selection Frame & Interactive Resize Handles */}
+        {isSelected && !isThumbnail && (
+          <g>
+            {/* Continuous Hairline Bounding Stroke */}
+            <rect
+              x={elem.x - 1.5}
+              y={elem.y - 1.5}
+              width={elem.width + 3}
+              height={elem.height + 3}
+              fill="none"
+              stroke="#F1F2F6"
+              strokeWidth="1.2"
+              strokeDasharray="4,2"
+              pointerEvents="none"
+            />
+
+            {/* 8 Interactive Resize Handles */}
+            {[
+              { id: 'nw', cx: elem.x, cy: elem.y, cursor: 'nwse-resize' },
+              { id: 'n', cx: elem.x + elem.width / 2, cy: elem.y, cursor: 'ns-resize' },
+              { id: 'ne', cx: elem.x + elem.width, cy: elem.y, cursor: 'nesw-resize' },
+              { id: 'e', cx: elem.x + elem.width, cy: elem.y + elem.height / 2, cursor: 'ew-resize' },
+              { id: 'se', cx: elem.x + elem.width, cy: elem.y + elem.height, cursor: 'nwse-resize' },
+              { id: 's', cx: elem.x + elem.width / 2, cy: elem.y + elem.height, cursor: 'ns-resize' },
+              { id: 'sw', cx: elem.x, cy: elem.y + elem.height, cursor: 'nesw-resize' },
+              { id: 'w', cx: elem.x, cy: elem.y + elem.height / 2, cursor: 'ew-resize' },
+            ].map((h) => (
+              <rect
+                key={h.id}
+                x={h.cx - 4.5}
+                y={h.cy - 4.5}
+                width={9}
+                height={9}
+                rx={2}
+                fill="#FFFFFF"
+                stroke="#0D0E13"
+                strokeWidth={1.5}
+                style={{ cursor: h.cursor }}
+                onMouseDown={(e) => {
+                  e.stopPropagation()
+                  onResizeHandleMouseDown?.(h.id as any, e)
+                }}
+              />
+            ))}
+
+            {/* Dimension & Coordinates Tooltip Pill */}
+            <g pointerEvents="none">
+              <rect
+                x={elem.x}
+                y={elem.y - 24}
+                width={112}
+                height={18}
+                rx={4}
+                fill="#12131B"
+                stroke="#2E3244"
+                strokeWidth={1}
+              />
+              <text
+                x={elem.x + 56}
+                y={elem.y - 11}
+                textAnchor="middle"
+                fill="#E2E5F0"
+                fontSize="10px"
+                fontFamily="'JetBrains Mono', 'SF Mono', Consolas, monospace"
+                fontWeight="500"
+              >
+                {Math.round(elem.width)} × {Math.round(elem.height)} px
+              </text>
+            </g>
+          </g>
+        )}
+      </g>
+    )
+  }
+
   return (
     <svg
       viewBox={`0 0 ${slide.width} ${slide.height}`}
@@ -284,151 +442,7 @@ export const SVGRendererComponent: React.FC<Props> = ({
       />
 
       {/* Elements in z-index order */}
-      {slide.elements.map((elem) => {
-        const isSelected = !isThumbnail && selectedElementId === elem.id
-        const transform = elem.rotation ? `rotate(${elem.rotation} ${elem.x + elem.width / 2} ${elem.y + elem.height / 2})` : undefined
-
-        return (
-          <g
-            key={elem.id}
-            id={elem.id}
-            transform={transform}
-            opacity={elem.style.opacity ?? 1.0}
-            className={!isThumbnail ? 'cursor-move' : undefined}
-            onMouseDown={(e) => {
-              if (!isThumbnail) {
-                e.stopPropagation()
-                setSelectedElementId(elem.id)
-                onElementMouseDown?.(elem.id, e)
-              }
-            }}
-          >
-            {elem.type === 'connector' && renderConnector(elem as ConnectorElementIR)}
-
-            {elem.type === 'image' && (
-              <image
-                href={(elem as ImageElementIR).src}
-                x={elem.x}
-                y={elem.y}
-                width={elem.width}
-                height={elem.height}
-                preserveAspectRatio="xMidYMid meet"
-              />
-            )}
-
-            {elem.type === 'shape' && (
-              <>
-                {renderShapeGeometry(elem as ShapeElementIR)}
-                {(elem as ShapeElementIR).text_content &&
-                  renderTextContent(
-                    (elem as ShapeElementIR).text_content,
-                    elem.x,
-                    elem.y,
-                    elem.width,
-                    elem.height,
-                    elem.style.padding
-                  )}
-              </>
-            )}
-
-            {elem.type === 'text' && (
-              <>
-                {/* Background / border for text box */}
-                {(elem.style.fill?.type !== 'none' || elem.style.border?.style !== 'none') && (
-                  <rect
-                    x={elem.x}
-                    y={elem.y}
-                    width={elem.width}
-                    height={elem.height}
-                    fill={getFillValue(elem.style.fill, elem.id)}
-                    {...getStrokeProps(elem.style.border)}
-                  />
-                )}
-                {renderTextContent(
-                  (elem as TextElementIR).text_content,
-                  elem.x,
-                  elem.y,
-                  elem.width,
-                  elem.height,
-                  elem.style.padding
-                )}
-              </>
-            )}
-
-            {/* Precision Architectural Selection Frame & Interactive Resize Handles */}
-            {isSelected && !isThumbnail && (
-              <g>
-                {/* Continuous Hairline Bounding Stroke */}
-                <rect
-                  x={elem.x - 1.5}
-                  y={elem.y - 1.5}
-                  width={elem.width + 3}
-                  height={elem.height + 3}
-                  fill="none"
-                  stroke="#F1F2F6"
-                  strokeWidth="1.2"
-                  strokeDasharray="4,2"
-                  pointerEvents="none"
-                />
-
-                {/* 8 Interactive Resize Handles */}
-                {[
-                  { id: 'nw', cx: elem.x, cy: elem.y, cursor: 'nwse-resize' },
-                  { id: 'n', cx: elem.x + elem.width / 2, cy: elem.y, cursor: 'ns-resize' },
-                  { id: 'ne', cx: elem.x + elem.width, cy: elem.y, cursor: 'nesw-resize' },
-                  { id: 'e', cx: elem.x + elem.width, cy: elem.y + elem.height / 2, cursor: 'ew-resize' },
-                  { id: 'se', cx: elem.x + elem.width, cy: elem.y + elem.height, cursor: 'nwse-resize' },
-                  { id: 's', cx: elem.x + elem.width / 2, cy: elem.y + elem.height, cursor: 'ns-resize' },
-                  { id: 'sw', cx: elem.x, cy: elem.y + elem.height, cursor: 'nesw-resize' },
-                  { id: 'w', cx: elem.x, cy: elem.y + elem.height / 2, cursor: 'ew-resize' },
-                ].map((h) => (
-                  <rect
-                    key={h.id}
-                    x={h.cx - 4.5}
-                    y={h.cy - 4.5}
-                    width={9}
-                    height={9}
-                    rx={2}
-                    fill="#FFFFFF"
-                    stroke="#0D0E13"
-                    strokeWidth={1.5}
-                    style={{ cursor: h.cursor }}
-                    onMouseDown={(e) => {
-                      e.stopPropagation()
-                      onResizeHandleMouseDown?.(h.id as any, e)
-                    }}
-                  />
-                ))}
-
-                {/* Dimension & Coordinates Tooltip Pill */}
-                <g pointerEvents="none">
-                  <rect
-                    x={elem.x}
-                    y={elem.y - 24}
-                    width={112}
-                    height={18}
-                    rx={4}
-                    fill="#12131B"
-                    stroke="#2E3244"
-                    strokeWidth={1}
-                  />
-                  <text
-                    x={elem.x + 56}
-                    y={elem.y - 11}
-                    textAnchor="middle"
-                    fill="#E2E5F0"
-                    fontSize="10px"
-                    fontFamily="'JetBrains Mono', 'SF Mono', Consolas, monospace"
-                    fontWeight="500"
-                  >
-                    {Math.round(elem.width)} × {Math.round(elem.height)} px
-                  </text>
-                </g>
-              </g>
-            )}
-          </g>
-        )
-      })}
+      {slide.elements.map((elem) => renderElementNode(elem))}
     </svg>
   )
 }

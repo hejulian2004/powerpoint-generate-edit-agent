@@ -28,6 +28,7 @@ from pptx_agent_converter.model.text import (
 from .models import (
     PresentationIR, SlideIR, ElementIR,
     ShapeElementIR, TextElementIR, ConnectorElementIR, ImageElementIR, TableElementIR,
+    GroupElementIR, TransformIR,
     ElementStyleIR, FillStyle, BorderStyle, ShadowStyle, GradientFill, GradientStop,
     TextContentIR, ParagraphIR, RunIR, FontIR
 )
@@ -139,12 +140,9 @@ class PPTIRConverter:
 
         elements_ir: List[ElementIR] = []
         for el in slide.elements:
-            if isinstance(el, GroupElement):
-                cls._flatten_group_to_ir(el, elements_ir, scale_x, scale_y, report=report)
-            else:
-                ir_el = cls.element_to_ir(el, scale_x, scale_y, report=report)
-                if ir_el:
-                    elements_ir.append(ir_el)
+            ir_el = cls.element_to_ir(el, scale_x, scale_y, report=report)
+            if ir_el:
+                elements_ir.append(ir_el)
 
         bg_style = FillStyle(type="solid", color="#FFFFFF", alpha=1.0)
         if slide.background:
@@ -204,6 +202,10 @@ class PPTIRConverter:
                 start_y=sy,
                 end_x=ex,
                 end_y=ey,
+                start_shape_id=getattr(elem, "start_shape_id", None),
+                end_shape_id=getattr(elem, "end_shape_id", None),
+                start_site_index=getattr(elem, "start_site_index", None),
+                end_site_index=getattr(elem, "end_site_index", None),
                 arrow_start=elem.arrow_start if elem.arrow_start in ["none", "triangle", "stealth", "oval"] else "none",
                 arrow_end=elem.arrow_end if elem.arrow_end in ["none", "triangle", "stealth", "oval"] else "triangle",
                 line_type=elem.connector_type if elem.connector_type in ["straight", "elbow", "curved"] else "straight",
@@ -243,6 +245,9 @@ class PPTIRConverter:
             if elem.text and elem.text.content:
                 text_content = cls._text_block_to_ir(elem.text)
 
+            flip_h = getattr(elem, "flip_h", False)
+            flip_v = getattr(elem, "flip_v", False)
+
             # Distinguish pure textbox vs shape
             if elem.shape_type in ["textbox", "text"] or (not fill and not border and text_content):
                 res = TextElementIR(
@@ -266,6 +271,9 @@ class PPTIRConverter:
                     width=w,
                     height=h,
                     rotation=elem.rotation,
+                    flip_h=flip_h,
+                    flip_v=flip_v,
+                    adjust_values=getattr(elem, "adjust_values", {}),
                     text_content=text_content,
                     style=ElementStyleIR(
                         fill=fill,
@@ -276,10 +284,42 @@ class PPTIRConverter:
                 )
 
         elif isinstance(elem, GroupElement):
-            # Flatten group elements for simple IR manipulation without double-counting
-            children: List[ElementIR] = []
-            cls._flatten_group_to_ir(elem, children, scale_x, scale_y, report=report)
-            return children[0] if children else None
+            # Native Slide IR v2 hierarchical group representation
+            pos = getattr(elem, "position", None)
+            x = round(pos.x * scale_x, 2) if pos else 0.0
+            y = round(pos.y * scale_y, 2) if pos else 0.0
+            w = round(pos.width * scale_x, 2) if pos else 0.0
+            h = round(pos.height * scale_y, 2) if pos else 0.0
+
+            children_ir: List[ElementIR] = []
+            for child in elem.elements:
+                c_ir = cls.element_to_ir(child, scale_x, scale_y, report=report)
+                if c_ir:
+                    children_ir.append(c_ir)
+
+            # If group bounding box is empty, default (0, 0, 1, 1), or pos is None, compute from children
+            if children_ir:
+                min_x = min(c.x for c in children_ir)
+                min_y = min(c.y for c in children_ir)
+                max_x = max(c.x + c.width for c in children_ir)
+                max_y = max(c.y + c.height for c in children_ir)
+                is_default_pos = (pos is None) or (pos.x == 0.0 and pos.y == 0.0 and pos.width <= 1.0 and pos.height <= 1.0)
+                if is_default_pos or w <= 0 or h <= 0:
+                    x = min_x
+                    y = min_y
+                    w = max(max_x - min_x, 1.0)
+                    h = max(max_y - min_y, 1.0)
+
+            res = GroupElementIR(
+                id=elem.id or f"grp_{uuid_short()}",
+                name=elem.name or "Group",
+                x=x,
+                y=y,
+                width=w,
+                height=h,
+                children=children_ir,
+                style=ElementStyleIR()
+            )
 
         else:
             if report is not None:
@@ -289,7 +329,7 @@ class PPTIRConverter:
             return None
 
         if res is not None:
-            if report is not None:
+            if report is not None and not isinstance(elem, GroupElement):
                 report.converted_elements += 1
             return res
 
@@ -414,13 +454,23 @@ class PPTIRConverter:
         res: Optional[Any] = None
 
         if isinstance(el, ConnectorElementIR):
+            ln = cls._ir_to_line(el.style.border) if el.style.border else Line()
+            if el.arrow_end and el.arrow_end != "none":
+                ln.arrow_end = el.arrow_end
+            if el.arrow_start and el.arrow_start != "none":
+                ln.arrow_start = el.arrow_start
+
             res = ConnectorElement(
                 id=el.id,
                 name=el.name or "Connector",
                 connector_type=el.line_type,
                 start=(el.start_x / scale_x, el.start_y / scale_y),
                 end=(el.end_x / scale_x, el.end_y / scale_y),
-                line=cls._ir_to_line(el.style.border) if el.style.border else Line(),
+                start_shape_id=el.start_shape_id,
+                end_shape_id=el.end_shape_id,
+                start_site_index=el.start_site_index,
+                end_site_index=el.end_site_index,
+                line=ln,
                 arrow_start=el.arrow_start if el.arrow_start != "none" else None,
                 arrow_end=el.arrow_end if el.arrow_end != "none" else None
             )
@@ -442,6 +492,8 @@ class PPTIRConverter:
 
         elif isinstance(elem := el, TextElementIR):
             text_block = cls._ir_to_text_block(elem.text_content)
+            flip_h = getattr(elem, "flip_h", False) or (elem.transform.flip_h if elem.transform else False)
+            flip_v = getattr(elem, "flip_v", False) or (elem.transform.flip_v if elem.transform else False)
             res = ShapeElement(
                 id=elem.id,
                 name=elem.name or "TextBox",
@@ -453,6 +505,8 @@ class PPTIRConverter:
                     height=elem.height / scale_y
                 ),
                 rotation=elem.rotation,
+                flip_h=flip_h,
+                flip_v=flip_v,
                 fill=cls._ir_to_fill(elem.style.fill) if elem.style.fill else Fill(type="none"),
                 line=cls._ir_to_line(elem.style.border) if elem.style.border else None,
                 shadow=cls._ir_to_shadow(elem.style.shadow) if elem.style.shadow else None,
@@ -461,6 +515,8 @@ class PPTIRConverter:
 
         elif isinstance(elem := el, ShapeElementIR):
             text_block = cls._ir_to_text_block(elem.text_content) if elem.text_content else None
+            flip_h = getattr(elem, "flip_h", False) or (elem.transform.flip_h if elem.transform else False)
+            flip_v = getattr(elem, "flip_v", False) or (elem.transform.flip_v if elem.transform else False)
             res = ShapeElement(
                 id=elem.id,
                 name=elem.name or "Shape",
@@ -472,11 +528,33 @@ class PPTIRConverter:
                     height=elem.height / scale_y
                 ),
                 rotation=elem.rotation,
+                flip_h=flip_h,
+                flip_v=flip_v,
                 fill=cls._ir_to_fill(elem.style.fill) if elem.style.fill else Fill(type="solid", color="#3B82F6"),
                 line=cls._ir_to_line(elem.style.border) if elem.style.border else None,
                 shadow=cls._ir_to_shadow(elem.style.shadow) if elem.style.shadow else None,
                 radius=elem.style.radius if elem.style.radius > 0 else None,
+                adjust_values=elem.adjust_values,
                 text=text_block
+            )
+
+        elif isinstance(elem := el, GroupElementIR):
+            child_ooxml_elements = []
+            for child_ir in elem.children:
+                c_elem = cls.ir_to_element(child_ir, scale_x, scale_y, report=report)
+                if c_elem:
+                    child_ooxml_elements.append(c_elem)
+
+            res = GroupElement(
+                id=elem.id,
+                name=elem.name or "Group",
+                position=Position(
+                    x=elem.x / scale_x,
+                    y=elem.y / scale_y,
+                    width=elem.width / scale_x,
+                    height=elem.height / scale_y
+                ),
+                elements=child_ooxml_elements
             )
 
         else:
@@ -486,7 +564,7 @@ class PPTIRConverter:
             return None
 
         if res is not None:
-            if report is not None:
+            if report is not None and not isinstance(el, GroupElementIR):
                 report.converted_elements += 1
             return res
 
@@ -605,12 +683,16 @@ class PPTIRConverter:
                         color=r.font.color or "#1E293B",
                         bold=r.font.bold,
                         italic=r.font.italic,
-                        underline=r.font.underline
+                        underline=r.font.underline,
+                        strikethrough=getattr(r.font, "strike", False)
                     )
                 runs.append(RunIR(text=r.text, font=font_ir))
             paras.append(ParagraphIR(
                 align=p.style.align if p.style.align in ["left", "center", "right", "justify"] else "left",
                 line_spacing=p.style.line_spacing or 1.2,
+                space_before=p.style.space_before or 0.0,
+                space_after=p.style.space_after or 0.0,
+                bullet=p.bullet,
                 runs=runs
             ))
         return TextContentIR(paragraphs=paras)
@@ -621,7 +703,6 @@ class PPTIRConverter:
         for p_ir in tc_ir.paragraphs:
             runs: List[OOXMLRun] = []
             for r_ir in p_ir.runs:
-                font = None
                 if r_ir.font:
                     font = OOXMLFont(
                         name=r_ir.font.name,
@@ -629,15 +710,21 @@ class PPTIRConverter:
                         color=r_ir.font.color,
                         bold=r_ir.font.bold,
                         italic=r_ir.font.italic,
-                        underline=r_ir.font.underline
+                        underline=r_ir.font.underline,
+                        strike=r_ir.font.strikethrough
                     )
+                else:
+                    font = OOXMLFont(name="Segoe UI", size=14.0, color="#000000")
                 runs.append(OOXMLRun(text=r_ir.text, font=font))
             paras.append(OOXMLParagraph(
                 runs=runs,
                 style=ParagraphStyle(
                     align=p_ir.align,
-                    line_spacing=p_ir.line_spacing
-                )
+                    line_spacing=p_ir.line_spacing,
+                    space_before=p_ir.space_before if p_ir.space_before > 0 else None,
+                    space_after=p_ir.space_after if p_ir.space_after > 0 else None
+                ),
+                bullet=p_ir.bullet
             ))
         return TextBlock(paragraphs=paras)
 

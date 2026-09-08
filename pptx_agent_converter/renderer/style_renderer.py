@@ -174,6 +174,23 @@ class StyleRenderer:
             algn_code = align_map.get(para.style.align, "l")
             p_pr = ET.SubElement(p_elem, f"{{{NS['a']}}}pPr", {"algn": algn_code})
 
+            if para.style.line_spacing is not None and para.style.line_spacing > 0:
+                ln_spc = ET.SubElement(p_pr, f"{{{NS['a']}}}lnSpc")
+                if para.style.line_spacing <= 10.0:
+                    pct_val = str(int(round(para.style.line_spacing * 100000)))
+                    ET.SubElement(ln_spc, f"{{{NS['a']}}}spcPct", {"val": pct_val})
+                else:
+                    pts_val = str(int(round(para.style.line_spacing * 100)))
+                    ET.SubElement(ln_spc, f"{{{NS['a']}}}spcPts", {"val": pts_val})
+
+            if para.style.space_before is not None and para.style.space_before > 0:
+                spc_bef = ET.SubElement(p_pr, f"{{{NS['a']}}}spcBef")
+                ET.SubElement(spc_bef, f"{{{NS['a']}}}spcPts", {"val": str(int(round(para.style.space_before * 100)))})
+
+            if para.style.space_after is not None and para.style.space_after > 0:
+                spc_aft = ET.SubElement(p_pr, f"{{{NS['a']}}}spcAft")
+                ET.SubElement(spc_aft, f"{{{NS['a']}}}spcPts", {"val": str(int(round(para.style.space_after * 100)))})
+
             if para.bullet:
                 ET.SubElement(p_pr, f"{{{NS['a']}}}buChar", {"char": para.bullet})
 
@@ -183,38 +200,41 @@ class StyleRenderer:
                     continue
 
                 r_elem = ET.SubElement(p_elem, f"{{{NS['a']}}}r")
+                font = run.font or Font()
                 r_pr_attrs = {
                     "lang": "en-US",
-                    "sz": str(int(round(run.font.size * 100))),
+                    "sz": str(int(round(font.size * 100))),
                 }
-                if run.font.bold:
+                if font.bold:
                     r_pr_attrs["b"] = "1"
-                if run.font.italic:
+                if font.italic:
                     r_pr_attrs["i"] = "1"
-                if run.font.underline:
+                if font.underline:
                     r_pr_attrs["u"] = "sng"
-                if run.font.strike:
+                if font.strike:
                     r_pr_attrs["strike"] = "sngStrike"
 
                 r_pr = ET.SubElement(r_elem, f"{{{NS['a']}}}rPr", r_pr_attrs)
 
                 # Solid fill for run text color
                 solid = ET.SubElement(r_pr, f"{{{NS['a']}}}solidFill")
-                solid.append(StyleRenderer.build_color_element(run.font.color, run.font.alpha))
+                solid.append(StyleRenderer.build_color_element(font.color or "#000000", font.alpha))
 
                 # Font family
-                ET.SubElement(r_pr, f"{{{NS['a']}}}latin", {"typeface": run.font.name})
-                ET.SubElement(r_pr, f"{{{NS['a']}}}ea", {"typeface": run.font.name})
-                ET.SubElement(r_pr, f"{{{NS['a']}}}cs", {"typeface": run.font.name})
+                font_name = font.name or "Segoe UI"
+                ET.SubElement(r_pr, f"{{{NS['a']}}}latin", {"typeface": font_name})
+                ET.SubElement(r_pr, f"{{{NS['a']}}}ea", {"typeface": font_name})
+                ET.SubElement(r_pr, f"{{{NS['a']}}}cs", {"typeface": font_name})
 
                 # Text element
                 t_elem = ET.SubElement(r_elem, f"{{{NS['a']}}}t")
                 t_elem.text = run.text
 
             # End paragraph run properties
+            pri_size = text_block.primary_font.size if (text_block and text_block.primary_font) else 18.0
             end_r_pr = ET.SubElement(p_elem, f"{{{NS['a']}}}endParaRPr", {
                 "lang": "en-US",
-                "sz": str(int(round(text_block.primary_font.size * 100)))
+                "sz": str(int(round(pri_size * 100)))
             })
 
         return tx_body

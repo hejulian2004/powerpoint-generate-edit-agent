@@ -57,6 +57,7 @@ class ShapeElement(BaseElement):
     line: Optional[Line] = None
     shadow: Optional[Shadow] = None
     radius: Optional[float] = None  # corner radius for roundRect or adjustment value
+    adjust_values: Dict[str, float] = field(default_factory=dict)
     text: Optional[TextBlock] = None
 
     def __post_init__(self):
@@ -84,6 +85,8 @@ class ShapeElement(BaseElement):
             res["shadow"] = self.shadow.to_dict()
         if self.radius is not None:
             res["radius"] = self.radius
+        if self.adjust_values:
+            res["adjust_values"] = self.adjust_values
         if self.text and self.text.content:
             res["text"] = self.text.to_dict()
         return res
@@ -95,15 +98,15 @@ class ShapeElement(BaseElement):
         elem_type = d.get("type", "shape")
         shape_type = d.get("shape_type", "rectangle")
         position = Position.from_dict(d.get("position", {}))
-        
+
         fill = Fill.from_dict(d.get("fill", {})) if "fill" in d else Fill(type="none")
         line = Line.from_dict(d.get("line", {})) if "line" in d else None
         shadow = Shadow.from_dict(d.get("shadow", {})) if "shadow" in d else None
-        
+
         text = None
         if "text" in d and d["text"]:
             text = TextBlock.from_dict(d["text"])
-            
+
         return cls(
             id=elem_id,
             name=elem_name,
@@ -117,6 +120,7 @@ class ShapeElement(BaseElement):
             line=line,
             shadow=shadow,
             radius=d.get("radius"),
+            adjust_values=d.get("adjust_values", {}),
             text=text
         )
 
@@ -132,6 +136,8 @@ class ConnectorElement(BaseElement):
     arrow_end: Optional[str] = "triangle"
     start_shape_id: Optional[str] = None
     end_shape_id: Optional[str] = None
+    start_site_index: Optional[int] = None
+    end_site_index: Optional[int] = None
 
     def __post_init__(self):
         self.type = "connector"
@@ -153,6 +159,10 @@ class ConnectorElement(BaseElement):
             res["start_shape_id"] = self.start_shape_id
         if self.end_shape_id:
             res["end_shape_id"] = self.end_shape_id
+        if self.start_site_index is not None:
+            res["start_site_index"] = self.start_site_index
+        if self.end_site_index is not None:
+            res["end_site_index"] = self.end_site_index
         return res
 
     @classmethod
@@ -160,7 +170,7 @@ class ConnectorElement(BaseElement):
         elem_id = str(d.get("id", ""))
         elem_name = str(d.get("name", ""))
         conn_type = d.get("connector_type", "straight")
-        
+
         # Parse start
         s = d.get("start", [0.0, 0.0])
         if isinstance(s, dict):
@@ -193,7 +203,9 @@ class ConnectorElement(BaseElement):
             arrow_start=arrow_start,
             arrow_end=arrow_end,
             start_shape_id=d.get("start_shape_id"),
-            end_shape_id=d.get("end_shape_id")
+            end_shape_id=d.get("end_shape_id"),
+            start_site_index=d.get("start_site_index"),
+            end_site_index=d.get("end_site_index")
         )
 
 

@@ -180,8 +180,10 @@ def test_conversion_report_no_double_counting_in_groups():
 
     ir, report = PPTIRConverter.convert_presentation_with_report(pres)
 
-    # Elements in IR should be s1, child1, child2 -> total 3 elements
-    assert len(ir.slides[0].elements) == 3
+    # In Slide IR v2, hierarchical groups are preserved (s1, grp), with 3 leaf shapes
+    assert len(ir.slides[0].elements) == 2
+    assert len(ir.slides[0].leaf_elements()) == 3
+    assert len(ir.slides[0].all_elements()) == 4
     # converted_elements must be exactly 3, not 4 (outer group must not be double counted)
     assert report.converted_elements == 3, f"Expected 3 converted elements, got {report.converted_elements}"
     # skipped_elements must be exactly 1 for the smartArt node
@@ -190,5 +192,6 @@ def test_conversion_report_no_double_counting_in_groups():
 
     # Reverse direction: PPT-IR -> OOXML Model
     ooxml_pres, rev_report = PPTIRConverter.ir_to_presentation_with_report(ir)
+    assert len(ooxml_pres.slides[0].elements) == 2
     assert rev_report.converted_elements == 3
     assert rev_report.skipped_elements == 0

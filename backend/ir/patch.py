@@ -109,14 +109,15 @@ class HistoryManager:
             else:
                 # Redoing add -> re-insert element
                 if patch.after:
-                    from .models import ShapeElementIR, TextElementIR, ConnectorElementIR, ImageElementIR, TableElementIR
+                    from .models import ShapeElementIR, TextElementIR, ConnectorElementIR, ImageElementIR, TableElementIR, GroupElementIR
                     elem_type = patch.after.get("type", "shape")
                     cls_map = {
                         "shape": ShapeElementIR,
                         "text": TextElementIR,
                         "connector": ConnectorElementIR,
                         "image": ImageElementIR,
-                        "table": TableElementIR
+                        "table": TableElementIR,
+                        "group": GroupElementIR,
                     }
                     cls = cls_map.get(elem_type, ShapeElementIR)
                     slide.elements.append(cls.model_validate(patch.after))
@@ -128,14 +129,15 @@ class HistoryManager:
             if reverse:
                 # Reversing delete -> restore element from before
                 if patch.before:
-                    from .models import ShapeElementIR, TextElementIR, ConnectorElementIR, ImageElementIR, TableElementIR
+                    from .models import ShapeElementIR, TextElementIR, ConnectorElementIR, ImageElementIR, TableElementIR, GroupElementIR
                     elem_type = patch.before.get("type", "shape")
                     cls_map = {
                         "shape": ShapeElementIR,
                         "text": TextElementIR,
                         "connector": ConnectorElementIR,
                         "image": ImageElementIR,
-                        "table": TableElementIR
+                        "table": TableElementIR,
+                        "group": GroupElementIR,
                     }
                     cls = cls_map.get(elem_type, ShapeElementIR)
                     slide.elements.append(cls.model_validate(patch.before))
@@ -154,14 +156,15 @@ class HistoryManager:
             # Find and replace element
             for idx, el in enumerate(slide.elements):
                 if el.id == patch.element_id:
-                    from .models import ShapeElementIR, TextElementIR, ConnectorElementIR, ImageElementIR, TableElementIR
+                    from .models import ShapeElementIR, TextElementIR, ConnectorElementIR, ImageElementIR, TableElementIR, GroupElementIR
                     elem_type = target_state.get("type", el.type)
                     cls_map = {
                         "shape": ShapeElementIR,
                         "text": TextElementIR,
                         "connector": ConnectorElementIR,
                         "image": ImageElementIR,
-                        "table": TableElementIR
+                        "table": TableElementIR,
+                        "group": GroupElementIR,
                     }
                     cls = cls_map.get(elem_type, ShapeElementIR)
                     slide.elements[idx] = cls.model_validate(target_state)
