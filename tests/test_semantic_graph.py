@@ -144,3 +144,90 @@ def test_action_resolver_semantic_targeting():
     res_card = ActionResolver.resolve_target_element("card", slide)
     assert res_card is not None
     assert res_card.id == "elem_bg_card"
+
+
+def test_semantic_node_summary_exposes_confidence():
+    slide = SlideIR(id="s_conf", slide_num=1)
+    title_el = TextElementIR(
+        id="elem_title",
+        x=100.0, y=50.0, width=700.0, height=60.0,
+        text_content=TextContentIR(paragraphs=[
+            ParagraphIR(runs=[RunIR(text="Confidence Title", font=FontIR(size=32.0, bold=True))])
+        ])
+    )
+    slide.add_element(title_el)
+    graph = SemanticElementGraph(slide)
+
+    summary = graph.get_node_summary("elem_title")
+    assert summary is not None
+    assert "confidence" in summary
+    assert 0.0 <= summary["confidence"] <= 1.0
+
+    title_hit = graph.get_title_with_confidence()
+    assert title_hit is not None
+    elem, conf = title_hit
+    assert elem.id == "elem_title"
+    assert 0.0 <= conf <= 1.0
+
+    elem_conf = graph.get_element_confidence("elem_title")
+    assert elem_conf is not None
+    assert elem_conf == conf
+
+
+def test_resolve_target_element_with_confidence_high_match():
+    slide = SlideIR(id="s_rc", slide_num=1)
+    title_el = TextElementIR(
+        id="elem_title",
+        x=100.0, y=50.0, width=700.0, height=60.0,
+        text_content=TextContentIR(paragraphs=[
+            ParagraphIR(runs=[RunIR(text="High Confidence Title", font=FontIR(size=32.0, bold=True))])
+        ])
+    )
+    slide.add_element(title_el)
+
+    elem, conf = ActionResolver.resolve_target_element_with_confidence("title", slide)
+    assert elem is not None
+    assert elem.id == "elem_title"
+    # Semantic title classification is high-confidence, not the heuristic fallback (< 0.8)
+    assert conf is not None and conf >= 0.8
+
+
+def test_resolve_unknown_target_returns_none_confidence():
+    slide = SlideIR(id="s_unk", slide_num=1)
+    slide.add_element(TextElementIR(
+        id="elem_body", x=100.0, y=100.0, width=400.0, height=60.0,
+        text_content=TextContentIR.from_plain_text("Some body text")
+    ))
+    elem, conf = ActionResolver.resolve_target_element_with_confidence("title", slide)
+    # No prominent title element. The classifier may promote a body element to title at its
+    # default BODY confidence (0.8) or fall back to heuristics with lower confidence.
+    # Either way this is an ambiguous match, NOT a high-confidence title resolution.
+    if elem is not None:
+        assert conf is not None and conf < 0.85
+    else:
+        assert conf is None
+
+
+def test_semantic_graph_error_raises_semantic_resolution_error(monkeypatch):
+    """Graph structural failure must NOT silently fall back to heuristics."""
+    from backend.agent.action import SemanticResolutionError
+    from backend.semantic import element_graph as eg_module
+
+    slide = SlideIR(id="s_err", slide_num=1)
+    slide.add_element(TextElementIR(
+        id="elem_a", x=0.0, y=0.0, width=100.0, height=50.0,
+        text_content=TextContentIR.from_plain_text("A")
+    ))
+
+    def _boom(slide):
+        raise RuntimeError("graph exploded")
+
+    monkeypatch.setattr(eg_module.SemanticElementGraph, "__init__", _boom)
+
+    with pytest.raises(SemanticResolutionError):
+        ActionResolver.resolve_target_element("title", slide)
+
+    # The confidence companion raises the same way.
+    monkeypatch.setattr(eg_module.SemanticElementGraph, "__init__", _boom)
+    with pytest.raises(SemanticResolutionError):
+        ActionResolver.resolve_target_element_with_confidence("title", slide)

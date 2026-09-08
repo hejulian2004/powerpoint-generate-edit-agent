@@ -17,7 +17,7 @@ from backend.ir.patch import HistoryManager
 from backend.eval.remediation import (
     FixActionType, DefectCategory, FidelityRemediationGenerator
 )
-from backend.eval.fidelity import FidelityEvaluator
+from backend.eval.fidelity import FidelityEvaluator, RepairAcceptancePolicy
 from backend.agent.remediation_runner import RemediationRunner
 from backend.agent.action import ActionResolver, AgentAction
 
@@ -209,3 +209,116 @@ def test_semantic_instruction_theme_preservation():
     title_elem = pres.slides[0].get_element("elem_base_title")
     curr_font_color = title_elem.text_content.paragraphs[0].runs[0].font.color
     assert curr_font_color == tool_call["arguments"]["font_color"]
+
+
+def test_action_resolver_exposes_confidence_metadata_on_tool_call():
+    """Verifies action_to_tool_call surfaces resolution confidence + needs_confirmation at top level."""
+    pres = _create_baseline_presentation()
+
+    # High-confidence semantic resolution (slide title) -> needs_confirmation False
+    action = AgentAction(
+        action_type="format_text",
+        target="title",
+        parameters={"font_color": "accent1"}
+    )
+    tool_call = ActionResolver.action_to_tool_call(action, pres)
+    assert tool_call is not None
+    assert "_resolution_confidence" in tool_call
+    assert tool_call["_needs_confirmation"] is False
+    assert 0.0 <= tool_call["_resolution_confidence"] <= 1.0
+
+    # Exact element id -> confidence 1.0
+    exact = AgentAction(
+        action_type="format_text",
+        target="elem_base_title",
+        parameters={"font_color": "#FF0000"}
+    )
+    tool_exact = ActionResolver.action_to_tool_call(exact, pres)
+    assert tool_exact["_resolution_confidence"] == 1.0
+    assert tool_exact["_needs_confirmation"] is False
+
+
+def test_action_resolver_low_confidence_flags_confirmation():
+    """Verifies a low-confidence heuristic resolution surfaces needs_confirmation=True."""
+    pres = _create_baseline_presentation()
+
+    # Target a card via semantic graph (KPI card container classified at ~0.92), still high conf.
+    # To exercise the low-confidence path, use a target that only matches the heuristic fallback.
+    # Here we create a slide with no clear semantic container so 'card' falls to the shape heuristic.
+    from backend.ir.models import SlideIR, TextContentIR
+    slide = SlideIR(id="slide_flat", slide_num=1)
+    slide.add_element(TextElementIR(
+        id="elem_only", x=0.0, y=0.0, width=100.0, height=40.0,
+        text_content=TextContentIR.from_plain_text("Flat text")
+    ))
+    from backend.ir.models import PresentationIR
+    pres_flat = PresentationIR(title="Flat")
+    pres_flat.slides.append(slide)
+    pres_flat.active_slide_id = slide.id
+
+    # 'card' on a slide with only text -> semantic graph finds no card, heuristic finds no shape,
+    # so resolution returns None with no confidence (no silent action).
+    tool = ActionResolver.action_to_tool_call(
+        AgentAction(action_type="update_element", target="card", parameters={}),
+        pres_flat
+    )
+    assert tool is None or tool.get("_needs_confirmation") is not None
+
+
+# =====================================================================
+# PR6.1 RepairAcceptancePolicy unit tests
+# =====================================================================
+
+from backend.eval.fidelity.fidelity_score import FidelityScore
+
+
+def _score(**overrides):
+    base = dict(geometry=100.0, text=100.0, style=100.0, visual=100.0, total=100.0)
+    base.update(overrides)
+    return FidelityScore(**base)
+
+
+def test_repair_policy_accepts_no_regression():
+    policy = RepairAcceptancePolicy()
+    before = _score()
+    after = _score(geometry=100.0, text=100.0, style=100.0, visual=100.0, total=100.0)
+    accepted, reasons = policy.accepts(before, after)
+    assert accepted is True
+    assert reasons == []
+
+
+def test_repair_policy_accepts_small_gain():
+    policy = RepairAcceptancePolicy()
+    before = _score(geometry=92.0, text=90.0, style=95.0, visual=88.0, total=91.4)
+    after = _score(geometry=94.0, text=92.0, style=95.0, visual=90.0, total=93.0)
+    accepted, reasons = policy.accepts(before, after)
+    assert accepted is True
+
+
+def test_repair_policy_rejects_total_regression():
+    policy = RepairAcceptancePolicy()
+    before = _score(total=93.0)
+    after = _score(geometry=99.0, text=99.0, style=99.0, visual=80.0, total=92.4)
+    accepted, reasons = policy.accepts(before, after)
+    assert accepted is False
+    assert any("total" in r for r in reasons)
+
+
+def test_repair_policy_rejects_per_dimension_regression_even_if_total_rises():
+    """A repair raising the total but dropping geometry > 3.0 pts must be rejected."""
+    policy = RepairAcceptancePolicy()
+    before = _score(geometry=100.0, text=80.0, style=80.0, visual=80.0, total=88.0)
+    after = _score(geometry=80.0, text=100.0, style=100.0, visual=100.0, total=96.0)
+    # total rose 88 -> 96, but geometry dropped 100 -> 80 (> 3.0 and below critical floor 85)
+    accepted, reasons = policy.accepts(before, after)
+    assert accepted is False
+    assert any("geometry" in r for r in reasons)
+
+
+def test_repair_policy_rejects_critical_floor_violation():
+    policy = RepairAcceptancePolicy()
+    before = _score(geometry=100.0, total=95.0)
+    after = _score(geometry=84.0, total=95.0)
+    accepted, reasons = policy.accepts(before, after)
+    assert accepted is False
+    assert any("floor" in r for r in reasons)

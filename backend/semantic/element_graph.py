@@ -81,6 +81,18 @@ class SemanticElementGraph:
                 return self.elements_by_id.get(eid)
         return None
 
+    def get_title_with_confidence(self) -> Optional[tuple]:
+        """Returns (element, confidence) for the classified slide title, or None."""
+        for eid, cl in self.classifications.items():
+            if cl.role == SemanticRole.SLIDE_TITLE:
+                return (self.elements_by_id.get(eid), cl.confidence)
+        return None
+
+    def get_element_confidence(self, element_id: str) -> Optional[float]:
+        """Returns the semantic classification confidence for an element, or None."""
+        cl = self.classifications.get(element_id)
+        return cl.confidence if cl else None
+
     def find_by_role(self, role: Union[str, SemanticRole]) -> List[ElementIR]:
         """Finds all elements matching a semantic role (e.g. 'card', 'body', 'metric')."""
         target_role = role.value if isinstance(role, SemanticRole) else role.lower()
@@ -122,6 +134,7 @@ class SemanticElementGraph:
             "id": element_id,
             "role": cl.role.value,
             "importance": cl.importance,
+            "confidence": cl.confidence,
             "relations": self.get_relations(element_id)
         }
 

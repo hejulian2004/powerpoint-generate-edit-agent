@@ -17,7 +17,7 @@ from ..eval.remediation import (
     FixAction, FixActionType, DefectCategory, RemediationPlan, FidelityRemediationGenerator
 )
 from ..eval.layout_diff import LayoutDiffEngine, BoundingBox
-from ..eval.fidelity import FidelityEvaluator
+from ..eval.fidelity import FidelityEvaluator, RepairAcceptancePolicy
 from .tools import tools
 
 logger = logging.getLogger(__name__)
@@ -388,14 +388,26 @@ class RemediationRunner:
                 })
 
             after_score = FidelityEvaluator.evaluate_slides(baseline_slide, curr_slide)
-            if after_score.total < before_score.total:
-                tx.rollback(f"Fidelity score degraded from {before_score.total:.1f}% to {after_score.total:.1f}%")
+
+            # PR6.1 Regression guard: accept only if the composite total does not drop AND
+            # no sub-dimension regresses beyond policy limits. This prevents a repair that
+            # raises one sub-score (e.g. font) while regressing another (e.g. geometry) from
+            # being committed.
+            policy = RepairAcceptancePolicy()
+            accepted, reasons = policy.accepts(before_score, after_score)
+            if not accepted:
+                logger.warning(
+                    "Fidelity repair rejected by RepairAcceptancePolicy for slide %s: %s",
+                    curr_slide.id, "; ".join(reasons)
+                )
+                tx.rollback(f"Fidelity repair rejected: {'; '.join(reasons)}")
                 return {
                     "success": False,
                     "rolled_back": True,
                     "score_before": before_score.total,
-                    "score_after": before_score.total,
-                    "message": "Fidelity repairs caused score degradation and were rolled back"
+                    "score_after": after_score.total,
+                    "policy_reasons": reasons,
+                    "message": "Fidelity repairs failed the per-dimension regression guard and were rolled back"
                 }
 
             tx.commit()
