@@ -236,7 +236,36 @@ Refined PresentationPlan (crisp academic wording, structure 100% preserved)
 - **Zero-Network Degradation**: If no live key is set or the LLM call fails, the deterministic candidate plan is returned immediately.
 
 
-Run the test suite:
+---
+
+## 7. Slide Semantic IR (PR9)
+
+The Slide Semantic IR Layer (`backend/slidespec`) defines the structured semantic layout contract between high-level presentation planning and visual layout rendering.
+
+### Decoupling Principle
+
+- **Does NOT assign pixel coordinates** (`left`, `top`, `width`, `height`).
+- Establishes **Macro Visual Intents** (`TITLE_HERO`, `PIPELINE_ARCHITECTURE`, `BENCHMARK_COMPARISON`, `TWO_COLUMN_CONTRAST`, `KEY_TAKEAWAY_LIST`).
+- Establishes **Micro Semantic Roles** (`HEADING`, `SUBHEADING`, `LEAD_SUMMARY`, `BULLET_ITEM`, `CAPTION`, `BADGE`).
+- Encapsulates figure and table blocks referencing PaperIR assets.
+
+### Public API Facade
+
+```python
+from backend.slidespec import (
+    SlideSpec,                          # Semantic IR for an individual slide
+    DeckSpec,                           # Full deck specification
+    VisualIntent,                       # Visual layout intent enum
+    BlockRole,                          # Textual block role enum
+    ContentBlock,                       # Polymorphic block union
+    TextBlock, FigureBlock, TableBlock, BadgeBlock,
+    map_presentation_plan_to_deck_spec, # Canonical mapper
+)
+```
+
+---
+
+## 8. Verification & Acceptance
 
 ```bash
 python -m pytest tests/paper/test_parser.py -v
