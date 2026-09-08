@@ -83,9 +83,12 @@ class PPTIRConverter:
     def slide_to_ir(cls, slide: Slide, scale_x: float = DPI, scale_y: float = DPI) -> SlideIR:
         elements_ir: List[ElementIR] = []
         for el in slide.elements:
-            ir_el = cls.element_to_ir(el, scale_x, scale_y)
-            if ir_el:
-                elements_ir.append(ir_el)
+            if isinstance(el, GroupElement):
+                cls._flatten_group_to_ir(el, elements_ir, scale_x, scale_y)
+            else:
+                ir_el = cls.element_to_ir(el, scale_x, scale_y)
+                if ir_el:
+                    elements_ir.append(ir_el)
 
         bg_style = FillStyle(type="solid", color="#FFFFFF", alpha=1.0)
         if slide.background:
@@ -210,6 +213,17 @@ class PPTIRConverter:
             return children[0] if children else None
 
         return None
+
+    @classmethod
+    def _flatten_group_to_ir(cls, grp: GroupElement, acc: List[ElementIR], scale_x: float, scale_y: float):
+        """Recursively unwraps group elements into flat IR elements."""
+        for child in grp.elements:
+            if isinstance(child, GroupElement):
+                cls._flatten_group_to_ir(child, acc, scale_x, scale_y)
+            else:
+                ir_child = cls.element_to_ir(child, scale_x, scale_y)
+                if ir_child:
+                    acc.append(ir_child)
 
     # -----------------------------------------------------------------
     # PPT-IR -> OOXML Model

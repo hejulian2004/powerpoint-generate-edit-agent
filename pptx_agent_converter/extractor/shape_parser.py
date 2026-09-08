@@ -89,6 +89,10 @@ class ShapeParser:
                         parts = adj.get("fmla", "").split()
                         if len(parts) >= 2 and parts[-1].isdigit():
                             radius = round(float(parts[-1]) / 100000.0, 4)
+            else:
+                cust_geom = sp_pr.find("a:custGeom", NS)
+                if cust_geom is not None:
+                    raw_geom = "freeform"
 
         shape_type = PRESET_GEOM_MAP.get(raw_geom, raw_geom)
 
