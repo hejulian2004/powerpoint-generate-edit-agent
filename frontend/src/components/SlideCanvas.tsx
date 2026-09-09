@@ -3,21 +3,26 @@ import { ZoomIn, ZoomOut, Maximize2, Trash2, Move } from 'lucide-react'
 import { usePPTStore } from '../store/usePPTStore'
 import { SVGRendererComponent } from './SVGRendererComponent'
 import { CanvasToolbar } from './CanvasToolbar'
+import {
+  screenDeltaToSlideDelta,
+  screenPxToSlideUnits,
+  screenToSlidePoint,
+  clampBoundsToSlide
+} from '../editor/snapping/geometry'
+import { snapMove, snapResize, clampResizeAxis, SNAP_SCREEN_PX, RELEASE_SCREEN_PX } from '../editor/snapping/snapEngine'
+import { collectSnapCandidates } from '../editor/snapping/candidates'
+import type { Bounds, SnapCandidate, SnapGuide, SnapSession, SnapThresholds, ResizeHandle } from '../editor/snapping/types'
 
-type ResizeHandle = 'nw' | 'n' | 'ne' | 'e' | 'se' | 's' | 'sw' | 'w'
+const MIN_SIZE = 24
 
 interface DragState {
   mode: 'move' | 'resize'
   elemId: string
   startX: number
   startY: number
-  initialElem: {
-    x: number
-    y: number
-    width: number
-    height: number
-  }
+  initialElem: Bounds
   handle?: ResizeHandle
+  snapCandidates: SnapCandidate[]
 }
 
 export const SlideCanvas: React.FC = () => {
@@ -31,12 +36,16 @@ export const SlideCanvas: React.FC = () => {
     addShapeQuick,
     addTextQuick,
     showGrid,
+    snapEnabled,
+    showSmartGuides,
     updateElementDirect
   } = usePPTStore()
 
   const slide = getActiveSlide()
   const canvasRef = useRef<HTMLDivElement>(null)
   const [dragState, setDragState] = useState<DragState | null>(null)
+  const [alignmentGuides, setAlignmentGuides] = useState<SnapGuide[]>([])
+  const snapSessionRef = useRef<SnapSession>({})
   const [, setTick] = useState(0) // Force local re-render during smooth drag
 
   const selectedElement = slide?.elements.find((e) => e.id === selectedElementId) || null
@@ -51,7 +60,11 @@ export const SlideCanvas: React.FC = () => {
     const elem = slide.elements.find((el) => el.id === elemId)
     if (!elem) return
 
+    const siblings = slide.elements
+    const snapCandidates = collectSnapCandidates(slide, siblings, elemId)
+
     setSelectedElementId(elemId)
+    snapSessionRef.current = {}
     setDragState({
       mode: 'move',
       elemId,
@@ -62,13 +75,16 @@ export const SlideCanvas: React.FC = () => {
         y: elem.y,
         width: elem.width,
         height: elem.height
-      }
+      },
+      snapCandidates
     })
-  }, [slide, setSelectedElementId])
+  }, [slide, setSelectedElementId, setDragState])
 
   // 2. Mouse down on 8-direction resize handle
   const handleResizeHandleMouseDown = useCallback((handle: ResizeHandle, e: React.MouseEvent) => {
     if (!selectedElement) return
+    const snapCandidates = slide ? collectSnapCandidates(slide, slide.elements, selectedElement.id) : []
+    snapSessionRef.current = {}
     setDragState({
       mode: 'resize',
       elemId: selectedElement.id,
@@ -80,9 +96,10 @@ export const SlideCanvas: React.FC = () => {
         width: selectedElement.width,
         height: selectedElement.height
       },
-      handle
+      handle,
+      snapCandidates
     })
-  }, [selectedElement])
+  }, [selectedElement, slide, setDragState])
 
   // 3. Global Window MouseMove & MouseUp during active Drag or Resize
   useEffect(() => {
@@ -91,60 +108,127 @@ export const SlideCanvas: React.FC = () => {
     const onMouseMove = (e: MouseEvent) => {
       if (!canvasRef.current || !slide) return
       const rect = canvasRef.current.getBoundingClientRect()
-      const scale = rect.width / 1280.0
-      if (scale <= 0) return
+      if (rect.width <= 0 || rect.height <= 0) return
 
-      const deltaX = (e.clientX - dragState.startX) / scale
-      const deltaY = (e.clientY - dragState.startY) / scale
+      // Slide-units-per-screen-px already accounts for CSS scale(zoom) because
+      // getBoundingClientRect() returns the post-transform box. The uniform
+      // meet scale keeps thresholds identical on both axes at any zoom.
+      const enter = screenPxToSlideUnits(SNAP_SCREEN_PX, rect, slide)
+      const release = screenPxToSlideUnits(RELEASE_SCREEN_PX, rect, slide)
+      const thresholds: SnapThresholds = {
+        x: { enter, release },
+        y: { enter, release }
+      }
+      const snappingEnabled = snapEnabled && !e.altKey
+
+      const delta = screenDeltaToSlideDelta(
+        e.clientX - dragState.startX,
+        e.clientY - dragState.startY,
+        rect,
+        slide
+      )
 
       const target = slide.elements.find((el) => el.id === dragState.elemId)
       if (!target) return
 
       if (dragState.mode === 'move') {
-        const newX = Math.max(0, Math.min(1280 - target.width, dragState.initialElem.x + deltaX))
-        const newY = Math.max(0, Math.min(720 - target.height, dragState.initialElem.y + deltaY))
-        target.x = Math.round(newX)
-        target.y = Math.round(newY)
-        setTick((t) => t + 1)
-      } else if (dragState.mode === 'resize') {
+        const rawBounds: Bounds = {
+          x: dragState.initialElem.x + delta.dx,
+          y: dragState.initialElem.y + delta.dy,
+          width: dragState.initialElem.width,
+          height: dragState.initialElem.height
+        }
+        // pre-clamp -> snap -> (snapMove only returns in-bounds geometry;
+        // out-of-bounds snap options are ignored so guides stay truthful)
+        const preClamped = clampBoundsToSlide(rawBounds, slide)
+        const snapped = snapMove(
+          preClamped,
+          dragState.snapCandidates,
+          slide,
+          snapSessionRef.current,
+          thresholds,
+          snappingEnabled
+        )
+
+        // Clamp after snapping. Geometry stays fractional so the committed
+        // IR coordinate matches the guide position exactly (rounding happens
+        // only in display formatting, never in geometry).
+        const finalMove = clampBoundsToSlide(
+          { x: snapped.x, y: snapped.y, width: target.width, height: target.height },
+          slide
+        )
+        target.x = finalMove.x
+        target.y = finalMove.y
+        setAlignmentGuides(snappingEnabled && showSmartGuides ? snapped.guides : [])
+      } else if (dragState.mode === 'resize' && dragState.handle) {
         const { initialElem, handle } = dragState
-        const minSize = 24.0
 
-        let newX = initialElem.x
-        let newY = initialElem.y
-        let newW = initialElem.width
-        let newH = initialElem.height
+        let rawX = initialElem.x
+        let rawY = initialElem.y
+        let rawW = initialElem.width
+        let rawH = initialElem.height
 
-        if (handle?.includes('e')) {
-          newW = Math.max(minSize, initialElem.width + deltaX)
+        if (handle.includes('e')) {
+          rawW = Math.max(MIN_SIZE, initialElem.width + delta.dx)
         }
-        if (handle?.includes('s')) {
-          newH = Math.max(minSize, initialElem.height + deltaY)
+        if (handle.includes('s')) {
+          rawH = Math.max(MIN_SIZE, initialElem.height + delta.dy)
         }
-        if (handle?.includes('w')) {
-          const clampedDeltaX = Math.min(initialElem.width - minSize, deltaX)
-          newW = initialElem.width - clampedDeltaX
-          newX = initialElem.x + clampedDeltaX
+        if (handle.includes('w')) {
+          const clamped = Math.min(initialElem.width - MIN_SIZE, delta.dx)
+          rawW = initialElem.width - clamped
+          rawX = initialElem.x + clamped
         }
-        if (handle?.includes('n')) {
-          const clampedDeltaY = Math.min(initialElem.height - minSize, deltaY)
-          newH = initialElem.height - clampedDeltaY
-          newY = initialElem.y + clampedDeltaY
+        if (handle.includes('n')) {
+          const clamped = Math.min(initialElem.height - MIN_SIZE, delta.dy)
+          rawH = initialElem.height - clamped
+          rawY = initialElem.y + clamped
         }
 
-        // Clamp to canvas borders
-        target.x = Math.round(Math.max(0, newX))
-        target.y = Math.round(Math.max(0, newY))
-        target.width = Math.round(Math.min(1280 - target.x, newW))
-        target.height = Math.round(Math.min(720 - target.y, newH))
-        setTick((t) => t + 1)
+        const snapped = snapResize(
+          { x: rawX, y: rawY, width: rawW, height: rawH },
+          handle,
+          dragState.snapCandidates,
+          slide,
+          snapSessionRef.current,
+          thresholds,
+          snappingEnabled,
+          MIN_SIZE
+        )
+
+        // Clamp snapped geometry using edge-aware clamping so the element
+        // never overflows the slide or shifts its fixed edge. Geometry stays
+        // fractional to match the guide position exactly.
+        const isLeft = handle.includes('w')
+        const isTop = handle.includes('n')
+        const cx = clampResizeAxis(
+          snapped.x,
+          snapped.width,
+          slide.width,
+          MIN_SIZE,
+          isLeft ? 'min' : 'max'
+        )
+        const cy = clampResizeAxis(
+          snapped.y,
+          snapped.height,
+          slide.height,
+          MIN_SIZE,
+          isTop ? 'min' : 'max'
+        )
+        target.x = cx.pos
+        target.y = cy.pos
+        target.width = cx.size
+        target.height = cy.size
+        setAlignmentGuides(snappingEnabled && showSmartGuides ? snapped.guides : [])
       }
+      setTick((t) => t + 1)
     }
 
     const onMouseUp = () => {
       if (slide) {
         const target = slide.elements.find((el) => el.id === dragState.elemId)
         if (target) {
+          // Single backend mutation per drag; mousemove never commits to history.
           updateElementDirect(dragState.elemId, {
             x: target.x,
             y: target.y,
@@ -153,6 +237,8 @@ export const SlideCanvas: React.FC = () => {
           })
         }
       }
+      snapSessionRef.current = {}
+      setAlignmentGuides([])
       setDragState(null)
     }
 
@@ -163,7 +249,7 @@ export const SlideCanvas: React.FC = () => {
       window.removeEventListener('mousemove', onMouseMove)
       window.removeEventListener('mouseup', onMouseUp)
     }
-  }, [dragState, slide, updateElementDirect])
+  }, [dragState, slide, updateElementDirect, snapEnabled, showSmartGuides])
 
   // 4. Drag and Drop from Toolbar onto Canvas
   const handleDragOver = (e: React.DragEvent) => {
@@ -173,14 +259,15 @@ export const SlideCanvas: React.FC = () => {
 
   const handleDrop = (e: React.DragEvent) => {
     e.preventDefault()
-    if (!canvasRef.current) return
+    if (!canvasRef.current || !slide) return
     const shapeType = e.dataTransfer.getData('application/ppt-shape')
     if (!shapeType) return
 
     const rect = canvasRef.current.getBoundingClientRect()
-    const scale = rect.width / 1280.0
-    const dropX = Math.round(Math.max(40, Math.min(1080, (e.clientX - rect.left) / scale)))
-    const dropY = Math.round(Math.max(40, Math.min(600, (e.clientY - rect.top) / scale)))
+    const point = screenToSlidePoint(e.clientX, e.clientY, rect, slide)
+    const margin = 40
+    const dropX = Math.round(Math.max(margin, Math.min(slide.width - margin, point.x)))
+    const dropY = Math.round(Math.max(margin, Math.min(slide.height - margin, point.y)))
 
     if (shapeType === 'text') {
       addTextQuick(dropX, dropY)
@@ -226,7 +313,7 @@ export const SlideCanvas: React.FC = () => {
         }}
       />
 
-      {/* Main Slide Stage (Standard 16:9 Viewport) */}
+      {/* Main Slide Stage */}
       <div
         ref={canvasRef}
         onDragOver={handleDragOver}
@@ -247,6 +334,7 @@ export const SlideCanvas: React.FC = () => {
           slide={slide}
           onElementMouseDown={handleElementMouseDown}
           onResizeHandleMouseDown={handleResizeHandleMouseDown}
+          alignmentGuides={alignmentGuides}
         />
       </div>
 
@@ -284,7 +372,7 @@ export const SlideCanvas: React.FC = () => {
         {selectedElement && (
           <div className="flex items-center gap-3 bg-panel/95 backdrop-blur-xl px-3 py-1.5 rounded-xl border border-line-strong shadow-xl shadow-slate-200/60 text-xs text-main animate-in fade-in duration-150">
             <span className="font-tabular text-main font-semibold bg-elevated px-2 py-0.5 rounded border border-line flex items-center gap-1">
-              <Move className="w-3 h-3 text-muted" />
+              <Move className="w-3.5 h-3.5 text-muted" />
               <span>{selectedElement.type} #{selectedElement.id}</span>
             </span>
             <span className="text-muted font-tabular text-[11px] font-medium">

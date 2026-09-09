@@ -28,6 +28,8 @@ interface PPTState {
   pptspecModalOpen: boolean
   zoom: number
   showGrid: boolean
+  snapEnabled: boolean
+  showSmartGuides: boolean
   previewSvg: string | null
   previewScore: number | null
   qualityScore: VisualQualityScore | null
@@ -44,6 +46,8 @@ interface PPTState {
   setPptspecModalOpen: (open: boolean) => void
   setZoom: (zoom: number) => void
   setShowGrid: (show: boolean) => void
+  setSnapEnabled: (enabled: boolean) => void
+  setShowSmartGuides: (show: boolean) => void
   setMutationStatus: (status: MutationStatus) => void
   addMessage: (msg: ChatMessage) => void
   updateLastMessage: (partial: Partial<ChatMessage>) => void
@@ -100,6 +104,8 @@ export const usePPTStore = create<PPTState>((set, get) => ({
   pptspecModalOpen: false,
   zoom: 1.0,
   showGrid: false,
+  snapEnabled: true,
+  showSmartGuides: true,
   previewSvg: null,
   previewScore: null,
   qualityScore: null,
@@ -135,6 +141,8 @@ export const usePPTStore = create<PPTState>((set, get) => ({
   setPptspecModalOpen: (open) => set({ pptspecModalOpen: open }),
   setZoom: (zoom) => set({ zoom }),
   setShowGrid: (show) => set({ showGrid: show }),
+  setSnapEnabled: (enabled) => set({ snapEnabled: enabled }),
+  setShowSmartGuides: (show) => set({ showSmartGuides: show }),
 
   addMessage: (msg) => set((state) => ({ messages: [...state.messages, msg] })),
 
