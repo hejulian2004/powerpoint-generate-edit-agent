@@ -458,5 +458,288 @@ def test_repair_convergence_stops_when_no_further_improvements(tmp_path: Path) -
     assert res.converged is True
 
 
+def test_repair_loop_fails_on_vlm_timeout(tmp_path: Path) -> None:
+    """Reviewer P1: VLM API timeout must set converged=False, evaluation_failed=True, never false-converged."""
+    from backend.evaluation.evaluator import OpenAICompatibleVisionEvaluator
+
+    def timeout_client(payload):
+        raise TimeoutError("Simulated OpenAI API gateway timeout")
+
+    failing_evaluator = OpenAICompatibleVisionEvaluator(api_key="sk-test", client_fn=timeout_client)
+
+    deck = DeckLayoutSpec(
+        title="Timeout Deck",
+        canvas=Canvas(width=1280, height=720),
+        slides=[
+            LayoutSpec(
+                slide_id="slide_to",
+                slide_index=1,
+                visual_intent=VisualIntent.TITLE_HERO,
+                elements=[
+                    LayoutElement(
+                        element_id="title",
+                        element_type=ElementType.TEXT,
+                        geometry=Rect(x=80.0, y=50.0, width=900.0, height=70.0),
+                        content="Test Title",
+                    )
+                ],
+            )
+        ],
+    )
+
+    out_pptx = tmp_path / "timeout.pptx"
+    renderer = ScreenshotRenderer(backend=FallbackScreenshotBackend())
+
+    res = evaluate_and_repair(
+        deck_layout=deck,
+        output_pptx_path=out_pptx,
+        evaluator=failing_evaluator,
+        screenshot_renderer=renderer,
+        max_iterations=3,
+    )
+
+    assert res.converged is False
+    assert res.evaluation_failed is True
+    assert res.stop_reason == "evaluation_failed"
+    assert "timeout" in str(res.error).lower()
+
+
+def test_repair_loop_fails_on_vlm_malformed_json(tmp_path: Path) -> None:
+    """Reviewer P1: VLM returning malformed/unparseable JSON must set converged=False, evaluation_failed=True."""
+    from backend.evaluation.evaluator import OpenAICompatibleVisionEvaluator
+
+    def malformed_json_client(payload):
+        return {"choices": [{"message": {"content": "Sorry, I am an AI and cannot format this in JSON."}}]}
+
+    failing_evaluator = OpenAICompatibleVisionEvaluator(api_key="sk-test", client_fn=malformed_json_client)
+
+    deck = DeckLayoutSpec(
+        title="Malformed JSON Deck",
+        canvas=Canvas(width=1280, height=720),
+        slides=[
+            LayoutSpec(
+                slide_id="slide_mal",
+                slide_index=1,
+                visual_intent=VisualIntent.TITLE_HERO,
+                elements=[
+                    LayoutElement(
+                        element_id="title",
+                        element_type=ElementType.TEXT,
+                        geometry=Rect(x=80.0, y=50.0, width=900.0, height=70.0),
+                        content="Test Title",
+                    )
+                ],
+            )
+        ],
+    )
+
+    out_pptx = tmp_path / "malformed.pptx"
+    renderer = ScreenshotRenderer(backend=FallbackScreenshotBackend())
+
+    res = evaluate_and_repair(
+        deck_layout=deck,
+        output_pptx_path=out_pptx,
+        evaluator=failing_evaluator,
+        screenshot_renderer=renderer,
+        max_iterations=3,
+    )
+
+    assert res.converged is False
+    assert res.evaluation_failed is True
+    assert res.stop_reason == "evaluation_failed"
+    assert "not valid json" in str(res.error).lower()
+
+
+def test_repair_rollback_and_stop_early_on_worsening(tmp_path: Path) -> None:
+    """Reviewer P1: If iteration 2 introduces more errors than iteration 1, loop rolls back to iteration 1 deck and stops."""
+    from backend.evaluation.evaluator import VisualEvaluator
+
+    # Mock evaluator that reports 2 errors on iteration 1, and 3 different errors on iteration 2
+    class DegradingEvaluator(VisualEvaluator):
+        def __init__(self):
+            self.call_count = 0
+
+        def evaluate(self, slide_image, layout_spec):
+            self.call_count += 1
+            if self.call_count == 1:
+                return [
+                    VisualIssue(
+                        slide=layout_spec.slide_id,
+                        issue=IssueType.OVERFLOW,
+                        severity=IssueSeverity.ERROR,
+                        element="el_overflow",
+                        description="Initial overflow error",
+                    ),
+                    VisualIssue(
+                        slide=layout_spec.slide_id,
+                        issue=IssueType.TEXT_OVERFLOW,
+                        severity=IssueSeverity.ERROR,
+                        element="el_text",
+                        description="Initial text overflow error",
+                    ),
+                ]
+            else:
+                # Iteration 2 produces 3 worse errors
+                return [
+                    VisualIssue(
+                        slide=layout_spec.slide_id,
+                        issue=IssueType.OVERFLOW,
+                        severity=IssueSeverity.ERROR,
+                        element="el1",
+                        description="Worse overflow 1",
+                    ),
+                    VisualIssue(
+                        slide=layout_spec.slide_id,
+                        issue=IssueType.OVERFLOW,
+                        severity=IssueSeverity.ERROR,
+                        element="el2",
+                        description="Worse overflow 2",
+                    ),
+                    VisualIssue(
+                        slide=layout_spec.slide_id,
+                        issue=IssueType.OVERLAP,
+                        severity=IssueSeverity.ERROR,
+                        element="el3",
+                        description="Worse overlap 3",
+                    ),
+                ]
+
+    deck = DeckLayoutSpec(
+        title="Worsening Deck",
+        canvas=Canvas(width=1280, height=720),
+        slides=[
+            LayoutSpec(
+                slide_id="slide_worse",
+                slide_index=1,
+                visual_intent=VisualIntent.TITLE_HERO,
+                elements=[
+                    LayoutElement(
+                        element_id="el_overflow",
+                        element_type=ElementType.TEXT,
+                        geometry=Rect(x=1200.0, y=100.0, width=200.0, height=50.0),
+                        content="Overflow",
+                    ),
+                    LayoutElement(
+                        element_id="el_text",
+                        element_type=ElementType.TEXT,
+                        geometry=Rect(x=100.0, y=200.0, width=300.0, height=30.0),
+                        content="Text overflow content",
+                    ),
+                ],
+            )
+        ],
+    )
+
+    out_pptx = tmp_path / "worse.pptx"
+    renderer = ScreenshotRenderer(backend=FallbackScreenshotBackend())
+    evaluator = DegradingEvaluator()
+
+    res = evaluate_and_repair(
+        deck_layout=deck,
+        output_pptx_path=out_pptx,
+        evaluator=evaluator,
+        screenshot_renderer=renderer,
+        max_iterations=3,
+    )
+
+    # Must stop at iteration 2 due to worsening (not continuing to iteration 3)
+    assert res.iterations_run == 2
+    assert res.stop_reason == "worsened"
+    assert res.converged is False
+
+
+def test_repair_final_output_is_best_deck_when_last_iteration_worsens(tmp_path: Path) -> None:
+    """Reviewer P1: If the last allowed iteration creates a worse layout, final output PPTX must still render best_deck."""
+    import pptx
+    from backend.evaluation.evaluator import VisualEvaluator
+
+    recorded_renders: list[float] = []
+
+    def mock_renderer(deck: DeckLayoutSpec, path: Path):
+        # Record x-coordinate of el_test across renders
+        x_val = deck.slides[0].elements[0].geometry.x
+        recorded_renders.append(x_val)
+        # Create valid empty presentation file
+        prs = pptx.Presentation()
+        prs.save(str(path))
+
+    class TwoStepWorseningEvaluator(VisualEvaluator):
+        def __init__(self):
+            self.eval_count = 0
+
+        def evaluate(self, slide_image, layout_spec):
+            self.eval_count += 1
+            if self.eval_count == 1:
+                # Iteration 1: 1 error
+                return [
+                    VisualIssue(
+                        slide=layout_spec.slide_id,
+                        issue=IssueType.OVERFLOW,
+                        severity=IssueSeverity.ERROR,
+                        element="el_test",
+                        description="Single error",
+                    )
+                ]
+            else:
+                # Iteration 2: 2 errors (worse)
+                return [
+                    VisualIssue(
+                        slide=layout_spec.slide_id,
+                        issue=IssueType.OVERFLOW,
+                        severity=IssueSeverity.ERROR,
+                        element="el_test",
+                        description="Error 1",
+                    ),
+                    VisualIssue(
+                        slide=layout_spec.slide_id,
+                        issue=IssueType.OVERLAP,
+                        severity=IssueSeverity.ERROR,
+                        element="el_test",
+                        description="Error 2",
+                    ),
+                ]
+
+    deck = DeckLayoutSpec(
+        title="Last Step Worse Deck",
+        canvas=Canvas(width=1280, height=720),
+        slides=[
+            LayoutSpec(
+                slide_id="s1",
+                slide_index=1,
+                visual_intent=VisualIntent.TITLE_HERO,
+                elements=[
+                    LayoutElement(
+                        element_id="el_test",
+                        element_type=ElementType.TEXT,
+                        geometry=Rect(x=1200.0, y=100.0, width=200.0, height=50.0),
+                        content="Test",
+                    )
+                ],
+            )
+        ],
+    )
+
+    out_pptx = tmp_path / "last_step.pptx"
+    renderer = ScreenshotRenderer(backend=FallbackScreenshotBackend())
+
+    res = evaluate_and_repair(
+        deck_layout=deck,
+        output_pptx_path=out_pptx,
+        evaluator=TwoStepWorseningEvaluator(),
+        renderer_fn=mock_renderer,
+        screenshot_renderer=renderer,
+        max_iterations=2,
+    )
+
+    # Initial x is 1200.0 (Iteration 1: 1 error -> best deck).
+    # Iteration 1 patches x to clamped ~1056.0.
+    # Iteration 2 evaluates the clamped deck, sees 2 errors -> worsening!
+    # Final render MUST render best_deck (x=1200.0), not the worse state.
+    final_render_x = recorded_renders[-1]
+    assert final_render_x == 1200.0
+    assert res.stop_reason == "worsened"
+
+
+
 
 

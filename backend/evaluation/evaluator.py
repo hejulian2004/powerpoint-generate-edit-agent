@@ -23,7 +23,7 @@ from ..layout.constraints import estimate_text_lines
 from ..layout.schema import DeckLayoutSpec, ElementType, LayoutElement, LayoutSpec, Rect
 from ..layout.validator import validate_layout
 from .issues import deduplicate_issues
-from .schema import IssueSeverity, IssueType, VisualIssue, VLMEvaluationResponse
+from .schema import IssueSeverity, IssueType, VisualEvaluationError, VisualIssue, VLMEvaluationResponse
 
 logger = logging.getLogger(__name__)
 
@@ -300,9 +300,11 @@ class OpenAICompatibleVisionEvaluator(VisualEvaluator):
                     response = json.loads(resp.read().decode("utf-8"))
 
             return self.parse_vlm_response(response, layout_spec.slide_id)
+        except VisualEvaluationError:
+            raise
         except Exception as exc:
             logger.warning("OpenAICompatibleVisionEvaluator request failed: %s", exc)
-            return []
+            raise VisualEvaluationError(f"VLM evaluation request failed: {exc}") from exc
 
     def build_request_payload(
         self,
@@ -370,39 +372,42 @@ class OpenAICompatibleVisionEvaluator(VisualEvaluator):
     @staticmethod
     def parse_vlm_response(response: Dict[str, Any], default_slide_id: str) -> List[VisualIssue]:
         """Extract and strictly validate VisualIssue objects from VLM response JSON using VLMEvaluationResponse."""
+        choices = response.get("choices", [])
+        if not choices:
+            raise VisualEvaluationError("VLM response contained empty choices")
+
+        content = choices[0].get("message", {}).get("content", "")
+        # Clean possible markdown fence
+        content = content.strip()
+        if content.startswith("```json"):
+            content = content[7:]
+        if content.startswith("```"):
+            content = content[3:]
+        if content.endswith("```"):
+            content = content[:-3]
+        content = content.strip()
+
         try:
-            choices = response.get("choices", [])
-            if not choices:
-                return []
-            content = choices[0].get("message", {}).get("content", "")
-            # Clean possible markdown fence
-            content = content.strip()
-            if content.startswith("```json"):
-                content = content[7:]
-            if content.startswith("```"):
-                content = content[3:]
-            if content.endswith("```"):
-                content = content[:-3]
-            content = content.strip()
-
             parsed = json.loads(content)
+        except Exception as exc:
+            raise VisualEvaluationError(f"VLM response is not valid JSON: {exc}. Content: {content[:100]}") from exc
 
-            # Normalization to VLMEvaluationResponse schema
-            if isinstance(parsed, list):
-                payload_dict = {"issues": parsed}
-            elif isinstance(parsed, dict) and "issues" in parsed:
-                payload_dict = parsed
-            else:
-                # Disallow arbitrary text dicts without issues
-                return []
+        # Normalization to VLMEvaluationResponse schema
+        if isinstance(parsed, list):
+            payload_dict = {"issues": parsed}
+        elif isinstance(parsed, dict) and "issues" in parsed:
+            payload_dict = parsed
+        else:
+            # Disallow arbitrary text dicts without issues
+            raise VisualEvaluationError(f"VLM response JSON missing 'issues' field. Content: {content[:100]}")
 
-            # Ensure slide_id fallback
-            for item in payload_dict.get("issues", []):
-                if isinstance(item, dict) and not item.get("slide") and not item.get("slide_id"):
-                    item["slide"] = default_slide_id
+        # Ensure slide_id fallback
+        for item in payload_dict.get("issues", []):
+            if isinstance(item, dict) and not item.get("slide") and not item.get("slide_id"):
+                item["slide"] = default_slide_id
 
+        try:
             vlm_container = VLMEvaluationResponse.model_validate(payload_dict)
             return vlm_container.issues
         except Exception as exc:
-            logger.warning("Failed to parse/validate VLM response schema: %s", exc)
-            return []
+            raise VisualEvaluationError(f"VLM response violates schema: {exc}") from exc

@@ -116,7 +116,7 @@ def test_screenshot_backends_availability() -> None:
 
 
 def test_screenshot_fidelity_metadata(sample_test_pptx: Path, tmp_path: Path) -> None:
-    """Must-have Test 2: ScreenshotRenderer surfaces backend type and fidelity metadata (REAL vs APPROXIMATE)."""
+    """Must-have Test 2: ScreenshotRenderer surfaces backend type and fidelity metadata (NATIVE, COMPATIBLE, APPROXIMATE)."""
     from backend.evaluation.schema import ScreenshotBackendType, ScreenshotFidelity
 
     # Fallback backend must be explicitly marked as APPROXIMATE fidelity
@@ -127,12 +127,12 @@ def test_screenshot_fidelity_metadata(sample_test_pptx: Path, tmp_path: Path) ->
     assert fb_result.backend == ScreenshotBackendType.FALLBACK
     assert len(fb_result.image_paths) == 3
 
-    # Backend types for native options
+    # Backend types for native & compatible options
     from backend.evaluation.screenshot import LibreOfficeBackend, PowerPointBackend
 
-    assert PowerPointBackend.fidelity == ScreenshotFidelity.REAL
+    assert PowerPointBackend.fidelity == ScreenshotFidelity.NATIVE
     assert PowerPointBackend.backend_type == ScreenshotBackendType.POWERPOINT
-    assert LibreOfficeBackend.fidelity == ScreenshotFidelity.REAL
+    assert LibreOfficeBackend.fidelity == ScreenshotFidelity.COMPATIBLE
     assert LibreOfficeBackend.backend_type == ScreenshotBackendType.LIBREOFFICE
 
 

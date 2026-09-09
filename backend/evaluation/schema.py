@@ -128,6 +128,28 @@ class PatchResult(BaseModel):
     rejected_reason: Optional[str] = Field(None, description="Explanation if candidate patch was rejected/rolled back")
 
 
+class VisualEvaluationError(RuntimeError):
+    """Raised when visual evaluation fails due to client error, timeout, or malformed response."""
+    pass
+
+
+class EvaluationResult(BaseModel):
+    """Container for the outcome of a visual evaluation run."""
+
+    success: bool = Field(True, description="Whether visual evaluation succeeded")
+    issues: List[VisualIssue] = Field(default_factory=list, description="List of detected visual issues")
+    error: Optional[str] = Field(None, description="Error message if evaluation failed")
+
+    def __iter__(self):
+        return iter(self.issues)
+
+    def __len__(self) -> int:
+        return len(self.issues)
+
+    def __getitem__(self, index: int) -> VisualIssue:
+        return self.issues[index]
+
+
 class ScreenshotBackendType(str, Enum):
     """Rendering backend used to produce slide screenshots."""
 
@@ -139,8 +161,11 @@ class ScreenshotBackendType(str, Enum):
 class ScreenshotFidelity(str, Enum):
     """Confidence level of rendered screenshot relative to native PowerPoint rasterization."""
 
-    REAL = "real"
+    NATIVE = "native"
+    COMPATIBLE = "compatible"
     APPROXIMATE = "approximate"
+    # Backward compatibility alias
+    REAL = "native"
 
 
 class ScreenshotResult(BaseModel):
@@ -148,7 +173,7 @@ class ScreenshotResult(BaseModel):
 
     image_paths: List[Path] = Field(default_factory=list, description="List of exported PNG paths")
     backend: ScreenshotBackendType = Field(..., description="Backend engine utilized")
-    fidelity: ScreenshotFidelity = Field(..., description="Visual fidelity level: real vs approximate")
+    fidelity: ScreenshotFidelity = Field(..., description="Visual fidelity level: real/native vs approximate")
     metadata: Dict[str, Any] = Field(default_factory=dict, description="Resolution, execution time, etc.")
 
     def __iter__(self):
@@ -185,6 +210,9 @@ class SelfHealingResult(BaseModel):
     final_pptx_path: Optional[str] = Field(None, description="Path to the final exported PPTX file")
     final_screenshot_paths: List[str] = Field(default_factory=list, description="Paths to final slide screenshots")
     final_screenshot_result: Optional[ScreenshotResult] = Field(None, description="Full screenshot metadata")
+    evaluation_failed: bool = Field(False, description="Whether evaluation crashed or failed")
+    stop_reason: Optional[str] = Field(None, description="Reason for stopping: converged, worsened, oscillated, evaluation_failed, max_iterations")
+    error: Optional[str] = Field(None, description="Detailed error message if evaluation failed")
 
     def to_json_file(self, path: Union[str, Path]) -> Path:
         out = Path(path)

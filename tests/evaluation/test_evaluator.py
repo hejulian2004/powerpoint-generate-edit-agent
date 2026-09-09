@@ -1,6 +1,9 @@
 """Tests for Visual Evaluator and Rule-Based Defect Detection (PR12 Test 3)."""
 
+import json
 from typing import Any, Dict
+
+import pytest
 
 from backend.evaluation.evaluator import OpenAICompatibleVisionEvaluator, RuleBasedEvaluator
 from backend.evaluation.schema import IssueSeverity, IssueType
@@ -283,5 +286,42 @@ def test_empty_text_no_false_positive_overflow() -> None:
     issues = evaluator.evaluate(slide_image=None, layout_spec=slide)
     overflow_issues = [i for i in issues if i.issue_type == IssueType.TEXT_OVERFLOW]
     assert len(overflow_issues) == 0
+
+
+def test_vlm_evaluator_raises_on_error_or_malformed_json() -> None:
+    """Configured VLM evaluator raises VisualEvaluationError on API errors or malformed JSON."""
+    from backend.evaluation.schema import VisualEvaluationError
+
+    # 1. API exception / timeout
+    def failing_client(payload):
+        raise TimeoutError("Connection timed out after 30s")
+
+    evaluator = OpenAICompatibleVisionEvaluator(api_key="sk-fake", client_fn=failing_client)
+    slide = LayoutSpec(
+        slide_id="s1",
+        slide_index=1,
+        visual_intent=VisualIntent.TITLE_HERO,
+        canvas=Canvas(width=1280, height=720),
+        elements=[],
+    )
+    with pytest.raises(VisualEvaluationError, match="Connection timed out"):
+        evaluator.evaluate(None, slide)
+
+    # 2. Malformed JSON response
+    def malformed_client(payload):
+        return {"choices": [{"message": {"content": "This is plain text not JSON"}}]}
+
+    evaluator2 = OpenAICompatibleVisionEvaluator(api_key="sk-fake", client_fn=malformed_client)
+    with pytest.raises(VisualEvaluationError, match="not valid JSON"):
+        evaluator2.evaluate(None, slide)
+
+    # 3. Valid JSON but violates schema
+    def invalid_schema_client(payload):
+        return {"choices": [{"message": {"content": json.dumps({"unrelated": "payload"})}}]}
+
+    evaluator3 = OpenAICompatibleVisionEvaluator(api_key="sk-fake", client_fn=invalid_schema_client)
+    with pytest.raises(VisualEvaluationError, match="missing 'issues' field"):
+        evaluator3.evaluate(None, slide)
+
 
 

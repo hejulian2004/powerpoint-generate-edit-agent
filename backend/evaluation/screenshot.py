@@ -53,7 +53,7 @@ class PowerPointBackend(ScreenshotBackend):
     """
 
     backend_type = ScreenshotBackendType.POWERPOINT
-    fidelity = ScreenshotFidelity.REAL
+    fidelity = ScreenshotFidelity.NATIVE
 
     def is_available(self) -> bool:
         if os.name != "nt":
@@ -138,7 +138,7 @@ class LibreOfficeBackend(ScreenshotBackend):
     """Linux/cross-platform headless LibreOffice + pypdfium2 renderer."""
 
     backend_type = ScreenshotBackendType.LIBREOFFICE
-    fidelity = ScreenshotFidelity.REAL
+    fidelity = ScreenshotFidelity.COMPATIBLE
 
     def __init__(self) -> None:
         self.soffice_cmd = shutil.which("soffice") or shutil.which("libreoffice")

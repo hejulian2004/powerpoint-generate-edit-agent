@@ -148,12 +148,30 @@ def apply_patch_transaction(
     report_after = validator(candidate_spec)
     errors_after = list(report_after.errors)
 
-    # Detect newly introduced critical errors
-    new_errors = [err for err in errors_after if err not in errors_before]
+    # Detect newly introduced structured constraint violations
+    violations_before = {
+        (c.constraint_type, tuple(sorted(c.target_element_ids or [])))
+        for c in report_before.evaluated_constraints
+        if not c.satisfied
+    }
+    violations_after = {
+        (c.constraint_type, tuple(sorted(c.target_element_ids or [])))
+        for c in report_after.evaluated_constraints
+        if not c.satisfied
+    }
+    new_violations = violations_after - violations_before
 
-    if new_errors:
+    # Detect newly introduced unstructured errors
+    new_unstructured_errors = [err for err in errors_after if err not in errors_before]
+
+    if new_violations or new_unstructured_errors:
         # Transaction rollback: reject candidate patch
-        rejection_msg = f"Patch rejected: introduced {len(new_errors)} new layout violation(s): {'; '.join(new_errors[:2])}"
+        detail_msg = []
+        if new_violations:
+            detail_msg.append(f"{len(new_violations)} structured constraint violation(s) {list(new_violations)[:2]}")
+        if new_unstructured_errors:
+            detail_msg.append(f"{len(new_unstructured_errors)} error(s): {'; '.join(new_unstructured_errors[:2])}")
+        rejection_msg = f"Patch rejected: introduced {'; '.join(detail_msg)}"
         patch_res = PatchResult(
             success=False,
             patch=patch,

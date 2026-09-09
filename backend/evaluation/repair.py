@@ -25,9 +25,21 @@ from .schema import (
     RepairIterationRecord,
     ScreenshotResult,
     SelfHealingResult,
+    VisualEvaluationError,
     VisualIssue,
 )
 from .screenshot import ScreenshotRenderer
+
+
+def compute_layout_score(issues: List[VisualIssue]) -> tuple[int, int, int]:
+    """Calculate a lexicographical quality penalty score for a set of visual issues.
+
+    Lower score is strictly better: (error_count, warning_count, total_issue_count).
+    """
+    err_cnt = sum(1 for i in issues if i.severity in (IssueSeverity.ERROR, IssueSeverity.CRITICAL))
+    warn_cnt = sum(1 for i in issues if i.severity == IssueSeverity.WARNING)
+    tot_cnt = len(issues)
+    return (err_cnt, warn_cnt, tot_cnt)
 
 
 def generate_patches_for_issues(
@@ -251,14 +263,14 @@ def evaluate_and_repair(
     actual_render_fn = renderer_fn or (lambda spec, p: render_pptx(spec, p))
 
     current_deck = deck_layout
-    best_deck = deck_layout
-    best_error_count = float("inf")
-    best_issue_count = float("inf")
+    best_deck = deck_layout.model_copy(deep=True)
+    best_score: tuple[int, int, int] = (1000000, 1000000, 1000000)
 
     history: List[RepairIterationRecord] = []
     final_screenshots: List[Path] = []
-    final_screenshot_result: Optional[ScreenshotResult] = None
+    final_shot_result: Optional[ScreenshotResult] = None
     final_issues: List[VisualIssue] = []
+    stop_reason: str = "max_iterations"
 
     prev_issue_signatures: set[str] = set()
 
@@ -270,21 +282,71 @@ def evaluate_and_repair(
         iter_shots_dir = shots_dir / f"iter_{iteration}"
         iter_shots_dir.mkdir(parents=True, exist_ok=True)
         shot_result = shot_engine.render_detailed(out_pptx, iter_shots_dir)
-        final_screenshots = shot_result.image_paths
-        final_screenshot_result = shot_result
 
-        # Step 3: Evaluate Deck
-        issues = eval_engine.evaluate_deck(shot_result.image_paths, current_deck)
-        final_issues = issues
+        # Step 3: Evaluate Deck with strict error handling
+        try:
+            issues = eval_engine.evaluate_deck(shot_result.image_paths, current_deck)
+        except VisualEvaluationError as eval_exc:
+            # Evaluation failed (e.g. timeout, malformed JSON, service crash)
+            # Record audit and STOP immediately with converged=False
+            history.append(
+                RepairIterationRecord(
+                    iteration=iteration,
+                    issues_detected=[],
+                    patches_applied=[],
+                    patch_results=[],
+                    screenshot_paths=[str(p) for p in shot_result.image_paths],
+                    screenshot_fidelity=shot_result.fidelity,
+                    error_count=0,
+                    warning_count=0,
+                )
+            )
+            # Re-render best known deck to out_pptx for safety
+            actual_render_fn(best_deck, out_pptx)
+            return SelfHealingResult(
+                converged=False,
+                evaluation_failed=True,
+                stop_reason="evaluation_failed",
+                error=str(eval_exc),
+                iterations_run=len(history),
+                final_issues=[],
+                history=history,
+                final_pptx_path=str(out_pptx),
+                final_screenshot_paths=[str(p) for p in shot_result.image_paths],
+                final_screenshot_result=shot_result,
+            )
 
         err_cnt = sum(1 for i in issues if i.severity in (IssueSeverity.ERROR, IssueSeverity.CRITICAL))
         warn_cnt = sum(1 for i in issues if i.severity == IssueSeverity.WARNING)
+        current_score = compute_layout_score(issues)
 
-        # Track best deck state
-        if err_cnt < best_error_count or (err_cnt == best_error_count and len(issues) < best_issue_count):
+        # First iteration establishes baseline
+        if iteration == 1:
+            best_score = current_score
             best_deck = current_deck.model_copy(deep=True)
-            best_error_count = err_cnt
-            best_issue_count = len(issues)
+        else:
+            # Monotonicity check: Detect worsening
+            if current_score > best_score:
+                # Worsening detected: rollback immediately to best_deck
+                history.append(
+                    RepairIterationRecord(
+                        iteration=iteration,
+                        issues_detected=issues,
+                        patches_applied=[],
+                        patch_results=[],
+                        screenshot_paths=[str(p) for p in shot_result.image_paths],
+                        screenshot_fidelity=shot_result.fidelity,
+                        error_count=err_cnt,
+                        warning_count=warn_cnt,
+                    )
+                )
+                current_deck = best_deck.model_copy(deep=True)
+                stop_reason = "worsened"
+                break
+            else:
+                # Candidate state is as good or strictly better
+                best_score = current_score
+                best_deck = current_deck.model_copy(deep=True)
 
         # Check convergence: Zero blocking errors
         if not has_blocking_errors(issues):
@@ -302,6 +364,8 @@ def evaluate_and_repair(
             )
             return SelfHealingResult(
                 converged=True,
+                evaluation_failed=False,
+                stop_reason="converged",
                 iterations_run=iteration,
                 final_issues=issues,
                 history=history,
@@ -310,7 +374,7 @@ def evaluate_and_repair(
                 final_screenshot_result=shot_result,
             )
 
-        # Monotonicity check: Detect worsening or endless oscillation
+        # Oscillation check: Detect endless repeated issue signatures
         current_sig = "|".join(sorted(f"{i.slide_id}:{i.issue_type}:{i.element_id}" for i in issues))
         if current_sig in prev_issue_signatures:
             # Oscillation detected: no progress made from previous cycle
@@ -326,8 +390,8 @@ def evaluate_and_repair(
                     warning_count=warn_cnt,
                 )
             )
-            # Revert to best known deck
-            current_deck = best_deck
+            current_deck = best_deck.model_copy(deep=True)
+            stop_reason = "oscillated"
             break
 
         prev_issue_signatures.add(current_sig)
@@ -352,6 +416,8 @@ def evaluate_and_repair(
                     warning_count=warn_cnt,
                 )
             )
+            stop_reason = "no_patches"
+            current_deck = best_deck.model_copy(deep=True)
             break
 
         # Step 5: Apply Patches transactionally to current DeckLayoutSpec
@@ -373,20 +439,28 @@ def evaluate_and_repair(
 
         if not accepted_patches:
             # All candidate patches were rejected by transaction guard; stop early
+            stop_reason = "patches_rejected"
+            current_deck = best_deck.model_copy(deep=True)
             break
 
         current_deck = patched_deck
 
-    # Final re-render & re-evaluation of best deck state
+    # Final Guarantee: Always render the absolute best deck discovered across all iterations
+    current_deck = best_deck.model_copy(deep=True)
     actual_render_fn(current_deck, out_pptx)
     final_shots_dir = shots_dir / "final"
     final_shots_dir.mkdir(parents=True, exist_ok=True)
     final_shot_result = shot_engine.render_detailed(out_pptx, final_shots_dir)
     final_screenshots = final_shot_result.image_paths
-    final_issues = eval_engine.evaluate_deck(final_screenshots, current_deck)
+    try:
+        final_issues = eval_engine.evaluate_deck(final_screenshots, current_deck)
+    except Exception:
+        final_issues = []
 
     return SelfHealingResult(
         converged=not has_blocking_errors(final_issues),
+        evaluation_failed=False,
+        stop_reason=stop_reason,
         iterations_run=len(history),
         final_issues=final_issues,
         history=history,
