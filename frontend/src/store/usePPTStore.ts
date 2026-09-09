@@ -50,9 +50,19 @@ interface PPTState {
   setAgentThinking: (thinking: boolean, status?: string) => void
 
   // Quick Canvas Tools
-  addShapeQuick: (shapeType: string) => void
-  addTextQuick: () => void
+  addShapeQuick: (shapeType: string, x?: number, y?: number) => void
+  addTextQuick: (x?: number, y?: number) => void
   addConnectorQuick: () => void
+
+  // Direct GUI Actions (decoupled from chat dialogue)
+  executeDirectAction: (action: string, payload?: Record<string, any>) => void
+  addNewSlide: (backgroundColor?: string) => void
+  deleteSlide: (slideIdOrNum: string | number) => void
+  deleteSelectedElement: () => void
+  duplicateSelectedElement: () => void
+  setSlideBackgroundDirect: (color: string) => void
+  optimizeLayoutDirect: () => void
+  applyThemeDirect: (themePreset: string) => void
 
   // API / WS
   ws: WebSocket | null
@@ -141,22 +151,113 @@ export const usePPTStore = create<PPTState>((set, get) => ({
     thinkingStatus: status
   }),
 
-  addShapeQuick: (shapeType = 'roundRect') => {
-    const slide = get().getActiveSlide()
-    if (!slide) return
-    get().sendChatMessage(`请在当前页添加一个 ${shapeType} 矩形卡片`)
+  executeDirectAction: (action: string, payload: Record<string, any> = {}) => {
+    const { ws, sessionId, activeSlideId } = get()
+    const finalPayload = { slide_id: activeSlideId, ...payload }
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({
+        type: 'direct_action',
+        action,
+        payload: finalPayload,
+        session_id: sessionId
+      }))
+    }
   },
 
-  addTextQuick: () => {
+  addNewSlide: (backgroundColor = '#FFFFFF') => {
+    get().executeDirectAction('create_slide', {
+      title: '新建幻灯片',
+      background_color: backgroundColor
+    })
+  },
+
+  deleteSlide: (slideIdOrNum: string | number) => {
+    get().executeDirectAction('delete_slide', {
+      slide_id_or_num: String(slideIdOrNum)
+    })
+  },
+
+  deleteSelectedElement: () => {
+    const { selectedElementId, activeSlideId } = get()
+    if (!selectedElementId) return
+    get().executeDirectAction('delete_element', {
+      element_id: selectedElementId,
+      slide_id: activeSlideId
+    })
+    set({ selectedElementId: null })
+  },
+
+  duplicateSelectedElement: () => {
+    const { selectedElementId, activeSlideId } = get()
+    if (!selectedElementId) return
+    get().executeDirectAction('duplicate_element', {
+      element_id: selectedElementId,
+      slide_id: activeSlideId
+    })
+  },
+
+  setSlideBackgroundDirect: (color: string) => {
+    const { activeSlideId } = get()
+    get().executeDirectAction('set_slide_background', {
+      color,
+      slide_id: activeSlideId
+    })
+  },
+
+  optimizeLayoutDirect: () => {
+    const { activeSlideId } = get()
+    get().executeDirectAction('optimize_layout', {
+      layout_mode: 'horizontal_cards',
+      slide_id: activeSlideId
+    })
+  },
+
+  applyThemeDirect: (themePreset: string) => {
+    get().executeDirectAction('apply_theme', {
+      theme_preset: themePreset
+    })
+  },
+
+  addShapeQuick: (shapeType = 'roundRect', x = 200, y = 200) => {
     const slide = get().getActiveSlide()
     if (!slide) return
-    get().sendChatMessage(`请在当前页添加一个文本标题`)
+    get().executeDirectAction('add_shape', {
+      shape_type: shapeType,
+      x,
+      y,
+      width: 280,
+      height: 160,
+      fill_color: '#F8FAFC',
+      border_color: '#CBD5E1',
+      text: ''
+    })
+  },
+
+  addTextQuick: (x = 200, y = 200) => {
+    const slide = get().getActiveSlide()
+    if (!slide) return
+    get().executeDirectAction('add_text', {
+      text: '点击输入文本',
+      x,
+      y,
+      width: 360,
+      height: 60,
+      font_size: 24,
+      font_color: '#0F172A',
+      bold: true
+    })
   },
 
   addConnectorQuick: () => {
     const slide = get().getActiveSlide()
     if (!slide) return
-    get().sendChatMessage(`请在当前页添加一条带箭头的连接线`)
+    get().executeDirectAction('add_connector', {
+      start_x: 200,
+      start_y: 260,
+      end_x: 440,
+      end_y: 260,
+      border_color: '#94A3B8'
+    })
   },
 
   initWebSocket: () => {

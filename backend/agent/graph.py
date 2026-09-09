@@ -121,7 +121,10 @@ async def planner_node(state: PPTAgentState, config: RunnableConfig) -> Dict[str
     elif intent == "generate_presentation":
         plan_desc = f"规划生成多页精美演示文稿: 包含封面、核心架构、实施流程时间线、关键性能指标与总结展望。"
     elif intent == "generate_slide":
-        plan_desc = f"规划生成当前页面布局架构: 统一字号层级、计算间距与容器圆角，避免元素交叠。"
+        if any(k in user_query for k in ["新增一页", "添加一页", "新页面", "新建页面", "新增幻灯片", "新建幻灯片", "加一页", "空白", "创建一页"]):
+            plan_desc = "创建一页空白幻灯片，设置背景色并切换至新页面。"
+        else:
+            plan_desc = f"规划生成当前页面布局架构: 统一字号层级、计算间距与容器圆角，避免元素交叠。"
     elif intent == "optimize_layout":
         plan_desc = "计算画布几何重心，重新规整图元水平/垂直对齐与呼吸留白。"
     elif intent == "apply_theme":
@@ -308,6 +311,23 @@ def _heuristic_tool_planner(
                         {"title": "方案 A (传统模式)", "description": "• 成本高、周期长\n• 灵活性差\n• 难以快速规模化复制"},
                         {"title": "方案 B (智能协同)", "description": "• 毫秒级生成与重绘\n• 统一高质感设计系统\n• 赋能全员高效表达"}
                     ]
+                },
+                "id": f"call_{uuid.uuid4().hex[:6]}"
+            })
+        elif any(k in user_query for k in ["新增一页", "添加一页", "新页面", "新建页面", "新增幻灯片", "新建幻灯片", "加一页", "空白", "创建一页"]):
+            bg = "#0A0A0A"
+            if active_slide and getattr(active_slide.background, "color", None):
+                bg = active_slide.background.color
+            if "白" in user_query and "黑" not in user_query:
+                bg = "#FFFFFF"
+            elif "黑" in user_query and "白" not in user_query:
+                bg = "#0A0A0A"
+
+            tool_calls.append({
+                "name": "create_slide",
+                "arguments": {
+                    "title": "新建幻灯片",
+                    "background_color": bg
                 },
                 "id": f"call_{uuid.uuid4().hex[:6]}"
             })
@@ -705,7 +725,11 @@ async def summary_node(state: PPTAgentState, config: RunnableConfig) -> Dict[str
     elif intent == "generate_presentation":
         final_text = f"已为您成功构思并生成完整的《{pres.title if pres else '演示文稿'}》，共 {len(pres.slides) if pres else 1} 页。页面涵盖封面、核心特性、演进流程与关键指标，并已统一应用专业设计规范。"
     elif intent == "generate_slide":
-        final_text = f"已为您在当前页面完成高保真架构排版。按统一网格计算了元素坐标与呼吸感留白，已就绪供您查看与微调。"
+        has_created = any(r.get("tool") == "create_slide" for r in tool_results)
+        if has_created:
+            final_text = f"已为您成功创建第 {len(pres.slides) if pres else 1} 页空白幻灯片，画布已自动切换至新页面，您可以开始自由添加内容。"
+        else:
+            final_text = f"已为您在当前页面完成高保真架构排版。按统一网格计算了元素坐标与呼吸感留白，已就绪供您查看与微调。"
     elif intent == "optimize_layout":
         final_text = "已自动执行几何网格对齐与规整，优化了卡片间距与容器层级，排版更加匀称工整。"
     elif intent == "apply_theme":

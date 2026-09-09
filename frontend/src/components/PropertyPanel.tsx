@@ -35,9 +35,11 @@ export const PropertyPanel: React.FC = () => {
   const {
     getActiveSlide,
     getSelectedElement,
-    updateElementDirect,
-    setSelectedElementId,
-    sendChatMessage
+    setSlideBackgroundDirect,
+    applyThemeDirect,
+    duplicateSelectedElement,
+    deleteSelectedElement,
+    updateElementDirect
   } = usePPTStore()
 
   const slide = getActiveSlide()
@@ -76,15 +78,15 @@ export const PropertyPanel: React.FC = () => {
             <div className="relative w-8 h-8 rounded-lg overflow-hidden border border-[#2B2E3E] shrink-0">
               <input
                 type="color"
-                value={slide?.background?.color || '#08090B'}
+                value={slide?.background?.color || '#FFFFFF'}
                 onChange={(e) => {
-                  sendChatMessage(`将当前页背景色修改为 ${e.target.value}`)
+                  setSlideBackgroundDirect(e.target.value)
                 }}
                 className="absolute -inset-2 w-12 h-12 cursor-pointer bg-transparent border-0"
               />
             </div>
             <span className="font-tabular text-xs text-[#D8DAE5] bg-[#12131B] px-3 py-1.5 rounded-lg border border-[#212330] flex-1">
-              {slide?.background?.color || '#08090B'}
+              {slide?.background?.color || '#FFFFFF'}
             </span>
           </div>
         </div>
@@ -97,14 +99,14 @@ export const PropertyPanel: React.FC = () => {
           </div>
           <div className="grid grid-cols-2 gap-2">
             {[
-              { id: 'monochrome_studio', name: '极简黑白 (Studio)', bg: '#08090B', primary: '#F1F2F6' },
-              { id: 'matte_graphite', name: '哑光石墨 (Graphite)', bg: '#12131A', primary: '#A2A6B7' },
-              { id: 'slate_silver', name: '钛金银灰 (Titanium)', bg: '#1C1E27', primary: '#E2E5F0' },
-              { id: 'stark_white', name: '纯白明晰 (White)', bg: '#F8F9FA', primary: '#0A0B0E' }
+              { id: 'stark_white', name: '纯白明晰 (White)', bg: '#FFFFFF', primary: '#0F172A' },
+              { id: 'monochrome_studio', name: '钛金雅灰 (Studio)', bg: '#F8FAFC', primary: '#1E293B' },
+              { id: 'matte_graphite', name: '哑光石墨 (Graphite)', bg: '#1E293B', primary: '#F8FAFC' },
+              { id: 'slate_silver', name: '沉稳黑曜 (Black)', bg: '#0A0A0A', primary: '#FFFFFF' }
             ].map((theme) => (
               <button
                 key={theme.id}
-                onClick={() => sendChatMessage(`应用全局主题风格: ${theme.id}`)}
+                onClick={() => applyThemeDirect(theme.id)}
                 className="flex items-center gap-2 p-2 rounded-xl bg-[#12131B] hover:bg-[#1A1C26] border border-[#212330] hover:border-[#333647] text-left transition-all"
               >
                 <div
@@ -194,17 +196,14 @@ export const PropertyPanel: React.FC = () => {
 
         <div className="flex items-center gap-1">
           <button
-            onClick={() => sendChatMessage(`帮我复制图元 (ID: ${elem.id})`)}
+            onClick={duplicateSelectedElement}
             className="p-1.5 rounded-lg text-[#82869A] hover:text-[#F1F2F6] hover:bg-[#202230] transition-colors"
             title="复制图元"
           >
             <Copy className="w-3.5 h-3.5" />
           </button>
           <button
-            onClick={() => {
-              sendChatMessage(`请帮我删除选中的图元 (ID: ${elem.id})`)
-              setSelectedElementId(null)
-            }}
+            onClick={deleteSelectedElement}
             className="p-1.5 rounded-lg text-[#82869A] hover:text-rose-300 hover:bg-[#202230] transition-colors"
             title="删除此图元"
           >

@@ -589,6 +589,102 @@ def delete_element(
 @tools.register({
     "type": "function",
     "function": {
+        "name": "duplicate_element",
+        "description": "Duplicate an existing element with a slight offset.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "element_id": {"type": "string", "description": "Element ID to duplicate"},
+                "slide_id": {"type": "string", "description": "Slide ID or empty for active slide"}
+            },
+            "required": ["element_id"]
+        }
+    }
+})
+def duplicate_element(
+    pres: PresentationIR,
+    history: HistoryManager,
+    element_id: str,
+    slide_id: Optional[str] = None
+) -> Dict[str, Any]:
+    slide = pres.get_slide(slide_id) if slide_id else pres.get_active_slide()
+    if not slide:
+        return {"success": False, "error": "Slide not found"}
+    elem = slide.get_element(element_id)
+    if not elem:
+        return {"success": False, "error": "Element not found"}
+
+    new_dump = elem.model_dump()
+    new_dump["id"] = f"{elem.type}_{uuid.uuid4().hex[:6]}"
+    new_dump["x"] = elem.x + 20.0
+    new_dump["y"] = elem.y + 20.0
+
+    from ..ir.models import ShapeElementIR, TextElementIR, ConnectorElementIR, ImageElementIR, TableElementIR
+    type_map = {
+        "shape": ShapeElementIR,
+        "text": TextElementIR,
+        "connector": ConnectorElementIR,
+        "image": ImageElementIR,
+        "table": TableElementIR
+    }
+    cls = type_map.get(elem.type, ShapeElementIR)
+    new_elem = cls(**new_dump)
+    slide.add_element(new_elem)
+    pres.version += 1
+
+    history.record(
+        action="add_element",
+        description=f"复制图元: {element_id}",
+        slide_id=slide.id,
+        element_id=new_elem.id,
+        after=new_elem.model_dump()
+    )
+    return {"success": True, "new_element_id": new_elem.id}
+
+
+@tools.register({
+    "type": "function",
+    "function": {
+        "name": "set_slide_background",
+        "description": "Set background color of a slide.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "slide_id": {"type": "string", "description": "Target slide ID or empty for active slide"},
+                "color": {"type": "string", "description": "Hex color like #FFFFFF or #0F172A"}
+            },
+            "required": ["color"]
+        }
+    }
+})
+def set_slide_background(
+    pres: PresentationIR,
+    history: HistoryManager,
+    color: str,
+    slide_id: Optional[str] = None
+) -> Dict[str, Any]:
+    slide = pres.get_slide(slide_id) if slide_id else pres.get_active_slide()
+    if not slide:
+        return {"success": False, "error": "Slide not found"}
+
+    old_color = getattr(slide.background, "color", "#FFFFFF")
+    slide.background.color = color
+    slide.background.type = "solid"
+    pres.version += 1
+
+    history.record(
+        action="set_slide_background",
+        description=f"修改背景色: {color}",
+        slide_id=slide.id,
+        before={"color": old_color},
+        after={"color": color}
+    )
+    return {"success": True, "color": color, "slide_id": slide.id}
+
+
+@tools.register({
+    "type": "function",
+    "function": {
         "name": "group_elements",
         "description": "Group multiple elements on a slide into a single group container.",
         "parameters": {
@@ -811,15 +907,36 @@ def apply_theme(pres: PresentationIR, history: HistoryManager, theme_preset: str
             "border": "#FDE68A"
         },
         "monochrome_studio": {
+            "bg": "#FFFFFF",
+            "card_fill": "#F8FAFC",
+            "primary": "#0F172A",
+            "text": "#0F172A",
+            "border": "#E2E8F0"
+        },
+        "stark_white": {
+            "bg": "#FFFFFF",
+            "card_fill": "#FFFFFF",
+            "primary": "#0F172A",
+            "text": "#0F172A",
+            "border": "#CBD5E1"
+        },
+        "slate_silver": {
             "bg": "#0A0A0A",
             "card_fill": "#141414",
             "primary": "#F1F2F6",
             "text": "#FFFFFF",
             "border": "#2E2E2E"
+        },
+        "matte_graphite": {
+            "bg": "#1E293B",
+            "card_fill": "#334155",
+            "primary": "#F8FAFC",
+            "text": "#F8FAFC",
+            "border": "#475569"
         }
     }
 
-    t = presets.get(theme_preset, presets["tech_blue"])
+    t = presets.get(theme_preset, presets["monochrome_studio"])
     pres.theme["name"] = theme_preset
     pres.theme["primary_color"] = t["primary"]
     pres.theme["background_color"] = t["bg"]
@@ -925,7 +1042,7 @@ def generate_presentation(
             id=slide_id,
             slide_num=start_num + i,
             title=s_title,
-            background=FillStyle(type="solid", color="#0A0A0A")
+            background=FillStyle(type="solid", color="#FFFFFF")
         )
 
         _build_slide_elements_by_layout(slide, s_title, s_layout, s_subtitle, s_items)
