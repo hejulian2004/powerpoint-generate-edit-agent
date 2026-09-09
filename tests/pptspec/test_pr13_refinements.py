@@ -220,14 +220,15 @@ def test_missing_metric_value_rejected():
             {"id": "m_valid", "kind": "metric", "name": "Latency", "value": "120ms"},
             {"id": "m_empty", "kind": "metric", "name": "Throughput", "value": ""},
             {"id": "m_none", "kind": "metric", "name": "Accuracy"},
-            {
-                "id": "mg1",
-                "kind": "metric_group",
-                "metrics": [
-                    {"name": "M1", "value": "10"},
-                    {"name": "M2", "value": None},
-                ],
-            },
+                {
+                    "id": "mg1",
+                    "kind": "metric_group",
+                    "group_name": "Benchmark Results",
+                    "metrics": [
+                        {"name": "M1", "value": "10"},
+                        {"name": "M2", "value": None},
+                    ],
+                },
         ],
         "slides": [{"title": "Results", "evidence_refs": ["m_valid"]}],
     }
@@ -703,6 +704,7 @@ async def test_markdown_bullet_no_duplicate_evidence():
 async def test_json_bullet_deduplication():
     """Loose JSON with 1 figure ref and 1 bullet must yield exactly 1 figure + 1 claim."""
     loose_json = json.dumps({
+        "raw_text": "Overall system pipeline overview is described in Figure 1 on page 2.",
         "presentation": {"title": "Test"},
         "evidence": [
             {"id": "f1", "kind": "figure_reference", "label": "Figure 1", "source_page": 2}
@@ -822,6 +824,103 @@ async def test_table_source_reference_preservation():
     all_text = " ".join(r.text for p in ph.text_content.paragraphs for r in p.runs)
     assert "[TABLE 7]" in all_text
     assert "请粘贴论文原始 Table 7" in all_text
+
+
+@pytest.mark.anyio
+async def test_table_caption_merged_with_markdown_table():
+    """Table 7 caption followed by complete markdown table merges into exactly one complete TableEvidence.
+
+    Must compile to editable TableElementIR with no placeholder shape.
+    """
+    input_text = """
+    # Benchmark Study
+
+    ## Slide 1: Main Results
+    Table 7: Main Experimental Comparison
+
+    | Model | Accuracy |
+    |---|---|
+    | Baseline | 82.5% |
+    | Ours | 91.2% |
+    """
+    res = await normalize_presentation_input(input_text, strict_truthfulness=True)
+    assert res.valid is True
+    assert res.spec is not None
+
+    # Verify exactly one TableEvidence
+    tables = [ev for ev in res.spec.evidence if isinstance(ev, TableEvidence)]
+    assert len(tables) == 1
+    tbl = tables[0]
+    assert tbl.complete_table is True
+    assert tbl.source_reference == "Table 7"
+    assert "Main Experimental Comparison" in (tbl.caption or "")
+    assert tbl.columns == ["Model", "Accuracy"]
+    assert len(tbl.rows) == 2
+
+    # No asset requirements for complete tables
+    assert len(res.asset_requirements) == 0
+
+    # Compile all the way to PresentationIR
+    deck_spec = compile_pptspec_to_deckspec(res.spec)
+    deck_layout = generate_deck_layout(deck_spec)
+    pres_ir = compile_layout_to_presentation_ir(deck_layout)
+
+    ir_slide = pres_ir.slides[0]
+    # Must have editable TableElementIR
+    table_ir_elements = [el for el in ir_slide.elements if isinstance(el, TableElementIR)]
+    assert len(table_ir_elements) == 1
+
+    # Must NOT have any placeholder ShapeElementIR
+    placeholder_shapes = [
+        el for el in ir_slide.elements
+        if isinstance(el, ShapeElementIR) and el.metadata.get("is_table_placeholder")
+    ]
+    assert len(placeholder_shapes) == 0
+
+
+@pytest.mark.anyio
+async def test_source_document_title_not_inferred_from_presentation_heading():
+    """Markdown '# AnomalyAgent 组会汇报' sets presentation.title, but source_document.title remains None."""
+    input_text = """
+    # AnomalyAgent 组会汇报
+
+    ## Slide 1: 背景
+    - 传统系统排障困难
+    """
+    res = await normalize_presentation_input(input_text, strict_truthfulness=True)
+    assert res.valid is True
+    assert res.spec is not None
+    assert res.spec.presentation.title == "AnomalyAgent 组会汇报"
+    # source_document.title must be None since no explicit Paper Title was provided
+    assert res.spec.source_document.title is None
+
+
+@pytest.mark.anyio
+async def test_validation_route_fatal_errors_terminate_immediately():
+    """Truthfulness errors (numeric, textual, locator, invalid ref) route directly to __end__ without repair."""
+    graph = build_generation_graph()
+
+    raw_text = "Factual basis with 80% accuracy."
+    # Canonical spec contains hallucinated fact
+    spec = CanonicalPPTSpec(
+        presentation=PresentationConfig(title="Test"),
+        evidence=[MetricEvidence(id="m1", name="HallucinatedMetric", value="80%")],
+        slides=[SlideRequest(id="s1", type=SlideType.RESULT, title="T", evidence_refs=["m1"])],
+    )
+
+    initial_state: PPTGenerationState = {
+        "raw_input": raw_text,
+        "canonical_spec": spec,
+        "session_id": "sess_fatal_route",
+        "mode": "generate",
+    }
+
+    result = await graph.ainvoke(initial_state)
+
+    # Must terminate without invoking repair_spec_node
+    assert result["status"] == "validation_failed"
+    assert result.get("spec_repair_attempts", 0) == 0
+    assert any("UNSUPPORTED_TEXTUAL_FACT" in err for err in result.get("validation_errors", []))
 
 
 

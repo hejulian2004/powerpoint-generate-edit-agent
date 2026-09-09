@@ -172,10 +172,10 @@ async def repair_spec_node(state: PPTGenerationState, config: RunnableConfig) ->
     await _safe_emit(on_event, {"type": "generation_progress", "status": "repairing_spec", "text": f"修复格式与证据映射 (第 {attempts} 次)..."})
 
     raw_input = state.get("raw_input", "")
-    _, candidate = parse_presentation_input(raw_input)
     warnings: List[str] = []
 
     try:
+        _, candidate = parse_presentation_input(raw_input)
         repaired_spec = normalize_dict_to_canonical_spec(candidate, warnings=warnings)
         return {
             "canonical_spec": repaired_spec,
@@ -343,19 +343,34 @@ async def persist_session_node(state: PPTGenerationState, config: RunnableConfig
 # =====================================================================
 
 def validation_route(state: PPTGenerationState) -> Literal["compile_slidespec_node", "repair_spec_node", "__end__"]:
-    """Route based on spec validation status."""
+    """Route based on spec validation status.
+
+    Truthfulness violations (UNSUPPORTED_NUMERIC_VALUE, UNSUPPORTED_TEXTUAL_FACT,
+    UNSUPPORTED_SOURCE_LOCATOR, INVALID_EVIDENCE_REFERENCE) are fatal non-repairable errors
+    and terminate directly to __end__.
+    """
     errors = state.get("validation_errors", [])
     if not errors:
         return "compile_slidespec_node"
+
+    fatal_error_signatures = (
+        "UNSUPPORTED_NUMERIC_VALUE",
+        "UNSUPPORTED_TEXTUAL_FACT",
+        "UNSUPPORTED_SOURCE_LOCATOR",
+        "INVALID_EVIDENCE_REFERENCE",
+    )
+
+    if any(any(sig in e for sig in fatal_error_signatures) for e in errors):
+        return "__end__"
 
     attempts = state.get("spec_repair_attempts", 0)
     max_attempts = state.get("max_spec_repair_attempts", 1)
 
     # If error is a recoverable format error and attempts haven't reached max
-    if attempts < max_attempts and not any("UNSUPPORTED_NUMERIC_VALUE" in e for e in errors):
+    if attempts < max_attempts:
         return "repair_spec_node"
 
-    # Fatal truthfulness or unrecoverable error -> terminate
+    # Max repair attempts reached or unrecoverable error -> terminate
     return "__end__"
 
 

@@ -50,6 +50,7 @@ async def test_incomplete_table_demotion():
 @pytest.mark.anyio
 async def test_compute_spec_summary():
     raw_json = """{
+        "raw_text": "Claim 1. Claim 2. Acc achieves 90%. Fig 1 is on page 2. Table data: A, B.",
         "presentation": {"title": "Summary Test"},
         "evidence": [
             {"id": "c1", "kind": "claim", "content": "Claim 1"},

@@ -267,6 +267,166 @@ def is_text_grounded(target: str, raw_text: str) -> bool:
     return target_norm in raw_norm
 
 
+@dataclass(frozen=True)
+class FactualTextField:
+    """Represents a factual textual field that enters the presentation and requires provenance grounding."""
+
+    fact_type: str
+    content: str
+    context: str
+
+
+def _is_purely_numeric(text: str) -> bool:
+    """Check if a string represents purely numeric/symbol data handled by NumericToken."""
+    cleaned = text.strip()
+    if not cleaned:
+        return True
+    # Strip common numeric decorations
+    stripped = re.sub(r"[+-]?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?", "", cleaned)
+    stripped = re.sub(r"[\s%±<>=≤≥.,:;()\[\]/-]", "", stripped)
+    return len(stripped) == 0
+
+
+def collect_factual_text_fields(spec: CanonicalPPTSpec) -> List[FactualTextField]:
+    """Collect all factual textual fields across the spec that will enter presentation output.
+
+    Exempts presentation/layout instructions (presentation.title, slide.title, slide.objective, slide.instructions).
+    """
+    fields: List[FactualTextField] = []
+
+    for ev in spec.evidence:
+        if isinstance(ev, ClaimEvidence):
+            if ev.content:
+                fields.append(FactualTextField(fact_type="claim", content=ev.content, context=f"Claim ({ev.id})"))
+        elif isinstance(ev, QuoteEvidence):
+            if ev.content:
+                fields.append(FactualTextField(fact_type="quote", content=ev.content, context=f"Quote ({ev.id})"))
+            if ev.speaker_or_section:
+                fields.append(FactualTextField(fact_type="speaker_or_section", content=ev.speaker_or_section, context=f"Quote speaker ({ev.id})"))
+        elif isinstance(ev, MetricEvidence):
+            if ev.name:
+                fields.append(FactualTextField(fact_type="metric_name", content=ev.name, context=f"Metric name ({ev.id})"))
+            if ev.method:
+                fields.append(FactualTextField(fact_type="metric_method", content=ev.method, context=f"Metric method ({ev.id})"))
+        elif isinstance(ev, MetricGroupEvidence):
+            if ev.group_name:
+                fields.append(FactualTextField(fact_type="metric_group_name", content=ev.group_name, context=f"MetricGroup '{ev.group_name}' ({ev.id})"))
+            for m in ev.metrics:
+                if m.name:
+                    fields.append(FactualTextField(fact_type="metric_entry_name", content=m.name, context=f"MetricGroup entry '{m.name}' ({ev.id})"))
+        elif isinstance(ev, TableEvidence):
+            if ev.caption:
+                fields.append(FactualTextField(fact_type="table_caption", content=ev.caption, context=f"Table caption ({ev.id})"))
+            for c_idx, col in enumerate(ev.columns):
+                if col and not _is_purely_numeric(col):
+                    fields.append(FactualTextField(fact_type="table_column", content=col, context=f"Table '{ev.id}' col {c_idx}"))
+            for r_idx, row in enumerate(ev.rows):
+                for c_idx, cell in enumerate(row):
+                    cell_str = str(cell).strip()
+                    if cell_str and not _is_purely_numeric(cell_str):
+                        fields.append(FactualTextField(fact_type="table_cell", content=cell_str, context=f"Table '{ev.id}' row {r_idx} col {c_idx}"))
+        elif isinstance(ev, FigureReferenceEvidence):
+            if ev.caption:
+                fields.append(FactualTextField(fact_type="figure_caption", content=ev.caption, context=f"Figure caption ({ev.id})"))
+        elif isinstance(ev, EquationEvidence):
+            if ev.latex:
+                fields.append(FactualTextField(fact_type="equation_latex", content=ev.latex, context=f"Equation latex ({ev.id})"))
+            if ev.description:
+                fields.append(FactualTextField(fact_type="equation_description", content=ev.description, context=f"Equation description ({ev.id})"))
+
+    if spec.source_document:
+        if spec.source_document.title:
+            fields.append(FactualTextField(fact_type="source_document_title", content=spec.source_document.title, context="source_document.title"))
+        if spec.source_document.venue:
+            fields.append(FactualTextField(fact_type="venue", content=spec.source_document.venue, context="source_document.venue"))
+        for author in spec.source_document.authors:
+            if author:
+                fields.append(FactualTextField(fact_type="author", content=author, context="source_document.authors"))
+
+    return fields
+
+
+def validate_source_locator(
+    raw_input: str,
+    label: Optional[str] = None,
+    page: Optional[int] = None,
+    window_chars: int = 200,
+) -> bool:
+    """Validate that a Figure/Table label and/or source_page exist in raw_input.
+
+    If both label and page are provided, enforces that page must appear within a contextual
+    window (+/- window_chars) of the label in the raw input.
+    """
+    if not label and page is None:
+        return True
+
+    def has_page_in_text(text: str, p: int) -> bool:
+        p_pattern = rf"(?i)(?:page|p\.|第)\s*{p}(?:\s*页|\b)"
+        return bool(re.search(p_pattern, text))
+
+    if label:
+        num_match = re.search(r"((?:Figure|Fig\.?|Table|图|表)\s*(\d+))", label, re.IGNORECASE)
+        if num_match:
+            label_prefix = num_match.group(1).split()[0]
+            n_val = num_match.group(2)
+            if re.match(r"(?i)fig|figure|图", label_prefix):
+                label_re = re.compile(rf"(?:Figure|Fig\.?|图)\s*{n_val}\b", re.IGNORECASE)
+            else:
+                label_re = re.compile(rf"(?:Table|表)\s*{n_val}\b", re.IGNORECASE)
+
+            matches = list(label_re.finditer(raw_input))
+            if not matches:
+                return False
+
+            if page is not None:
+                bound = False
+                for m in matches:
+                    start = max(0, m.start() - window_chars)
+                    end = min(len(raw_input), m.end() + window_chars)
+                    window_text = raw_input[start:end]
+                    if has_page_in_text(window_text, page):
+                        # Ensure no other figure/table label appears between m and the page citation in window
+                        before_m = raw_input[start:m.start()]
+                        after_m = raw_input[m.end():end]
+                        # If page is after m, check if another locator intervenes
+                        p_match = re.search(rf"(?i)(?:page|p\.|第)\s*{page}(?:\s*页|\b)", after_m)
+                        if p_match:
+                            intervening = after_m[:p_match.start()]
+                            if re.search(r"(?i)(?:Figure|Fig\.?|Table|图|表)\s*\d+\b", intervening):
+                                continue
+                        # If page is before m, check if another locator intervenes
+                        p_match_before = re.search(rf"(?i)(?:page|p\.|第)\s*{page}(?:\s*页|\b)", before_m)
+                        if p_match_before:
+                            intervening = before_m[p_match_before.end():]
+                            if re.search(r"(?i)(?:Figure|Fig\.?|Table|图|表)\s*\d+\b", intervening):
+                                continue
+                        bound = True
+                        break
+                return bound
+            return True
+        else:
+            if not is_text_grounded(label, raw_input):
+                return False
+            if page is not None:
+                return has_page_in_text(raw_input, page)
+            return True
+    else:
+        return has_page_in_text(raw_input, page)
+
+
+def is_text_grounded(target: str, raw_text: str) -> bool:
+    """Determine whether target text is grounded in raw_text via strict literal normalization."""
+    if not target or not target.strip():
+        return True
+    if not raw_text or not raw_text.strip():
+        return False
+    target_norm = normalize_for_textual_match(target)
+    if not target_norm:
+        return True
+    raw_norm = normalize_for_textual_match(raw_text)
+    return target_norm in raw_norm
+
+
 @dataclass
 class TruthfulnessValidationResult:
     valid: bool
@@ -329,43 +489,47 @@ class TruthfulnessValidator:
                     raise UnsupportedNumericError(token=token.raw_text, context=context)
 
         # 4. Textual Provenance Guard (Strict Literal Grounding)
-        # Verifies that non-numeric factual evidence strings originate directly from raw input.
-        # Explicitly exempts layout/presentation directives: presentation.title, slide.title,
-        # slide.objective, slide.instructions, ev.id, slide.id, spec_version.
-        for ev in spec.evidence:
-            if isinstance(ev, (ClaimEvidence, QuoteEvidence)):
-                if ev.content and not is_text_grounded(ev.content, raw_input):
-                    err = f"UNSUPPORTED_TEXTUAL_FACT: Factual claim/quote '{ev.content}' ({ev.id}) is not grounded in raw input."
-                    errors.append(err)
-                    if self.strict:
-                        raise UnsupportedTextualFactError(fact_type=ev.kind, content=ev.content, context=f"Evidence {ev.id}")
-            elif isinstance(ev, FigureReferenceEvidence):
-                if ev.caption and not is_text_grounded(ev.caption, raw_input):
-                    err = f"UNSUPPORTED_TEXTUAL_FACT: Figure caption '{ev.caption}' ({ev.id}) is not grounded in raw input."
-                    errors.append(err)
-                    if self.strict:
-                        raise UnsupportedTextualFactError(fact_type="figure_caption", content=ev.caption, context=f"Figure {ev.id}")
-            elif isinstance(ev, TableEvidence):
-                if ev.caption and not is_text_grounded(ev.caption, raw_input):
-                    err = f"UNSUPPORTED_TEXTUAL_FACT: Table caption '{ev.caption}' ({ev.id}) is not grounded in raw input."
-                    errors.append(err)
-                    if self.strict:
-                        raise UnsupportedTextualFactError(fact_type="table_caption", content=ev.caption, context=f"Table {ev.id}")
+        # Verifies that non-numeric factual text strings across all evidence items and source document
+        # originate directly from raw input.
+        factual_text_fields = collect_factual_text_fields(spec)
+        for tf in factual_text_fields:
+            if tf.content and not is_text_grounded(tf.content, raw_input):
+                err = f"UNSUPPORTED_TEXTUAL_FACT: Factual text [{tf.fact_type}] '{tf.content}' in {tf.context} is not grounded in raw input."
+                errors.append(err)
+                if self.strict:
+                    raise UnsupportedTextualFactError(fact_type=tf.fact_type, content=tf.content, context=tf.context)
 
-        if spec.source_document:
-            if spec.source_document.authors:
-                for author in spec.source_document.authors:
-                    if author and not is_text_grounded(author, raw_input):
-                        err = f"UNSUPPORTED_TEXTUAL_FACT: Author '{author}' is not grounded in raw input."
+        # 5. Source Locator & Contextual Binding Guard
+        # Enforces that figure/table labels, references, and page citations exist in raw input
+        # and that label + page citations are contextually bound.
+        for ev in spec.evidence:
+            if isinstance(ev, FigureReferenceEvidence):
+                if not validate_source_locator(raw_input, label=ev.label, page=ev.source_page):
+                    err = f"UNSUPPORTED_SOURCE_LOCATOR: Figure locator '{ev.label}' (page: {ev.source_page}) is not grounded in raw input."
+                    errors.append(err)
+                    if self.strict:
+                        raise UnsupportedTextualFactError(fact_type="figure_locator", content=ev.label, context=f"Figure {ev.id}")
+            elif isinstance(ev, TableEvidence):
+                if ev.source_reference or ev.source_page is not None:
+                    if not validate_source_locator(raw_input, label=ev.source_reference, page=ev.source_page):
+                        err = f"UNSUPPORTED_SOURCE_LOCATOR: Table locator '{ev.source_reference}' (page: {ev.source_page}) is not grounded in raw input."
                         errors.append(err)
                         if self.strict:
-                            raise UnsupportedTextualFactError(fact_type="author", content=author, context="source_document.authors")
-            if spec.source_document.venue:
-                if not is_text_grounded(spec.source_document.venue, raw_input):
-                    err = f"UNSUPPORTED_TEXTUAL_FACT: Venue '{spec.source_document.venue}' is not grounded in raw input."
+                            raise UnsupportedTextualFactError(fact_type="table_locator", content=ev.source_reference or f"page {ev.source_page}", context=f"Table {ev.id}")
+            elif getattr(ev, "source_page", None) is not None:
+                if not validate_source_locator(raw_input, label=None, page=ev.source_page):
+                    err = f"UNSUPPORTED_SOURCE_LOCATOR: Evidence page citation '{ev.source_page}' is not grounded in raw input."
                     errors.append(err)
                     if self.strict:
-                        raise UnsupportedTextualFactError(fact_type="venue", content=spec.source_document.venue, context="source_document.venue")
+                        raise UnsupportedTextualFactError(fact_type="source_page", content=str(ev.source_page), context=f"Evidence {ev.id}")
+
+        if spec.source_document and spec.source_document.year is not None:
+            year_str = str(spec.source_document.year)
+            if not re.search(rf"\b{year_str}\b", raw_input):
+                err = f"UNSUPPORTED_TEXTUAL_FACT: Source document year '{year_str}' is not found in raw input."
+                errors.append(err)
+                if self.strict:
+                    raise UnsupportedTextualFactError(fact_type="year", content=year_str, context="source_document.year")
 
         valid = len(errors) == 0
         return TruthfulnessValidationResult(

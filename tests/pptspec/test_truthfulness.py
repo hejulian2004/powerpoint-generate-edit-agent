@@ -101,7 +101,7 @@ def test_truthfulness_rejects_unsupported_numeric_value():
 
 
 def test_structural_numbers_are_exempt_from_provenance():
-    raw_input = "We present a simple study without numeric metrics. A purely qualitative claim without numbers."
+    raw_input = "We present a simple study without numeric metrics. A purely qualitative claim without numbers. Figure 9 is shown on page 42."
 
     spec = CanonicalPPTSpec(
         spec_version="1.0",  # "1.0"
@@ -255,7 +255,7 @@ def test_complex_units_and_chinese_units():
 
 def test_textual_provenance_figure_and_table_captions():
     """Figure and Table non-empty captions must be grounded in raw input."""
-    raw_input = "Figure 1: Pipeline Overview. Table 2: Benchmark Results."
+    raw_input = "Figure 1 on page 1: Pipeline Overview. Table 2: Benchmark Results."
 
     # Grounded captions pass
     spec_valid = CanonicalPPTSpec(
@@ -289,3 +289,106 @@ def test_textual_provenance_figure_and_table_captions():
     )
     with pytest.raises(UnsupportedTextualFactError):
         validate_truthfulness(raw_input, spec_fake_tbl, strict=True)
+
+
+def test_textual_provenance_rejects_hallucinated_metric_name():
+    """Metric name and method must be grounded in raw input, not fabricated."""
+    raw_input = "The model achieved 92.4%."
+
+    # Spec hallucinates metric name 'ImageNet Accuracy'
+    spec = CanonicalPPTSpec(
+        presentation=PresentationConfig(title="Presentation Title"),
+        evidence=[
+            MetricEvidence(id="m1", name="ImageNet Accuracy", value="92.4%"),
+        ],
+        slides=[SlideRequest(id="s1", type=SlideType.RESULT, title="Results", evidence_refs=["m1"])],
+    )
+
+    with pytest.raises(UnsupportedTextualFactError) as exc_info:
+        validate_truthfulness(raw_input, spec, strict=True)
+    assert "ImageNet Accuracy" in str(exc_info.value)
+
+
+def test_textual_provenance_rejects_hallucinated_table_text_cell():
+    """Table textual cells (e.g. baseline or method names) must be grounded in raw input."""
+    raw_input = """
+    Table 1: Main Performance
+    | Accuracy |
+    | 89.5% |
+    """
+
+    # Spec hallucinates method name column and row values
+    spec = CanonicalPPTSpec(
+        presentation=PresentationConfig(title="Presentation Title"),
+        evidence=[
+            TableEvidence(
+                id="t1",
+                source_reference="Table 1",
+                columns=["Method", "Accuracy"],
+                rows=[["InventedTransformerSOTA", "89.5%"]],
+                complete_table=True,
+            )
+        ],
+        slides=[SlideRequest(id="s1", type=SlideType.RESULT, title="Results", evidence_refs=["t1"])],
+    )
+
+    with pytest.raises(UnsupportedTextualFactError) as exc_info:
+        validate_truthfulness(raw_input, spec, strict=True)
+    assert any(term in str(exc_info.value) for term in ("Method", "InventedTransformerSOTA"))
+
+
+def test_source_locator_rejects_hallucinated_figure_table_page():
+    """Figure/Table identifiers and page citations must exist in raw input."""
+    raw_input = "We evaluate our framework in Figure 3 on page 5 and Table 1."
+
+    # Hallucinated Figure 99
+    spec_fake_fig = CanonicalPPTSpec(
+        presentation=PresentationConfig(title="Test"),
+        evidence=[FigureReferenceEvidence(id="f1", label="Figure 99", source_page=5)],
+        slides=[SlideRequest(id="s1", type=SlideType.RESULT, title="T", evidence_refs=["f1"])],
+    )
+    with pytest.raises(UnsupportedTextualFactError):
+        validate_truthfulness(raw_input, spec_fake_fig, strict=True)
+
+    # Hallucinated Table 99
+    spec_fake_tbl = CanonicalPPTSpec(
+        presentation=PresentationConfig(title="Test"),
+        evidence=[TableEvidence(id="t1", source_reference="Table 99", columns=["A"], rows=[["1"]], complete_table=True)],
+        slides=[SlideRequest(id="s1", type=SlideType.RESULT, title="T", evidence_refs=["t1"])],
+    )
+    with pytest.raises(UnsupportedTextualFactError):
+        validate_truthfulness(raw_input, spec_fake_tbl, strict=True)
+
+    # Hallucinated Page 99
+    spec_fake_page = CanonicalPPTSpec(
+        presentation=PresentationConfig(title="Test"),
+        evidence=[FigureReferenceEvidence(id="f1", label="Figure 3", source_page=99)],
+        slides=[SlideRequest(id="s1", type=SlideType.RESULT, title="T", evidence_refs=["f1"])],
+    )
+    with pytest.raises(UnsupportedTextualFactError):
+        validate_truthfulness(raw_input, spec_fake_page, strict=True)
+
+
+def test_source_locator_rejects_wrong_page_binding():
+    """Figure 7 and Page 12 both exist in text, but Figure 7 is NOT on Page 12 -> must be rejected."""
+    raw_input = """
+    Figure 7 shows the overview architecture on page 2.
+    In the ablation study, Figure 9 is shown on page 12 with detailed breakdown.
+    """
+
+    # Wrong binding: Figure 7 with source_page = 12
+    spec_wrong_bind = CanonicalPPTSpec(
+        presentation=PresentationConfig(title="Test"),
+        evidence=[FigureReferenceEvidence(id="f1", label="Figure 7", source_page=12)],
+        slides=[SlideRequest(id="s1", type=SlideType.RESULT, title="T", evidence_refs=["f1"])],
+    )
+    with pytest.raises(UnsupportedTextualFactError):
+        validate_truthfulness(raw_input, spec_wrong_bind, strict=True)
+
+    # Correct binding: Figure 7 with source_page = 2
+    spec_correct_bind = CanonicalPPTSpec(
+        presentation=PresentationConfig(title="Test"),
+        evidence=[FigureReferenceEvidence(id="f1", label="Figure 7", source_page=2)],
+        slides=[SlideRequest(id="s1", type=SlideType.RESULT, title="T", evidence_refs=["f1"])],
+    )
+    assert validate_truthfulness(raw_input, spec_correct_bind, strict=True).valid is True

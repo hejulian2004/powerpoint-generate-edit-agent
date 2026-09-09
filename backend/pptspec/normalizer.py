@@ -163,7 +163,7 @@ def normalize_dict_to_canonical_spec(
     if not isinstance(doc_raw, dict):
         doc_raw = {}
     source_doc = SourceDocument(
-        title=doc_raw.get("title") or pres_config.title,
+        title=doc_raw.get("title"),
         venue=doc_raw.get("venue"),
         year=int(doc_raw["year"]) if doc_raw.get("year") is not None else None,
         authors=list(doc_raw.get("authors") or []),
@@ -257,10 +257,14 @@ def normalize_dict_to_canonical_spec(
             if val_raw is None or str(val_raw).strip() == "":
                 warnings.append(f"MISSING_METRIC_VALUE: Metric '{ev_id}' has no value provided; omitted to prevent fabricating data.")
                 continue
+            name_raw = raw_ev.get("name")
+            if not name_raw or not str(name_raw).strip():
+                warnings.append(f"MISSING_METRIC_NAME: Metric '{ev_id}' has no name; omitted to prevent fabricating data.")
+                continue
             normalized_evidences.append(
                 MetricEvidence(
                     id=ev_id,
-                    name=str(raw_ev.get("name") or "Metric"),
+                    name=str(name_raw).strip(),
                     value=str(val_raw).strip(),
                     unit=raw_ev.get("unit"),
                     method=raw_ev.get("method"),
@@ -268,25 +272,31 @@ def normalize_dict_to_canonical_spec(
             )
 
         elif kind_str == "metric_group":
+            group_name_raw = raw_ev.get("group_name")
+            if not group_name_raw or not str(group_name_raw).strip():
+                warnings.append(f"MISSING_GROUP_NAME: MetricGroup '{ev_id}' has no group_name; omitted to prevent fabricating data.")
+                continue
             m_entries: List[MetricEntry] = []
             for m in raw_ev.get("metrics") or []:
-                if isinstance(m, dict) and "name" in m:
+                if isinstance(m, dict) and m.get("name") and str(m["name"]).strip():
                     m_val = m.get("value")
                     if m_val is not None and str(m_val).strip() != "":
                         m_entries.append(
                             MetricEntry(
-                                name=str(m["name"]),
+                                name=str(m["name"]).strip(),
                                 value=str(m_val).strip(),
                                 unit=m.get("unit"),
                             )
                         )
                     else:
                         warnings.append(f"MISSING_METRIC_VALUE: MetricGroup '{ev_id}' entry '{m.get('name')}' has no value; omitted.")
+                else:
+                    warnings.append(f"MISSING_METRIC_NAME: Metric in MetricGroup '{ev_id}' has no name; omitted.")
             if m_entries:
                 normalized_evidences.append(
                     MetricGroupEvidence(
                         id=ev_id,
-                        group_name=str(raw_ev.get("group_name") or "Metrics"),
+                        group_name=str(group_name_raw).strip(),
                         metrics=m_entries,
                     )
                 )

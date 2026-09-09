@@ -105,7 +105,8 @@ def parse_markdown_or_text_outline(raw_text: str) -> Dict[str, Any]:
     """Parse Markdown or Plain-text slide outline into structured candidate dictionary."""
     lines = [line.rstrip() for line in raw_text.strip().split("\n")]
 
-    doc_title = "学术论文汇报"
+    doc_title: Optional[str] = None
+    pres_title: str = "学术论文汇报"
     venue = None
     authors: List[str] = []
 
@@ -125,9 +126,32 @@ def parse_markdown_or_text_outline(raw_text: str) -> Dict[str, Any]:
     in_table = False
     table_lines: List[str] = []
     table_caption: Optional[str] = None
+    table_source_ref: Optional[str] = None
+    table_source_page: Optional[int] = None
+    pending_table_ref: Optional[Dict[str, Any]] = None
+
+    def flush_pending_table():
+        nonlocal pending_table_ref, ev_counter, current_slide
+        if not pending_table_ref:
+            return
+        tbl_id = f"ev_tbl_{ev_counter}"
+        ev_counter += 1
+        evidence_items.append({
+            "id": tbl_id,
+            "kind": "table",
+            "source_reference": pending_table_ref.get("source_reference"),
+            "columns": [],
+            "rows": [],
+            "caption": pending_table_ref.get("caption"),
+            "source_page": pending_table_ref.get("source_page"),
+            "complete_table": False,
+        })
+        if current_slide:
+            current_slide["evidence_refs"].append(tbl_id)
+        pending_table_ref = None
 
     def flush_table():
-        nonlocal in_table, table_lines, table_caption, ev_counter, current_slide
+        nonlocal in_table, table_lines, table_caption, table_source_ref, table_source_page, ev_counter, current_slide
         if not table_lines:
             in_table = False
             return
@@ -149,18 +173,19 @@ def parse_markdown_or_text_outline(raw_text: str) -> Dict[str, Any]:
         if cols:
             tbl_id = f"ev_tbl_{ev_counter}"
             ev_counter += 1
-            tbl_source_ref = None
-            if table_caption:
+            tbl_ref = table_source_ref
+            if not tbl_ref and table_caption:
                 m = re.search(r"((?:Table|表)\s*\d+)", table_caption, re.IGNORECASE)
                 if m:
-                    tbl_source_ref = m.group(1).strip()
+                    tbl_ref = m.group(1).strip()
             tbl_ev = {
                 "id": tbl_id,
                 "kind": "table",
-                "source_reference": tbl_source_ref,
+                "source_reference": tbl_ref,
                 "columns": cols,
                 "rows": rows,
                 "caption": table_caption if table_caption else None,
+                "source_page": table_source_page,
                 "complete_table": all(len(r) == len(cols) for r in rows) if rows else False,
             }
             evidence_items.append(tbl_ev)
@@ -169,6 +194,8 @@ def parse_markdown_or_text_outline(raw_text: str) -> Dict[str, Any]:
 
         table_lines = []
         table_caption = None
+        table_source_ref = None
+        table_source_page = None
         in_table = False
 
     for line in lines:
@@ -176,19 +203,37 @@ def parse_markdown_or_text_outline(raw_text: str) -> Dict[str, Any]:
         if not stripped:
             if in_table:
                 flush_table()
+            # If pending_table_ref is set, do NOT flush on blank lines (allows caption followed by blank line before table)
             continue
 
         # Check for table line
         if stripped.startswith("|") and stripped.endswith("|"):
+            if pending_table_ref:
+                # Next valid content is markdown table! Consume pending table metadata
+                table_source_ref = pending_table_ref.get("source_reference")
+                table_caption = pending_table_ref.get("caption")
+                table_source_page = pending_table_ref.get("source_page")
+                pending_table_ref = None
             in_table = True
             table_lines.append(stripped)
             continue
         elif in_table:
             flush_table()
 
+        # If we have a pending table reference and the current non-empty line is NOT a table line,
+        # flush it as an incomplete table placeholder before processing the current line
+        if pending_table_ref:
+            flush_pending_table()
+
         # Check title in top section
         if stripped.startswith("# ") and len(slides_data) == 0 and current_slide is None:
-            doc_title = stripped.lstrip("# ").strip()
+            pres_title = stripped.lstrip("# ").strip()
+            continue
+
+        # Check explicit paper title / source document metadata
+        doc_match = re.match(r"^(?:Paper Title|论文标题|Title of Paper)[:：]\s*(.+)", stripped, re.IGNORECASE)
+        if doc_match and len(slides_data) == 0 and current_slide is None:
+            doc_title = doc_match.group(1).strip()
             continue
 
         # Check for Slide Header
@@ -196,6 +241,8 @@ def parse_markdown_or_text_outline(raw_text: str) -> Dict[str, Any]:
         if slide_match:
             if in_table:
                 flush_table()
+            if pending_table_ref:
+                flush_pending_table()
             s_num = slide_match.group(1) or slide_match.group(2) or slide_match.group(3) or str(len(slides_data) + 1)
             title = slide_match.group(4).strip() or f"Slide {s_num}"
             if current_slide:
@@ -233,7 +280,7 @@ def parse_markdown_or_text_outline(raw_text: str) -> Dict[str, Any]:
         if current_slide is None:
             current_slide = {
                 "id": "slide_01",
-                "title": doc_title,
+                "title": pres_title,
                 "objective": "",
                 "instructions": [],
                 "bullets": [],
@@ -268,24 +315,16 @@ def parse_markdown_or_text_outline(raw_text: str) -> Dict[str, Any]:
                 current_slide["evidence_refs"].append(fig_id)
                 continue
 
-            # Table reference without full markdown table: Table 2 / 表 2
+            # Table reference candidate: Table 2 / 表 2
             tbl_ref_match = re.search(r"((?:Table|表)\s*\d+)", stripped, re.IGNORECASE)
             if tbl_ref_match and not (stripped.startswith("|") and stripped.endswith("|")):
                 tbl_raw_ref = tbl_ref_match.group(1).strip()
                 p_num = int(page_match.group(1)) if page_match else None
-                tbl_id = f"ev_tbl_{ev_counter}"
-                ev_counter += 1
-                evidence_items.append({
-                    "id": tbl_id,
-                    "kind": "table",
+                pending_table_ref = {
                     "source_reference": tbl_raw_ref,
-                    "columns": [],
-                    "rows": [],
                     "caption": stripped,
                     "source_page": p_num,
-                    "complete_table": False,
-                })
-                current_slide["evidence_refs"].append(tbl_id)
+                }
                 continue
 
             # Bullet / claim / metric parsing
@@ -318,6 +357,8 @@ def parse_markdown_or_text_outline(raw_text: str) -> Dict[str, Any]:
 
     if in_table:
         flush_table()
+    if pending_table_ref:
+        flush_pending_table()
 
     if current_slide:
         slides_data.append(current_slide)
@@ -326,7 +367,7 @@ def parse_markdown_or_text_outline(raw_text: str) -> Dict[str, Any]:
     if not slides_data:
         slides_data.append({
             "id": "slide_01",
-            "title": doc_title,
+            "title": pres_title,
             "objective": "演示概述",
             "instructions": [],
             "bullets": [],
@@ -337,7 +378,7 @@ def parse_markdown_or_text_outline(raw_text: str) -> Dict[str, Any]:
     return {
         "spec_version": "1.0",
         "presentation": {
-            "title": doc_title,
+            "title": pres_title,
             "language": "zh-CN",
             "audience": "计算机专业研究生组会",
             "duration_minutes": 15,
