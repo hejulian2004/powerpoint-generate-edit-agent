@@ -1,7 +1,7 @@
 import React from 'react'
 import {
   Type, Square, Circle as CircleIcon,
-  ArrowUpRight, Grid, AlignCenterHorizontal,
+  ArrowUpRight, Grid, AlignCenterHorizontal, Magnet,
   RectangleHorizontal, Triangle, Diamond, GripVertical
 } from 'lucide-react'
 import { usePPTStore } from '../store/usePPTStore'
@@ -13,7 +13,11 @@ export const CanvasToolbar: React.FC = () => {
     addConnectorQuick,
     optimizeLayoutDirect,
     showGrid,
-    setShowGrid
+    setShowGrid,
+    snapEnabled,
+    setSnapEnabled,
+    showSmartGuides,
+    setShowSmartGuides
   } = usePPTStore()
 
   const handleDragStart = (e: React.DragEvent, shapeType: string) => {
@@ -130,6 +134,34 @@ export const CanvasToolbar: React.FC = () => {
         }`}
       >
         <Grid className="w-3.5 h-3.5" />
+      </button>
+
+      <div className="w-[1px] h-4 bg-line mx-1" />
+
+      {/* 10. Snap Toggle (manual drag/resize geometry, independent from AI Smart Alignment) */}
+      <button
+        onClick={() => setSnapEnabled(!snapEnabled)}
+        title={snapEnabled ? '关闭拖拽吸附 (按住 Alt 可临时关闭)' : '开启拖拽吸附'}
+        className={`p-1.5 rounded-lg transition-all ${
+          snapEnabled
+            ? 'bg-inverted text-inverted-text shadow-xs font-medium'
+            : 'hover:bg-elevated text-muted hover:text-main'
+        }`}
+      >
+        <Magnet className="w-3.5 h-3.5" />
+      </button>
+
+      {/* 11. Smart Guides Toggle (show/hide alignment guide lines during drag) */}
+      <button
+        onClick={() => setShowSmartGuides(!showSmartGuides)}
+        title={showSmartGuides ? '隐藏智能对齐辅助线' : '显示智能对齐辅助线'}
+        className={`px-2 py-1.5 rounded-lg text-xs font-medium transition-all ${
+          showSmartGuides
+            ? 'bg-inverted text-inverted-text shadow-xs'
+            : 'hover:bg-elevated text-muted hover:text-main'
+        }`}
+      >
+        <span>辅助线</span>
       </button>
     </div>
   )

@@ -4,19 +4,23 @@ import type {
 } from '../types/ppt'
 import { usePPTStore } from '../store/usePPTStore'
 import { themeColors } from '../theme/tokens'
+import { AlignmentGuides } from './AlignmentGuides'
+import type { SnapGuide } from '../editor/snapping/types'
 
 interface Props {
   slide: SlideIR
   isThumbnail?: boolean
   onElementMouseDown?: (elemId: string, e: React.MouseEvent) => void
   onResizeHandleMouseDown?: (handle: 'nw' | 'n' | 'ne' | 'e' | 'se' | 's' | 'sw' | 'w', e: React.MouseEvent) => void
+  alignmentGuides?: SnapGuide[]
 }
 
 export const SVGRendererComponent: React.FC<Props> = ({
   slide,
   isThumbnail = false,
   onElementMouseDown,
-  onResizeHandleMouseDown
+  onResizeHandleMouseDown,
+  alignmentGuides = []
 }) => {
   const { selectedElementId, setSelectedElementId } = usePPTStore()
 
@@ -395,8 +399,8 @@ export const SVGRendererComponent: React.FC<Props> = ({
               { id: 'e', cx: elem.x + elem.width, cy: elem.y + elem.height / 2, cursor: 'ew-resize' },
               { id: 'se', cx: elem.x + elem.width, cy: elem.y + elem.height, cursor: 'nwse-resize' },
               { id: 's', cx: elem.x + elem.width / 2, cy: elem.y + elem.height, cursor: 'ns-resize' },
-              { id: 'sw', cx: elem.x, cy: elem.y, cursor: 'nesw-resize' },
-              { id: 'w', cx: elem.x, cy: elem.y, cursor: 'ew-resize' },
+              { id: 'sw', cx: elem.x, cy: elem.y + elem.height, cursor: 'nesw-resize' },
+              { id: 'w', cx: elem.x, cy: elem.y + elem.height / 2, cursor: 'ew-resize' },
             ].map((h) => (
               <rect
                 key={h.id}
@@ -466,6 +470,9 @@ export const SVGRendererComponent: React.FC<Props> = ({
 
       {/* Elements in z-index order */}
       {slide.elements.map((elem) => renderElementNode(elem))}
+
+      {/* Active snapping smart guides (slide-coordinate overlay, pointer-events none) */}
+      {!isThumbnail && <AlignmentGuides guides={alignmentGuides} />}
     </svg>
   )
 }
