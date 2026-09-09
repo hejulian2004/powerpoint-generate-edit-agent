@@ -129,6 +129,9 @@ class LayoutElement(BaseModel):
     source_block_id: Optional[str] = Field(
         None, description="Reference ID back to SlideSpec content block or synthetic role"
     )
+    source_evidence_ids: List[str] = Field(
+        default_factory=list, description="Associated evidence IDs propagated from SlideSpec"
+    )
     element_type: ElementType = Field(..., description="Element category")
     role: Optional[BlockRole] = Field(None, description="Semantic role propagated from SlideSpec")
     geometry: Rect = Field(..., description="Explicit bounding rectangle on canvas")

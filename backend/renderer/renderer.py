@@ -102,12 +102,16 @@ def render_pptx(
                 else:
                     figure_id = element.source_block_id or element.element_id
 
-                img_path = active_resolver.resolve_figure(
-                    figure_id=figure_id,
-                    caption_hint=caption,
-                    allow_synthetic=active_config.allow_synthetic_assets,
-                )
-                builder.add_image(element, img_path, active_theme)
+                try:
+                    img_path = active_resolver.resolve_figure(
+                        figure_id=figure_id,
+                        caption_hint=caption,
+                        allow_synthetic=active_config.allow_synthetic_assets,
+                    )
+                    builder.add_image(element, img_path, active_theme)
+                except FileNotFoundError:
+                    # Missing raster asset on disk: render explicit placeholder shape without fabricating fake images
+                    builder.add_shape(element, active_theme)
 
             elif el_type == ElementType.TABLE:
                 content_payload: Dict[str, Any] = {}
@@ -123,11 +127,15 @@ def render_pptx(
                 else:
                     table_id = element.source_block_id or element.element_id
 
-                table_data = active_resolver.resolve_table(
-                    table_id=table_id,
-                    content_payload=content_payload,
-                )
-                builder.add_table(element, table_data, active_theme)
+                try:
+                    table_data = active_resolver.resolve_table(
+                        table_id=table_id,
+                        content_payload=content_payload,
+                    )
+                    builder.add_table(element, table_data, active_theme)
+                except FileNotFoundError:
+                    # Missing table data: render explicit placeholder shape without fabricating fake table structures
+                    builder.add_shape(element, active_theme)
 
     # 4. Save Presentation
     saved_path = builder.save(out_file)

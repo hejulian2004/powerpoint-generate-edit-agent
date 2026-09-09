@@ -12,6 +12,7 @@ Covers the core PR11 acceptance tests:
 
 from pathlib import Path
 import pytest
+from PIL import Image
 from pptx import Presentation
 from pptx.enum.shapes import MSO_SHAPE_TYPE
 
@@ -121,6 +122,13 @@ def test_3_geometry_fidelity(tmp_path: Path):
 
 def test_4_figure_fidelity(tmp_path: Path):
     """Test 4: Figure Fidelity. Verify PPTX contains valid picture shape and relationship."""
+    # Create an image file so picture shape fidelity can be validated
+    assets_dir = tmp_path / "assets"
+    assets_dir.mkdir()
+    real_fig = assets_dir / "fig_arch_1.png"
+    Image.new("RGB", (600, 450), color=(100, 150, 200)).save(real_fig)
+    resolver = AssetResolver(assets_dir=assets_dir)
+
     slide = LayoutSpec(
         slide_id="slide_fig",
         slide_index=1,
@@ -137,7 +145,7 @@ def test_4_figure_fidelity(tmp_path: Path):
     deck = DeckLayoutSpec(title="Figure Fidelity Deck", slides=[slide])
     out_pptx = tmp_path / "fig_fidelity.pptx"
 
-    render_pptx(deck, out_pptx)
+    render_pptx(deck, out_pptx, asset_resolver=resolver)
 
     prs = Presentation(str(out_pptx))
     sh = prs.slides[0].shapes[0]

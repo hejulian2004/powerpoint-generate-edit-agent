@@ -105,6 +105,9 @@ class SVGRenderer:
 
             return f'<g id="{elem.id}"{transform}{opacity_attr}>{shape_geom}{text_svg}</g>'
 
+        elif isinstance(elem, TableElementIR):
+            return cls._render_table(elem, defs)
+
         elif isinstance(elem, GroupElementIR):
             child_svgs = []
             for child in elem.children:
@@ -115,6 +118,32 @@ class SVGRenderer:
             return f'<g id="{elem.id}" class="group-container"{transform}{opacity_attr}>\n{inner}\n</g>'
 
         return ""
+
+    @classmethod
+    def _render_table(cls, table: TableElementIR, defs: List[str]) -> str:
+        cell_svgs: List[str] = []
+        c_w = table.width / max(table.cols, 1)
+        c_h = table.height / max(table.rows, 1)
+
+        for r_idx, row in enumerate(table.cells):
+            for c_idx, cell in enumerate(row):
+                cx = table.x + c_idx * c_w
+                cy = table.y + r_idx * c_h
+                fill_color = "#FFFFFF"
+                border_color = "#CBD5E1"
+                border_w = 1.0
+                if cell.style and cell.style.fill and cell.style.fill.color:
+                    fill_color = cell.style.fill.color
+                if cell.style and cell.style.border and cell.style.border.color:
+                    border_color = cell.style.border.color
+                    border_w = cell.style.border.width
+
+                cell_rect = f'<rect x="{cx}" y="{cy}" width="{c_w}" height="{c_h}" fill="{fill_color}" stroke="{border_color}" stroke-width="{border_w}" />'
+                cell_text = cls._render_text(cell.text_content, cx, cy, c_w, c_h, 6.0)
+                cell_svgs.append(f"{cell_rect}\n{cell_text}")
+
+        inner = "\n".join(cell_svgs)
+        return f'<g id="{table.id}" class="table-container">\n{inner}\n</g>'
 
     @classmethod
     def _render_connector(cls, conn: ConnectorElementIR) -> str:

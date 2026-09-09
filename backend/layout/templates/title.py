@@ -130,7 +130,8 @@ class TitleHeroTemplate(BaseLayoutTemplate):
                     elements.append(
                         LayoutElement(
                             element_id=f"slide_{slide.index}_badge_{b_idx + 1}",
-                            source_block_id=f"badge_{b_idx + 1}",
+                            source_block_id=badge.block_id or f"badge_{b_idx + 1}",
+                            source_evidence_ids=list(getattr(badge, "source_evidence_ids", [])),
                             element_type=ElementType.BADGE,
                             role=BlockRole.BADGE,
                             geometry=Rect(x=cur_bx, y=badge_y, width=bw, height=badge_h),

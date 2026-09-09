@@ -162,6 +162,9 @@ class BaseElementIR(BaseModel):
     locked: bool = False
     style: ElementStyleIR = Field(default_factory=ElementStyleIR)
     children: List[ElementIR] = Field(default_factory=list)
+    source_ref: Optional[str] = Field(default=None, description="Reference ID back to SlideSpec content block")
+    source_evidence_ids: List[str] = Field(default_factory=list, description="Associated evidence IDs")
+    metadata: Dict[str, Any] = Field(default_factory=dict, description="Supplementary metadata or placeholder tags")
 
     @model_validator(mode="after")
     def sync_transform_and_coords(self) -> BaseElementIR:

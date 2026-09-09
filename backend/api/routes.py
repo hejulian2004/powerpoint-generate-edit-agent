@@ -1,40 +1,64 @@
 """REST API routes for PPT-Agent-Studio."""
 
 from __future__ import annotations
+import io
+import logging
 import urllib.parse
 from typing import Dict, Any, Optional
-from fastapi import APIRouter, UploadFile, File, Response, HTTPException, Body
-from fastapi.responses import StreamingResponse, Response
-import io
+from fastapi import APIRouter, UploadFile, File, Response, HTTPException, Body, Query
+from fastapi.responses import StreamingResponse
 
 from ..state.store import store
 from ..ir.svg_renderer import SVGRenderer
 from ..config import settings, AppSettings
+from ..session.session import PPTSession
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api")
 
 
+def _resolve_session(session_id: Optional[str] = None) -> PPTSession:
+    """Resolve session for REST operations.
+
+    If session_id is explicitly specified, it must exist; otherwise HTTP 404 is raised.
+    If session_id is omitted, falls back to store.active_session for legacy compatibility.
+    """
+    if session_id:
+        sess = store.session_manager.get_session(session_id)
+        if sess is None:
+            raise HTTPException(status_code=404, detail="SESSION_NOT_FOUND: Session not found")
+        return sess
+    return store.active_session
+
+
 @router.get("/presentation")
-async def get_presentation():
-    return store.get_presentation().model_dump()
+async def get_presentation(session_id: Optional[str] = Query(None)):
+    session = _resolve_session(session_id)
+    return session.pres.model_dump()
 
 
 @router.post("/presentation/active-slide")
-async def set_active_slide(slide_id: str = Body(..., embed=True)):
-    ok = store.set_active_slide(slide_id)
+async def set_active_slide(
+    slide_id: str = Body(..., embed=True),
+    session_id: Optional[str] = Query(None),
+):
+    session = _resolve_session(session_id)
+    ok = session.set_active_slide(slide_id)
     if not ok:
         raise HTTPException(status_code=404, detail="Slide not found")
     await store.broadcast({
         "type": "active_slide_changed",
+        "session_id": session.session_id,
         "active_slide_id": slide_id
-    })
-    return {"success": True, "active_slide_id": slide_id}
+    }, session_id=session.session_id)
+    return {"success": True, "session_id": session.session_id, "active_slide_id": slide_id}
 
 
 @router.get("/slide/{slide_id}/svg")
-async def get_slide_svg(slide_id: str):
-    pres = store.get_presentation()
-    slide = pres.get_slide(slide_id)
+async def get_slide_svg(slide_id: str, session_id: Optional[str] = Query(None)):
+    session = _resolve_session(session_id)
+    slide = session.pres.get_slide(slide_id)
     if not slide:
         raise HTTPException(status_code=404, detail="Slide not found")
     svg_code = SVGRenderer.render_slide(slide)
@@ -42,67 +66,94 @@ async def get_slide_svg(slide_id: str):
 
 
 @router.post("/action/undo")
-async def undo_action():
-    patch = store.undo()
-    if patch:
+async def undo_action(
+    session_id: Optional[str] = Query(None),
+    payload: Optional[Dict[str, Any]] = Body(None),
+):
+    sid = session_id or (payload.get("session_id") if payload else None)
+    session = _resolve_session(sid)
+    async with session.mutation_lock:
+        cmd = session.undo()
+    if cmd:
+        patch = cmd.to_dict() if hasattr(cmd, "to_dict") else dict(cmd)
         await store.broadcast({
             "type": "presentation_updated",
-            "presentation": store.get_presentation().model_dump(),
+            "session_id": session.session_id,
+            "presentation": session.pres.model_dump(),
             "patch": patch
-        })
+        }, session_id=session.session_id)
         return {"success": True, "patch": patch}
     return {"success": False, "message": "Nothing to undo"}
 
 
 @router.post("/action/redo")
-async def redo_action():
-    patch = store.redo()
-    if patch:
+async def redo_action(
+    session_id: Optional[str] = Query(None),
+    payload: Optional[Dict[str, Any]] = Body(None),
+):
+    sid = session_id or (payload.get("session_id") if payload else None)
+    session = _resolve_session(sid)
+    async with session.mutation_lock:
+        cmd = session.redo()
+    if cmd:
+        patch = cmd.to_dict() if hasattr(cmd, "to_dict") else dict(cmd)
         await store.broadcast({
             "type": "presentation_updated",
-            "presentation": store.get_presentation().model_dump(),
+            "session_id": session.session_id,
+            "presentation": session.pres.model_dump(),
             "patch": patch
-        })
+        }, session_id=session.session_id)
         return {"success": True, "patch": patch}
     return {"success": False, "message": "Nothing to redo"}
 
 
 @router.get("/history")
-async def get_history():
+async def get_history(session_id: Optional[str] = Query(None)):
+    session = _resolve_session(session_id)
     return {
-        "history": store.history.get_summary(),
-        "can_undo": store.history.can_undo(),
-        "can_redo": store.history.can_redo()
+        "history": session.history.get_summary(),
+        "can_undo": session.history.can_undo(),
+        "can_redo": session.history.can_redo()
     }
 
 
 @router.post("/upload")
-async def upload_pptx(file: UploadFile = File(...)):
+async def upload_pptx(
+    file: UploadFile = File(...),
+    session_id: Optional[str] = Query(None),
+):
     if not file.filename.lower().endswith(".pptx"):
         raise HTTPException(status_code=400, detail="Only .pptx files are supported")
 
+    session = _resolve_session(session_id)
     content = await file.read()
     try:
-        pres = store.import_pptx_bytes(content, file.filename)
+        async with session.mutation_lock:
+            pres = store.import_pptx_bytes(content, file.filename, session=session)
         await store.broadcast({
             "type": "presentation_loaded",
+            "session_id": session.session_id,
             "presentation": pres.model_dump()
-        })
+        }, session_id=session.session_id)
         return {
             "success": True,
+            "session_id": session.session_id,
             "title": pres.title,
             "slides_count": len(pres.slides),
             "presentation": pres.model_dump()
         }
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to parse PPTX: {str(e)}")
 
 
 @router.get("/export")
-async def export_pptx():
+async def export_pptx(session_id: Optional[str] = Query(None)):
+    session = _resolve_session(session_id)
     try:
-        data = store.export_pptx_bytes()
-        pres = store.get_presentation()
+        data = store.export_pptx_bytes(pres=session.pres)
+        pres = session.pres
         safe_filename = urllib.parse.quote(f"{pres.title or 'presentation'}.pptx")
         return StreamingResponse(
             io.BytesIO(data),
@@ -153,25 +204,196 @@ async def update_settings(payload: Dict[str, Any] = Body(...)):
 
 
 @router.post("/chat")
-async def chat_interaction(payload: Dict[str, Any] = Body(...)):
+async def chat_interaction(
+    payload: Dict[str, Any] = Body(...),
+    session_id: Optional[str] = Query(None),
+):
     prompt = payload.get("message", "")
     if not prompt:
         raise HTTPException(status_code=400, detail="Message is required")
 
-    async def on_event(event):
-        await store.broadcast(event)
+    sid = session_id or payload.get("session_id")
+    session = _resolve_session(sid)
 
-    result = await store.agent_runtime.run_turn(
-        user_message=prompt,
-        pres=store.get_presentation(),
-        history=store.history,
-        on_event=on_event
-    )
+    async def on_event(event):
+        event["session_id"] = session.session_id
+        await store.broadcast(event, session_id=session.session_id)
+
+    async with session.mutation_lock:
+        result = await store.agent_runtime.run_turn(
+            user_message=prompt,
+            pres=session.pres,
+            history=session.history,
+            on_event=on_event
+        )
 
     # Broadcast updated presentation
     await store.broadcast({
         "type": "presentation_updated",
-        "presentation": store.get_presentation().model_dump()
-    })
+        "session_id": session.session_id,
+        "presentation": session.pres.model_dump()
+    }, session_id=session.session_id)
 
     return result
+
+
+# =====================================================================
+# PPTSpec & LangGraph Generation API Endpoints (PR13)
+# =====================================================================
+
+from ..pptspec.prompt_template import get_general_prompt, get_strict_prompt
+from ..pptspec.schema import CanonicalPPTSpec
+from ..pptspec.normalizer import normalize_presentation_input
+from ..pptspec.validator import validate_truthfulness
+from ..pptspec.artifact import artifact_store
+from ..agent.graphs.generation import generation_graph
+
+
+@router.get("/pptspec/prompts/general")
+async def api_get_general_prompt():
+    """Return recommended general external-AI analysis prompt."""
+    return {"prompt": get_general_prompt()}
+
+
+@router.get("/pptspec/prompts/strict")
+async def api_get_strict_prompt():
+    """Return strict JSON prompt with dynamic CanonicalPPTSpec JSON schema attached."""
+    return {"prompt": get_strict_prompt()}
+
+
+@router.get("/pptspec/schema")
+async def api_get_pptspec_schema():
+    """Return internal CanonicalPPTSpec JSON Schema."""
+    return CanonicalPPTSpec.model_json_schema()
+
+
+@router.post("/pptspec/normalize")
+async def api_normalize_pptspec(payload: Dict[str, Any] = Body(...)):
+    """Flexible ingestion and normalization of external AI output.
+
+    Caches valid artifacts server-side bound to session_id and returns
+    a normalization_id to prevent client-side specification tampering.
+    """
+    raw_content = payload.get("content", "").strip()
+    if not raw_content:
+        raise HTTPException(status_code=400, detail="Input content cannot be empty")
+
+    session_id = str(payload.get("session_id") or "").strip()
+    if not session_id:
+        raise HTTPException(status_code=400, detail="session_id is required")
+
+    llm_client = getattr(store.agent_runtime, "llm", None)
+
+    norm_res = await normalize_presentation_input(
+        raw_text=raw_content,
+        llm_client=llm_client,
+        strict_truthfulness=False,
+    )
+
+    norm_id = None
+    if norm_res.valid and norm_res.spec is not None:
+        artifact = artifact_store.save(
+            session_id=session_id,
+            raw_input=raw_content,
+            spec=norm_res.spec,
+            summary=norm_res.summary,
+            asset_requirements=norm_res.asset_requirements,
+            warnings=norm_res.warnings,
+        )
+        norm_id = artifact.id
+
+    return {
+        "valid": norm_res.valid,
+        "normalization_id": norm_id,
+        "spec": norm_res.spec.model_dump() if norm_res.spec else None,
+        "warnings": norm_res.warnings,
+        "errors": norm_res.errors,
+        "summary": norm_res.summary,
+        "asset_requirements": [r.model_dump() for r in norm_res.asset_requirements],
+    }
+
+
+@router.post("/pptspec/generate")
+async def api_generate_from_pptspec(payload: Dict[str, Any] = Body(...)):
+    """Orchestrates LangGraph PPT generation from a verified NormalizationArtifact."""
+    norm_id = payload.get("normalization_id")
+    if not norm_id:
+        raise HTTPException(status_code=400, detail="normalization_id is required")
+
+    session_id = str(payload.get("session_id") or "").strip()
+    if not session_id:
+        raise HTTPException(status_code=400, detail="session_id is required")
+
+    artifact = artifact_store.get(norm_id, include_expired=True)
+    if not artifact:
+        raise HTTPException(status_code=404, detail="ARTIFACT_NOT_FOUND: Normalization artifact not found.")
+
+    if artifact.is_expired:
+        artifact_store.delete(norm_id)
+        raise HTTPException(status_code=410, detail="ARTIFACT_EXPIRED: Normalization artifact has expired.")
+
+    if artifact.session_id != session_id:
+        raise HTTPException(status_code=403, detail="ARTIFACT_SESSION_MISMATCH: Artifact does not belong to the requested session.")
+
+    # Re-enforce Truthfulness Guard on server side before generation
+    val_res = validate_truthfulness(artifact.raw_input, artifact.canonical_spec, strict=False)
+    if not val_res.valid:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Truthfulness validation failed: {'; '.join(val_res.errors)}"
+        )
+
+    # Session binding
+    session = store.session_manager.get_or_create(session_id)
+
+    async def on_event(event: Dict[str, Any]):
+        event["session_id"] = session_id
+        await store.broadcast(event, session_id=session_id)
+
+    initial_state = {
+        "session_id": session_id,
+        "raw_input": artifact.raw_input,
+        "canonical_spec": artifact.canonical_spec,
+        "mode": "generate",
+        "max_repair_iterations": 3,
+    }
+
+    try:
+        async with session.mutation_lock:
+            gen_result = await generation_graph.ainvoke(
+                initial_state,
+                config={
+                    "configurable": {
+                        "on_event": on_event,
+                        "pres": session.pres,
+                        "llm_client": getattr(store.agent_runtime, "llm", None),
+                    }
+                },
+            )
+    except Exception as e:
+        logger.exception("LangGraph generation execution error")
+        raise HTTPException(status_code=500, detail=f"Generation pipeline error: {e}")
+
+    if gen_result.get("error") or not gen_result.get("presentation_ir"):
+        raise HTTPException(
+            status_code=500,
+            detail=f"Generation failed: {gen_result.get('error') or 'Unknown generation error'}"
+        )
+
+    # Broadcast presentation state to all connected session clients
+    await store.broadcast({
+        "type": "presentation_loaded",
+        "session_id": session_id,
+        "presentation": session.pres.model_dump(),
+        "active_slide_id": session.active_slide_id,
+        "can_undo": session.history.can_undo(),
+        "can_redo": session.history.can_redo(),
+    }, session_id=session_id)
+
+    return {
+        "success": True,
+        "session_id": session_id,
+        "presentation": session.pres.model_dump(),
+        "summary": artifact.summary,
+        "asset_requirements": [r.model_dump() for r in artifact.asset_requirements],
+    }

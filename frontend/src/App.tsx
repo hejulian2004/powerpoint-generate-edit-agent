@@ -4,6 +4,7 @@ import { Sidebar } from './components/Sidebar'
 import { SlideCanvas } from './components/SlideCanvas'
 import { ChatPanel } from './components/ChatPanel'
 import { SettingsModal } from './components/SettingsModal'
+import { PPTSpecImportModal } from './components/PPTSpecImportModal'
 import { usePPTStore } from './store/usePPTStore'
 
 export const App: React.FC = () => {
@@ -40,6 +41,7 @@ export const App: React.FC = () => {
         <ChatPanel />
       </div>
       <SettingsModal />
+      <PPTSpecImportModal />
     </div>
   )
 }

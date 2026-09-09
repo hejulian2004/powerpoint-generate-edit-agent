@@ -264,8 +264,14 @@ class PresentationStore:
     def set_active_slide(self, slide_id: str) -> bool:
         return self.active_session.set_active_slide(slide_id)
 
-    def import_pptx_bytes(self, data: bytes, filename: str = "imported.pptx") -> PresentationIR:
-        """Parses native PPTX bytes into PPT-IR."""
+    def import_pptx_bytes(
+        self,
+        data: bytes,
+        filename: str = "imported.pptx",
+        session: Optional[PPTSession] = None,
+    ) -> PresentationIR:
+        """Parses native PPTX bytes into PPT-IR for the given session (or active_session)."""
+        target_session = session or self.active_session
         with tempfile.NamedTemporaryFile(suffix=".pptx", delete=False) as tmp:
             tmp.write(data)
             tmp_path = tmp.name
@@ -276,18 +282,24 @@ class PresentationStore:
             ir_pres = PPTIRConverter.presentation_to_ir(ooxml_pres)
             ir_pres.title = filename.replace(".pptx", "")
 
-            self.active_session.pres = ir_pres
-            self.active_session.history = HistoryManager()
-            self.active_session.checkpoint_mgr.clear()
-            self.active_session.create_checkpoint(description=f"Imported from {filename}")
-            return self.presentation
+            target_session.pres = ir_pres
+            target_session.history.clear()
+            target_session.last_target_id = None
+            target_session.last_action_type = None
+            target_session.checkpoint_mgr.clear()
+            target_session.create_checkpoint(description=f"Imported from {filename}")
+            return target_session.pres
         finally:
             if os.path.exists(tmp_path):
                 os.remove(tmp_path)
 
-    def export_pptx_bytes(self) -> bytes:
-        """Renders PPT-IR into native PPTX binary bytes."""
-        ooxml_pres = PPTIRConverter.ir_to_presentation(self.presentation)
+    def export_pptx_bytes(self, pres: Optional[PresentationIR] = None) -> bytes:
+        """Renders PPT-IR into native PPTX binary bytes.
+        
+        Accepts explicit PresentationIR or defaults to current active presentation.
+        """
+        target_pres = pres if pres is not None else self.presentation
+        ooxml_pres = PPTIRConverter.ir_to_presentation(target_pres)
         with tempfile.NamedTemporaryFile(suffix=".pptx", delete=False) as tmp:
             tmp_path = tmp.name
 
@@ -299,6 +311,13 @@ class PresentationStore:
         finally:
             if os.path.exists(tmp_path):
                 os.remove(tmp_path)
+
+    def export_pptx_bytes_for_session(self, session_id: str) -> bytes:
+        """Renders target session's PPT-IR into native PPTX binary bytes."""
+        sess = self.session_manager.get_session(session_id)
+        if not sess:
+            raise KeyError(f"Session '{session_id}' not found")
+        return self.export_pptx_bytes(pres=sess.pres)
 
     def undo(self) -> Optional[Dict[str, Any]]:
         patch = self.active_session.undo()

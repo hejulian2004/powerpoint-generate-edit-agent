@@ -177,37 +177,41 @@ def validate_pptx_fidelity(
                 if not text_passed:
                     warnings.append(f"Text mismatch on element {el.element_id}: expected '{norm_expected[:30]}...', got '{norm_actual[:30]}...'")
 
-            # D. Figure fidelity check
+            # D. Figure fidelity check (PICTURE or explicit placeholder AUTO_SHAPE)
             elif el.element_type == ElementType.FIGURE:
                 is_pic = (shape.shape_type == MSO_SHAPE_TYPE.PICTURE)
+                is_placeholder = (shape.shape_type == MSO_SHAPE_TYPE.AUTO_SHAPE)
+                passed = is_pic or is_placeholder
                 checks.append(
                     FidelityCheckItem(
                         category="figure_fidelity",
                         target_id=el.element_id,
-                        passed=is_pic,
-                        expected="PICTURE",
+                        passed=passed,
+                        expected="PICTURE or AUTO_SHAPE placeholder",
                         actual=str(shape.shape_type),
-                        message=None if is_pic else f"Expected PICTURE shape type, got {shape.shape_type}",
+                        message=None if passed else f"Expected PICTURE or AUTO_SHAPE placeholder, got {shape.shape_type}",
                     )
                 )
-                if not is_pic:
-                    errors.append(f"Figure element {el.element_id} was not rendered as PICTURE shape")
+                if not passed:
+                    errors.append(f"Figure element {el.element_id} was not rendered as PICTURE or placeholder shape")
 
-            # E. Table fidelity check
+            # E. Table fidelity check (TABLE or explicit placeholder AUTO_SHAPE)
             elif el.element_type == ElementType.TABLE:
-                is_table = shape.has_table
+                is_tbl = shape.has_table
+                is_placeholder = (shape.shape_type == MSO_SHAPE_TYPE.AUTO_SHAPE)
+                passed = is_tbl or is_placeholder
                 checks.append(
                     FidelityCheckItem(
                         category="table_fidelity",
                         target_id=el.element_id,
-                        passed=is_table,
-                        expected="TABLE",
-                        actual="TABLE" if is_table else "NON_TABLE",
-                        message=None if is_table else f"Expected TABLE shape type for element {el.element_id}",
+                        passed=passed,
+                        expected="TABLE or AUTO_SHAPE placeholder",
+                        actual="TABLE" if is_tbl else ("AUTO_SHAPE" if is_placeholder else str(shape.shape_type)),
+                        message=None if passed else f"Expected TABLE or AUTO_SHAPE placeholder for element {el.element_id}",
                     )
                 )
-                if not is_table:
-                    errors.append(f"Table element {el.element_id} was not rendered as TABLE shape")
+                if not passed:
+                    errors.append(f"Table element {el.element_id} was not rendered as TABLE or placeholder shape")
 
     is_valid = len(errors) == 0
 
