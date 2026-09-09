@@ -10,6 +10,8 @@ from .command import (
     UpdateElementCommand,
     AddElementCommand,
     DeleteElementCommand,
+    AddSlideCommand,
+    DeleteSlideCommand,
     BatchMutationCommand
 )
 
@@ -37,11 +39,34 @@ class UndoRedoStack:
         element_id: Optional[str] = None,
         before: Optional[Dict[str, Any]] = None,
         after: Optional[Dict[str, Any]] = None,
-        source: str = "agent_tool"
+        source: str = "agent_tool",
+        position: Optional[int] = None,
+        prev_active_slide_id: Optional[str] = None,
+        active_after_delete: Optional[str] = None
     ) -> MutationCommand:
         """Constructs and pushes a MutationCommand matching legacy HistoryManager.record()."""
         cmd: MutationCommand
-        if action in ["add_element", "create_element"]:
+        if action in ["create_slide", "duplicate_slide"]:
+            cmd = AddSlideCommand(
+                slide_id=slide_id or "",
+                slide_data=copy.deepcopy(after or {}),
+                position=position if position is not None else 0,
+                prev_active_slide_id=prev_active_slide_id,
+                action=action,
+                description=description,
+                source=source
+            )
+        elif action == "delete_slide":
+            cmd = DeleteSlideCommand(
+                slide_id=slide_id or "",
+                slide_data=copy.deepcopy(before or {}),
+                position=position if position is not None else 0,
+                active_after_delete=active_after_delete,
+                action=action,
+                description=description,
+                source=source
+            )
+        elif action in ["add_element", "create_element"]:
             elem_data = copy.deepcopy(after or {})
             if element_id and "id" not in elem_data:
                 elem_data["id"] = element_id

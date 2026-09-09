@@ -6,7 +6,7 @@ import logging
 from typing import Dict, Any, Optional
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
-from ..state.store import store, create_default_demo_presentation
+from ..state.store import store
 from ..session.manager import session_manager
 from ..session.session import PPTSession
 from ..ir.svg_renderer import SVGRenderer
@@ -48,10 +48,7 @@ def build_preview_update(session: PPTSession, slide_id: Optional[str] = None) ->
 async def websocket_endpoint(websocket: WebSocket):
     """Session-aware WebSocket endpoint for streaming editing, chat, and instant previews."""
     session_id = websocket.query_params.get("session_id") or store.active_session_id
-    session: PPTSession = session_manager.get_or_create(
-        session_id=session_id,
-        pres_factory=create_default_demo_presentation
-    )
+    session: PPTSession = session_manager.get_or_create(session_id=session_id)
 
     await store.connect_ws(websocket, session_id=session.session_id)
     logger.info(f"WebSocket client connected to session '{session.session_id}'")

@@ -9,6 +9,14 @@ from backend.state.store import create_default_demo_presentation
 from backend.server.websocket import build_preview_update
 
 
+def _seed_demo_session(session_id: str) -> PPTSession:
+    """Seeds a fresh demo presentation into the session so WS tests stay deterministic."""
+    session = session_manager.get_or_create(session_id, pres_factory=create_default_demo_presentation)
+    session.pres = create_default_demo_presentation()
+    session.history.clear()
+    return session
+
+
 def test_build_preview_update_unit():
     """Verify build_preview_update produces valid SVG markup and layout score."""
     pres = create_default_demo_presentation()
@@ -36,6 +44,7 @@ def test_build_preview_update_unit():
 def test_websocket_connection_and_preview_stream():
     """Verify WebSocket endpoint sends presentation_loaded and initial preview_update."""
     client = TestClient(app)
+    _seed_demo_session("ws_stream_test")
     with client.websocket_connect("/ws?session_id=ws_stream_test") as ws:
         # 1. First message: presentation_loaded
         loaded = ws.receive_json()
@@ -60,6 +69,7 @@ def test_websocket_connection_and_preview_stream():
 def test_websocket_slide_selection_and_direct_update():
     """Verify select_slide and direct_update_element trigger preview_update."""
     client = TestClient(app)
+    _seed_demo_session("ws_slide_ops")
     with client.websocket_connect("/ws?session_id=ws_slide_ops") as ws:
         # Drain initial loaded & preview
         ws.receive_json()
@@ -95,6 +105,7 @@ def test_websocket_slide_selection_and_direct_update():
 def test_websocket_undo_redo_preview():
     """Verify WebSocket undo and redo trigger preview_update."""
     client = TestClient(app)
+    _seed_demo_session("ws_undo_redo")
     with client.websocket_connect("/ws?session_id=ws_undo_redo") as ws:
         # Drain initial loaded & preview
         ws.receive_json()

@@ -80,6 +80,7 @@ def create_slide(
     position: Optional[int] = None
 ) -> Dict[str, Any]:
     slide_num = len(pres.slides) + 1 if position is None else position
+    prev_active_slide_id = pres.active_slide_id
     new_slide = SlideIR(
         id=f"slide_{uuid.uuid4().hex[:6]}",
         slide_num=slide_num,
@@ -102,7 +103,10 @@ def create_slide(
         action="create_slide",
         description=f"创建幻灯片: {title}",
         slide_id=new_slide.id,
-        after=new_slide.model_dump()
+        before={"active_slide_id": prev_active_slide_id},
+        after=new_slide.model_dump(),
+        position=slide_num - 1,
+        prev_active_slide_id=prev_active_slide_id
     )
 
     return {
@@ -149,13 +153,16 @@ def delete_slide(pres: PresentationIR, history: HistoryManager, slide_id_or_num:
         s.slide_num = idx + 1
 
     pres.active_slide_id = pres.slides[min(target_idx, len(pres.slides) - 1)].id
+    active_after_delete = pres.active_slide_id
     pres.version += 1
 
     history.record(
         action="delete_slide",
         description=f"删除幻灯片 #{target_slide.slide_num}",
         slide_id=target_slide.id,
-        before=target_slide.model_dump()
+        before=target_slide.model_dump(),
+        position=target_idx,
+        active_after_delete=active_after_delete
     )
 
     return {"success": True, "message": f"已删除幻灯片 #{target_slide.slide_num}"}
@@ -1754,6 +1761,7 @@ def duplicate_slide(pres: PresentationIR, history: HistoryManager, slide_id: str
         return {"success": False, "error": "Slide not found"}
 
     idx = pres.slides.index(slide)
+    prev_active_slide_id = pres.active_slide_id
     new_slide_dict = copy.deepcopy(slide.model_dump())
     new_slide_dict["id"] = f"slide_{uuid.uuid4().hex[:6]}"
     new_slide_dict["slide_num"] = idx + 2
@@ -1774,7 +1782,11 @@ def duplicate_slide(pres: PresentationIR, history: HistoryManager, slide_id: str
     history.record(
         action="duplicate_slide",
         description=f"复制幻灯片 #{slide.slide_num}",
-        slide_id=new_slide.id
+        slide_id=new_slide.id,
+        before={"active_slide_id": prev_active_slide_id},
+        after=new_slide.model_dump(),
+        position=idx + 1,
+        prev_active_slide_id=prev_active_slide_id
     )
 
     return {"success": True, "new_slide_id": new_slide.id, "slide_num": new_slide.slide_num, "message": f"已成功复制幻灯片为第 {new_slide.slide_num} 页"}

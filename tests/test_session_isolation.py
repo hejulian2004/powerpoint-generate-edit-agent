@@ -9,9 +9,19 @@ from backend.agent.action import AgentAction, ActionResolver
 from backend.ir.models import PresentationIR, SlideIR, TextElementIR, TextContentIR
 
 
+def _seed_demo_session(session_id: str):
+    """Seeds a fresh demo presentation into a session for deterministic WS tests."""
+    session = session_manager.get_or_create(session_id, pres_factory=create_default_demo_presentation)
+    session.pres = create_default_demo_presentation()
+    session.history.clear()
+    return session
+
+
 def test_websocket_session_broadcast_isolation():
     """Verify messages broadcast in session A are never received by session B."""
     client = TestClient(app)
+    _seed_demo_session("isolated_sess_A")
+    _seed_demo_session("isolated_sess_B")
 
     with client.websocket_connect("/ws?session_id=isolated_sess_A") as ws_a, \
          client.websocket_connect("/ws?session_id=isolated_sess_B") as ws_b:
