@@ -1,16 +1,57 @@
 @import "tailwindcss";
 
+@theme {
+  --color-canvas: var(--surface-canvas);
+  --color-panel: var(--surface-panel);
+  --color-elevated: var(--surface-elevated);
+  --color-subtle: var(--surface-subtle);
+  --color-inverted: var(--surface-inverted);
+  --color-inverted-hover: var(--surface-inverted-hover);
+
+  --color-line: var(--border-subtle);
+  --color-line-strong: var(--border-strong);
+  --color-line-focus: var(--border-focus);
+
+  --color-main: var(--content-primary);
+  --color-secondary: var(--content-secondary);
+  --color-muted: var(--content-muted);
+  --color-inverted-text: var(--content-inverted);
+}
+
 :root {
+  --surface-canvas: #F8FAFC;
+  --surface-panel: #FFFFFF;
+  --surface-elevated: #F1F5F9;
+  --surface-subtle: #F8FAFC;
+  --surface-inverted: #0F172A;
+  --surface-inverted-hover: #1E293B;
+
+  --border-subtle: #E2E8F0;
+  --border-strong: #CBD5E1;
+  --border-focus: #94A3B8;
+
+  --content-primary: #0F172A;
+  --content-secondary: #475569;
+  --content-muted: #64748B;
+  --content-inverted: #FFFFFF;
+}
+
+[data-theme="dark"] {
   --surface-canvas: #08090B;
   --surface-panel: #0F1014;
   --surface-elevated: #17181F;
   --surface-subtle: #13141A;
+  --surface-inverted: #FFFFFF;
+  --surface-inverted-hover: #F1F5F9;
+
   --border-subtle: #22242D;
-  --border-focus: #4B4F5E;
   --border-strong: #333644;
+  --border-focus: #4B4F5E;
+
   --content-primary: #F1F2F6;
   --content-secondary: #9397A6;
   --content-muted: #5D6171;
+  --content-inverted: #0F172A;
 }
 
 @layer base {
@@ -32,7 +73,7 @@
   }
 }
 
-/* Precision Titanium Scrollbars */
+/* Precision Clean Scrollbars */
 .custom-scrollbar::-webkit-scrollbar {
   width: 5px;
   height: 5px;
@@ -41,11 +82,11 @@
   background: transparent;
 }
 .custom-scrollbar::-webkit-scrollbar-thumb {
-  background: #252834;
+  background: var(--border-strong);
   border-radius: 9999px;
 }
 .custom-scrollbar::-webkit-scrollbar-thumb:hover {
-  background: #3B3F50;
+  background: var(--border-focus);
 }
 
 .no-scrollbar::-webkit-scrollbar {

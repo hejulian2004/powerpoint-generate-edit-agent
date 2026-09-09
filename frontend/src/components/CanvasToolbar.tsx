@@ -11,7 +11,7 @@ export const CanvasToolbar: React.FC = () => {
     addShapeQuick,
     addTextQuick,
     addConnectorQuick,
-    sendChatMessage,
+    optimizeLayoutDirect,
     showGrid,
     setShowGrid
   } = usePPTStore()
@@ -22,9 +22,9 @@ export const CanvasToolbar: React.FC = () => {
   }
 
   return (
-    <div className="absolute top-4 z-10 flex items-center gap-1 bg-[#12131B]/95 backdrop-blur-xl px-2.5 py-1.5 rounded-xl border border-[#242735] shadow-2xl shadow-black/60 select-none">
+    <div className="absolute top-4 z-10 flex items-center gap-1 bg-panel/95 backdrop-blur-xl px-2.5 py-1.5 rounded-xl border border-line-strong shadow-xl shadow-slate-200/60 select-none">
       {/* Drag Indicator Tooltip Note */}
-      <div className="flex items-center text-[#55586A] pl-0.5 pr-1" title="支持拖拽至主舞台任意坐标放置">
+      <div className="flex items-center text-line-focus pl-0.5 pr-1" title="支持拖拽至主舞台任意坐标放置">
         <GripVertical className="w-3.5 h-3.5" />
       </div>
 
@@ -32,11 +32,11 @@ export const CanvasToolbar: React.FC = () => {
       <button
         draggable
         onDragStart={(e) => handleDragStart(e, 'text')}
-        onClick={addTextQuick}
+        onClick={() => addTextQuick()}
         title="拖拽至画布或点击添加文本"
-        className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg hover:bg-[#1C1E2A] text-[#C2C6D6] hover:text-white text-xs font-medium transition-all cursor-grab active:cursor-grabbing"
+        className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg hover:bg-elevated text-secondary hover:text-main text-xs font-medium transition-all cursor-grab active:cursor-grabbing"
       >
-        <Type className="w-3.5 h-3.5 text-[#888C9E]" />
+        <Type className="w-3.5 h-3.5 text-muted" />
         <span>文本</span>
       </button>
 
@@ -46,9 +46,9 @@ export const CanvasToolbar: React.FC = () => {
         onDragStart={(e) => handleDragStart(e, 'roundRect')}
         onClick={() => addShapeQuick('roundRect')}
         title="拖拽至画布或点击添加圆角卡片"
-        className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg hover:bg-[#1C1E2A] text-[#C2C6D6] hover:text-white text-xs font-medium transition-all cursor-grab active:cursor-grabbing"
+        className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg hover:bg-elevated text-secondary hover:text-main text-xs font-medium transition-all cursor-grab active:cursor-grabbing"
       >
-        <RectangleHorizontal className="w-3.5 h-3.5 text-[#888C9E]" />
+        <RectangleHorizontal className="w-3.5 h-3.5 text-muted" />
         <span>卡片</span>
       </button>
 
@@ -58,7 +58,7 @@ export const CanvasToolbar: React.FC = () => {
         onDragStart={(e) => handleDragStart(e, 'rectangle')}
         onClick={() => addShapeQuick('rectangle')}
         title="拖拽或点击添加矩形"
-        className="p-1.5 rounded-lg hover:bg-[#1C1E2A] text-[#888C9E] hover:text-white transition-colors cursor-grab active:cursor-grabbing"
+        className="p-1.5 rounded-lg hover:bg-elevated text-muted hover:text-main transition-colors cursor-grab active:cursor-grabbing"
       >
         <Square className="w-3.5 h-3.5" />
       </button>
@@ -69,7 +69,7 @@ export const CanvasToolbar: React.FC = () => {
         onDragStart={(e) => handleDragStart(e, 'ellipse')}
         onClick={() => addShapeQuick('ellipse')}
         title="拖拽或点击添加圆形 / 椭圆"
-        className="p-1.5 rounded-lg hover:bg-[#1C1E2A] text-[#888C9E] hover:text-white transition-colors cursor-grab active:cursor-grabbing"
+        className="p-1.5 rounded-lg hover:bg-elevated text-muted hover:text-main transition-colors cursor-grab active:cursor-grabbing"
       >
         <CircleIcon className="w-3.5 h-3.5" />
       </button>
@@ -80,7 +80,7 @@ export const CanvasToolbar: React.FC = () => {
         onDragStart={(e) => handleDragStart(e, 'triangle')}
         onClick={() => addShapeQuick('triangle')}
         title="拖拽或点击添加三角形"
-        className="p-1.5 rounded-lg hover:bg-[#1C1E2A] text-[#888C9E] hover:text-white transition-colors cursor-grab active:cursor-grabbing"
+        className="p-1.5 rounded-lg hover:bg-elevated text-muted hover:text-main transition-colors cursor-grab active:cursor-grabbing"
       >
         <Triangle className="w-3.5 h-3.5" />
       </button>
@@ -91,7 +91,7 @@ export const CanvasToolbar: React.FC = () => {
         onDragStart={(e) => handleDragStart(e, 'diamond')}
         onClick={() => addShapeQuick('diamond')}
         title="拖拽或点击添加菱形决策节点"
-        className="p-1.5 rounded-lg hover:bg-[#1C1E2A] text-[#888C9E] hover:text-white transition-colors cursor-grab active:cursor-grabbing"
+        className="p-1.5 rounded-lg hover:bg-elevated text-muted hover:text-main transition-colors cursor-grab active:cursor-grabbing"
       >
         <Diamond className="w-3.5 h-3.5" />
       </button>
@@ -100,24 +100,24 @@ export const CanvasToolbar: React.FC = () => {
       <button
         onClick={addConnectorQuick}
         title="添加流程连接线与箭头"
-        className="p-1.5 rounded-lg hover:bg-[#1C1E2A] text-[#888C9E] hover:text-white transition-colors"
+        className="p-1.5 rounded-lg hover:bg-elevated text-muted hover:text-main transition-colors"
       >
         <ArrowUpRight className="w-3.5 h-3.5" />
       </button>
 
-      <div className="w-[1px] h-4 bg-[#232635] mx-1" />
+      <div className="w-[1px] h-4 bg-line mx-1" />
 
       {/* 8. Smart Alignment */}
       <button
-        onClick={() => sendChatMessage('帮我自动规整当前页所有卡片的对齐与水平等距排版')}
+        onClick={optimizeLayoutDirect}
         title="智能规整当前页元素排版与对齐"
-        className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg hover:bg-[#1C1E2A] text-[#C2C6D6] hover:text-white text-xs font-medium transition-all"
+        className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg hover:bg-elevated text-secondary hover:text-main text-xs font-medium transition-all"
       >
-        <AlignCenterHorizontal className="w-3.5 h-3.5 text-[#888C9E]" />
+        <AlignCenterHorizontal className="w-3.5 h-3.5 text-muted" />
         <span>智能对齐</span>
       </button>
 
-      <div className="w-[1px] h-4 bg-[#232635] mx-1" />
+      <div className="w-[1px] h-4 bg-line mx-1" />
 
       {/* 9. Grid Overlay Toggle */}
       <button
@@ -125,8 +125,8 @@ export const CanvasToolbar: React.FC = () => {
         title={showGrid ? '隐藏对齐标尺网格' : '显示对齐标尺网格'}
         className={`p-1.5 rounded-lg transition-all ${
           showGrid
-            ? 'bg-[#F1F2F6] text-[#0A0B0E] shadow-sm font-medium'
-            : 'hover:bg-[#1C1E2A] text-[#888C9E] hover:text-white'
+            ? 'bg-inverted text-inverted-text shadow-xs font-medium'
+            : 'hover:bg-elevated text-muted hover:text-main'
         }`}
       >
         <Grid className="w-3.5 h-3.5" />

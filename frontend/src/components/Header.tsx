@@ -14,9 +14,9 @@ export const Header: React.FC = () => {
     sessionId,
     triggerUndo,
     triggerRedo,
+    addNewSlide,
     setSettingsOpen,
-    setPptspecModalOpen,
-    sendChatMessage
+    setPptspecModalOpen
   } = usePPTStore()
 
   const fileInputRef = useRef<HTMLInputElement>(null)
@@ -49,34 +49,34 @@ export const Header: React.FC = () => {
   }
 
   const handleNewSlide = () => {
-    sendChatMessage('帮我新增一页幻灯片，采用黑白灰极简背景。')
+    addNewSlide()
   }
 
   return (
-    <header className="h-12 bg-[#0E0F13] border-b border-[#20222B] flex items-center justify-between px-4 select-none shrink-0 z-20">
+    <header className="h-12 bg-panel border-b border-line flex items-center justify-between px-4 select-none shrink-0 z-20 shadow-[0_1px_2px_rgba(0,0,0,0.03)]">
       {/* Brand & Document Name */}
       <div className="flex items-center gap-3">
-        <div className="w-7 h-7 rounded-lg bg-[#181922] border border-[#2B2E3C] flex items-center justify-center text-[#E2E5F0] shadow-sm">
+        <div className="w-7 h-7 rounded-lg bg-inverted border border-inverted flex items-center justify-center text-inverted-text shadow-sm">
           <Layers className="w-3.5 h-3.5" />
         </div>
         <div className="flex items-center gap-2">
-          <span className="font-semibold text-xs text-[#F1F2F6] tracking-tight">
+          <span className="font-semibold text-xs text-main tracking-tight">
             PPT-Agent-Studio
           </span>
-          <span className="text-[#3F4354] text-xs">/</span>
-          <span className="text-xs text-[#9599AA] truncate max-w-[280px] font-normal hover:text-[#D4D7E5] transition-colors">
+          <span className="text-line-strong text-xs">/</span>
+          <span className="text-xs text-muted truncate max-w-[280px] font-medium hover:text-main transition-colors">
             {presentation?.title || '未命名演示文稿'}
           </span>
         </div>
       </div>
 
       {/* Center History & Creation Controls */}
-      <div className="flex items-center gap-0.5 bg-[#14151C] p-1 rounded-lg border border-[#232531]">
+      <div className="flex items-center gap-0.5 bg-elevated p-1 rounded-lg border border-line">
         <button
           onClick={triggerUndo}
           disabled={!canUndo}
           title="撤销 (Ctrl+Z)"
-          className="p-1.5 rounded-md hover:bg-[#1E202B] disabled:opacity-20 disabled:hover:bg-transparent text-[#A2A6B7] hover:text-[#F1F2F6] transition-colors"
+          className="p-1.5 rounded-md hover:bg-panel disabled:opacity-30 disabled:hover:bg-transparent text-muted hover:text-main transition-all shadow-none hover:shadow-xs"
         >
           <Undo2 className="w-3.5 h-3.5" />
         </button>
@@ -84,19 +84,19 @@ export const Header: React.FC = () => {
           onClick={triggerRedo}
           disabled={!canRedo}
           title="重做 (Ctrl+Y)"
-          className="p-1.5 rounded-md hover:bg-[#1E202B] disabled:opacity-20 disabled:hover:bg-transparent text-[#A2A6B7] hover:text-[#F1F2F6] transition-colors"
+          className="p-1.5 rounded-md hover:bg-panel disabled:opacity-30 disabled:hover:bg-transparent text-muted hover:text-main transition-all shadow-none hover:shadow-xs"
         >
           <Redo2 className="w-3.5 h-3.5" />
         </button>
 
-        <div className="w-[1px] h-3.5 bg-[#252836] mx-1" />
+        <div className="w-[1px] h-3.5 bg-line-strong mx-1" />
 
         <button
           onClick={handleNewSlide}
           title="新增一页幻灯片"
-          className="flex items-center gap-1.5 px-2.5 py-1 text-xs font-medium rounded-md bg-[#1B1D27] hover:bg-[#232635] text-[#D8DAE5] hover:text-white border border-[#2B2E3C] transition-all"
+          className="flex items-center gap-1.5 px-2.5 py-1 text-xs font-medium rounded-md bg-panel hover:bg-subtle text-main border border-line-strong shadow-xs hover:border-line-focus transition-all"
         >
-          <Plus className="w-3.5 h-3.5 text-[#9599AA]" />
+          <Plus className="w-3.5 h-3.5 text-muted" />
           <span>新建页</span>
         </button>
       </div>
@@ -106,9 +106,9 @@ export const Header: React.FC = () => {
         <button
           onClick={() => setPptspecModalOpen(true)}
           title="使用外部 AI 分析结果生成 PPT (CanonicalPPTSpec)"
-          className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg bg-blue-600/20 hover:bg-blue-600/30 text-blue-300 hover:text-white border border-blue-500/30 transition-all shadow-sm"
+          className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg bg-blue-50 hover:bg-blue-100 text-blue-700 border border-blue-200 transition-all shadow-xs"
         >
-          <Sparkles className="w-3.5 h-3.5 text-blue-400" />
+          <Sparkles className="w-3.5 h-3.5 text-blue-600" />
           <span>AI 论文导入生成</span>
         </button>
 
@@ -122,16 +122,16 @@ export const Header: React.FC = () => {
         <button
           onClick={() => fileInputRef.current?.click()}
           title="导入本地 PPTX 演示文稿并转换为 PPT-IR"
-          className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg bg-[#14151C] hover:bg-[#1C1E28] text-[#C5C8D8] hover:text-white border border-[#242633] hover:border-[#333647] transition-all"
+          className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg bg-panel hover:bg-subtle text-secondary hover:text-main border border-line hover:border-line-strong shadow-xs transition-all"
         >
-          <Upload className="w-3.5 h-3.5 text-[#888C9E]" />
+          <Upload className="w-3.5 h-3.5 text-muted" />
           <span>导入 PPTX</span>
         </button>
 
         <button
           onClick={handleExport}
           title="导出工业级原生 OOXML 演示文稿"
-          className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg bg-[#F1F2F6] hover:bg-white text-[#0B0C10] shadow-sm transition-all"
+          className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg bg-inverted hover:bg-inverted-hover text-inverted-text shadow-xs transition-all"
         >
           <Download className="w-3.5 h-3.5" />
           <span>导出 PPTX</span>
@@ -140,18 +140,18 @@ export const Header: React.FC = () => {
         <button
           onClick={() => setSettingsOpen(true)}
           title="模型与服务配置"
-          className="p-1.5 rounded-lg text-[#7F8395] hover:text-[#F1F2F6] hover:bg-[#191B24] transition-colors"
+          className="p-1.5 rounded-lg text-muted hover:text-main hover:bg-elevated transition-colors"
         >
           <Settings className="w-4 h-4" />
         </button>
 
-        <div className="flex items-center gap-1.5 pl-2.5 border-l border-[#222430]">
+        <div className="flex items-center gap-1.5 pl-2.5 border-l border-line">
           <span
             className={`w-1.5 h-1.5 rounded-full ${
-              wsConnected ? 'bg-emerald-400 shadow-[0_0_8px_rgba(52,211,153,0.6)]' : 'bg-[#555869]'
+              wsConnected ? 'bg-emerald-500 shadow-[0_0_6px_rgba(16,185,129,0.5)]' : 'bg-line-focus'
             }`}
           />
-          <span className="text-[11px] text-[#787C8F] font-tabular">
+          <span className="text-[11px] text-muted font-tabular font-medium">
             {wsConnected ? 'LIVE' : 'OFFLINE'}
           </span>
         </div>

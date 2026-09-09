@@ -3,6 +3,7 @@ import type {
   ConnectorElementIR, ImageElementIR, GroupElementIR, FillStyle, BorderStyle
 } from '../types/ppt'
 import { usePPTStore } from '../store/usePPTStore'
+import { themeColors } from '../theme/tokens'
 
 interface Props {
   slide: SlideIR
@@ -108,7 +109,7 @@ export const SVGRendererComponent: React.FC<Props> = ({
     if (fill.type === 'gradient' && fill.gradient) {
       return `url(#${elemId ? `grad-${elemId}` : `bg-grad-${slide.id}`})`
     }
-    const color = fill.color || '#1A1C25'
+    const color = fill.color || themeColors.content.primary
     if (fill.alpha < 1.0) {
       return hexToRgba(color, fill.alpha)
     }
@@ -119,7 +120,7 @@ export const SVGRendererComponent: React.FC<Props> = ({
     if (!border || border.style === 'none' || border.width <= 0) {
       return { stroke: 'none', strokeWidth: 0 }
     }
-    let stroke = border.color || '#2D303F'
+    let stroke = border.color || themeColors.border.focus
     if (border.alpha < 1.0) {
       stroke = hexToRgba(stroke, border.alpha)
     }
@@ -187,7 +188,7 @@ export const SVGRendererComponent: React.FC<Props> = ({
                     fontSize={`${font?.size || 16}px`}
                     fontWeight={font?.bold ? '600' : '400'}
                     fontStyle={font?.italic ? 'italic' : 'normal'}
-                    fill={font?.color || '#F1F2F6'}
+                    fill={font?.color || themeColors.content.primary}
                     letterSpacing="-0.01em"
                   >
                     {run.text}
@@ -350,8 +351,8 @@ export const SVGRendererComponent: React.FC<Props> = ({
               return row.map((cell: any, cIdx: number) => {
                 const cx = elem.x + cIdx * cW
                 const cy = elem.y + rIdx * cH
-                const fill = cell.style?.fill?.color || '#FFFFFF'
-                const stroke = cell.style?.border?.color || '#CBD5E1'
+                const fill = cell.style?.fill?.color || themeColors.surface.panel
+                const stroke = cell.style?.border?.color || themeColors.border.strong
                 const strokeW = cell.style?.border?.width || 1
                 return (
                   <g key={`cell-${rIdx}-${cIdx}`}>
@@ -380,7 +381,7 @@ export const SVGRendererComponent: React.FC<Props> = ({
               width={elem.width + 3}
               height={elem.height + 3}
               fill="none"
-              stroke="#F1F2F6"
+              stroke={themeColors.content.primary}
               strokeWidth="1.2"
               strokeDasharray="4,2"
               pointerEvents="none"
@@ -394,8 +395,8 @@ export const SVGRendererComponent: React.FC<Props> = ({
               { id: 'e', cx: elem.x + elem.width, cy: elem.y + elem.height / 2, cursor: 'ew-resize' },
               { id: 'se', cx: elem.x + elem.width, cy: elem.y + elem.height, cursor: 'nwse-resize' },
               { id: 's', cx: elem.x + elem.width / 2, cy: elem.y + elem.height, cursor: 'ns-resize' },
-              { id: 'sw', cx: elem.x, cy: elem.y + elem.height, cursor: 'nesw-resize' },
-              { id: 'w', cx: elem.x, cy: elem.y + elem.height / 2, cursor: 'ew-resize' },
+              { id: 'sw', cx: elem.x, cy: elem.y, cursor: 'nesw-resize' },
+              { id: 'w', cx: elem.x, cy: elem.y, cursor: 'ew-resize' },
             ].map((h) => (
               <rect
                 key={h.id}
@@ -404,8 +405,8 @@ export const SVGRendererComponent: React.FC<Props> = ({
                 width={9}
                 height={9}
                 rx={2}
-                fill="#FFFFFF"
-                stroke="#0D0E13"
+                fill={themeColors.surface.panel}
+                stroke={themeColors.content.primary}
                 strokeWidth={1.5}
                 style={{ cursor: h.cursor }}
                 onMouseDown={(e) => {
@@ -423,15 +424,15 @@ export const SVGRendererComponent: React.FC<Props> = ({
                 width={112}
                 height={18}
                 rx={4}
-                fill="#12131B"
-                stroke="#2E3244"
+                fill={themeColors.surface.inverted}
+                stroke={themeColors.surface.invertedHover}
                 strokeWidth={1}
               />
               <text
                 x={elem.x + 56}
                 y={elem.y - 11}
                 textAnchor="middle"
-                fill="#E2E5F0"
+                fill={themeColors.content.inverted}
                 fontSize="10px"
                 fontFamily="'JetBrains Mono', 'SF Mono', Consolas, monospace"
                 fontWeight="500"
