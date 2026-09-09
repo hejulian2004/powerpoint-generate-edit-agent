@@ -111,7 +111,7 @@ async def normalize_node(state: PPTGenerationState, config: RunnableConfig) -> D
     if state.get("canonical_spec") is not None:
         return {"status": "normalized"}
 
-    norm_res = normalize_presentation_input(
+    norm_res = await normalize_presentation_input(
         raw_text=raw_input,
         llm_client=llm_client,
         strict_truthfulness=False,  # Truthfulness will be checked in validate_spec_node
@@ -168,7 +168,8 @@ async def repair_spec_node(state: PPTGenerationState, config: RunnableConfig) ->
     configurable = config.get("configurable", {})
     on_event = configurable.get("on_event")
 
-    await _safe_emit(on_event, {"type": "generation_progress", "status": "repairing_spec", "text": "修复格式与证据映射..."})
+    attempts = state.get("spec_repair_attempts", 0) + 1
+    await _safe_emit(on_event, {"type": "generation_progress", "status": "repairing_spec", "text": f"修复格式与证据映射 (第 {attempts} 次)..."})
 
     raw_input = state.get("raw_input", "")
     _, candidate = parse_presentation_input(raw_input)
@@ -178,12 +179,14 @@ async def repair_spec_node(state: PPTGenerationState, config: RunnableConfig) ->
         repaired_spec = normalize_dict_to_canonical_spec(candidate, warnings=warnings)
         return {
             "canonical_spec": repaired_spec,
+            "spec_repair_attempts": attempts,
             "normalization_warnings": list(state.get("normalization_warnings", [])) + warnings,
             "validation_errors": [],  # Cleared for re-validation in next node
             "status": "spec_repaired",
         }
     except Exception as e:
         return {
+            "spec_repair_attempts": attempts,
             "error": f"Failed to repair spec: {e}",
             "status": "repair_spec_failed",
         }
@@ -290,11 +293,15 @@ async def visual_repair_node(state: PPTGenerationState, config: RunnableConfig) 
     # Collect patches across all slides
     all_patches = []
     for slide in deck_layout.slides:
-        slide_issues = [i for i in issues if i.slide == slide.slide_id]
+        slide_issues = [i for i in issues if i.slide_id == slide.slide_id]
         all_patches.extend(generate_patches_for_issues(slide_issues, slide))
 
     if all_patches:
-        patched_deck_layout, _ = apply_deck_patches(deck_layout, all_patches, strict=False)
+        patched_deck_layout, _ = apply_deck_patches(
+            deck_layout,
+            all_patches,
+            enforce_transaction=True,
+        )
     else:
         patched_deck_layout = deck_layout
 
@@ -341,8 +348,11 @@ def validation_route(state: PPTGenerationState) -> Literal["compile_slidespec_no
     if not errors:
         return "compile_slidespec_node"
 
-    # If error is a recoverable format error and not retried yet
-    if state.get("repair_iteration", 0) == 0 and not any("UNSUPPORTED_NUMERIC_VALUE" in e for e in errors):
+    attempts = state.get("spec_repair_attempts", 0)
+    max_attempts = state.get("max_spec_repair_attempts", 1)
+
+    # If error is a recoverable format error and attempts haven't reached max
+    if attempts < max_attempts and not any("UNSUPPORTED_NUMERIC_VALUE" in e for e in errors):
         return "repair_spec_node"
 
     # Fatal truthfulness or unrecoverable error -> terminate

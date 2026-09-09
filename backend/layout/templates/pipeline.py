@@ -67,7 +67,8 @@ class PipelineArchitectureTemplate(BaseLayoutTemplate):
                     elements.append(
                         LayoutElement(
                             element_id=f"slide_{slide.index}_text_{idx + 1}",
-                            source_block_id=f"text_{idx + 1}",
+                            source_block_id=t.block_id or f"text_{idx + 1}",
+                            source_evidence_ids=list(getattr(t, "source_evidence_ids", [])),
                             element_type=ElementType.TEXT,
                             role=t.role,
                             geometry=Rect(x=zones.body_x, y=curr_y, width=left_w, height=item_h),
@@ -107,7 +108,8 @@ class PipelineArchitectureTemplate(BaseLayoutTemplate):
                 elements.append(
                     LayoutElement(
                         element_id=f"slide_{slide.index}_figure_1",
-                        source_block_id=fig.source_figure_id,
+                        source_block_id=fig.block_id or fig.source_figure_id,
+                        source_evidence_ids=list(getattr(fig, "source_evidence_ids", [])),
                         element_type=ElementType.FIGURE,
                         role=BlockRole.CALLOUT,
                         geometry=fig_geo,
@@ -133,7 +135,8 @@ class PipelineArchitectureTemplate(BaseLayoutTemplate):
                     elements.append(
                         LayoutElement(
                             element_id=f"slide_{slide.index}_fig_caption_1",
-                            source_block_id=f"{fig.source_figure_id}_caption",
+                            source_block_id=f"{fig.block_id or fig.source_figure_id}_caption",
+                            source_evidence_ids=list(getattr(fig, "source_evidence_ids", [])),
                             element_type=ElementType.TEXT,
                             role=BlockRole.CAPTION,
                             geometry=Rect(x=right_x, y=zones.body_y + fig_h + 8.0, width=right_w, height=cap_h),
@@ -163,7 +166,8 @@ class PipelineArchitectureTemplate(BaseLayoutTemplate):
                 elements.append(
                     LayoutElement(
                         element_id=f"slide_{slide.index}_table_1",
-                        source_block_id=tbl.source_table_id,
+                        source_block_id=tbl.block_id or tbl.source_table_id,
+                        source_evidence_ids=list(getattr(tbl, "source_evidence_ids", [])),
                         element_type=ElementType.TABLE,
                         role=BlockRole.CALLOUT,
                         geometry=Rect(x=right_x, y=zones.body_y, width=right_w, height=tbl_h),
@@ -191,7 +195,8 @@ class PipelineArchitectureTemplate(BaseLayoutTemplate):
                     elements.append(
                         LayoutElement(
                             element_id=f"slide_{slide.index}_tbl_caption_1",
-                            source_block_id=f"{tbl.source_table_id}_caption",
+                            source_block_id=f"{tbl.block_id or tbl.source_table_id}_caption",
+                            source_evidence_ids=list(getattr(tbl, "source_evidence_ids", [])),
                             element_type=ElementType.TEXT,
                             role=BlockRole.CAPTION,
                             geometry=Rect(x=right_x, y=zones.body_y + tbl_h + 8.0, width=right_w, height=cap_h),
@@ -232,7 +237,8 @@ class PipelineArchitectureTemplate(BaseLayoutTemplate):
                 elements.append(
                     LayoutElement(
                         element_id=f"slide_{slide.index}_stage_{idx + 1}",
-                        source_block_id=f"text_{idx + 1}",
+                        source_block_id=t.block_id or f"text_{idx + 1}",
+                        source_evidence_ids=list(getattr(t, "source_evidence_ids", [])),
                         element_type=ElementType.TEXT,
                         role=t.role,
                         geometry=Rect(x=zones.body_x, y=curr_y, width=zones.body_width, height=item_h),

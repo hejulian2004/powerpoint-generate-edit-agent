@@ -66,7 +66,7 @@ export const PPTSpecImportModal: React.FC = () => {
       const res = await fetch('/api/pptspec/normalize', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ content: rawInput }),
+        body: JSON.stringify({ content: rawInput, session_id: sessionId }),
       })
       if (!res.ok) {
         const errData = await res.json().catch(() => ({}))

@@ -72,6 +72,7 @@ def test_normalize_valid_and_unsupported_numeric():
     )
     # Save an artifact whose raw_input does NOT contain 99.8%
     fake_artifact = artifact_store.save(
+        session_id="default",
         raw_input="We report no numbers here.",
         spec=fake_spec,
         summary={"slides": 1},
@@ -100,14 +101,14 @@ def test_generate_from_valid_artifact():
     - ImageNet Top-1 准确率达到 88.55%
     """
 
-    res_norm = client.post("/api/pptspec/normalize", json={"content": raw_text})
+    test_sid = "test_route_gen_sess"
+    res_norm = client.post("/api/pptspec/normalize", json={"content": raw_text, "session_id": test_sid})
     assert res_norm.status_code == 200
     norm_data = res_norm.json()
     assert norm_data["valid"] is True
     norm_id = norm_data["normalization_id"]
     assert norm_id is not None
 
-    test_sid = "test_route_gen_sess"
     res_gen = client.post(
         "/api/pptspec/generate",
         json={"normalization_id": norm_id, "session_id": test_sid}

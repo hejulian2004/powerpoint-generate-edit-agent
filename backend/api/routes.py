@@ -211,18 +211,26 @@ async def api_get_pptspec_schema():
 async def api_normalize_pptspec(payload: Dict[str, Any] = Body(...)):
     """Flexible ingestion and normalization of external AI output.
 
-    Caches valid artifacts server-side and returns a normalization_id to prevent
-    client-side specification tampering.
+    Caches valid artifacts server-side bound to session_id and returns
+    a normalization_id to prevent client-side specification tampering.
     """
     raw_content = payload.get("content", "").strip()
     if not raw_content:
         raise HTTPException(status_code=400, detail="Input content cannot be empty")
 
-    norm_res = normalize_presentation_input(raw_content, strict_truthfulness=False)
+    session_id = payload.get("session_id") or store.active_session_id
+    llm_client = getattr(store.agent_runtime, "llm", None)
+
+    norm_res = await normalize_presentation_input(
+        raw_text=raw_content,
+        llm_client=llm_client,
+        strict_truthfulness=False,
+    )
 
     norm_id = None
     if norm_res.valid and norm_res.spec is not None:
         artifact = artifact_store.save(
+            session_id=session_id,
             raw_input=raw_content,
             spec=norm_res.spec,
             summary=norm_res.summary,
@@ -249,9 +257,16 @@ async def api_generate_from_pptspec(payload: Dict[str, Any] = Body(...)):
     if not norm_id:
         raise HTTPException(status_code=400, detail="normalization_id is required")
 
+    session_id = payload.get("session_id") or store.active_session_id
     artifact = artifact_store.get(norm_id)
     if not artifact:
-        raise HTTPException(status_code=404, detail="Normalization artifact not found or expired. Please parse again.")
+        raise HTTPException(status_code=404, detail="ARTIFACT_NOT_FOUND: Normalization artifact not found.")
+
+    if artifact.is_expired:
+        raise HTTPException(status_code=410, detail="ARTIFACT_EXPIRED: Normalization artifact has expired.")
+
+    if artifact.session_id != session_id:
+        raise HTTPException(status_code=403, detail="ARTIFACT_SESSION_MISMATCH: Artifact does not belong to the requested session.")
 
     # Re-enforce Truthfulness Guard on server side before generation
     val_res = validate_truthfulness(artifact.raw_input, artifact.canonical_spec, strict=False)
@@ -262,7 +277,6 @@ async def api_generate_from_pptspec(payload: Dict[str, Any] = Body(...)):
         )
 
     # Session binding
-    session_id = payload.get("session_id") or store.active_session_id
     session = store.session_manager.get_or_create(session_id)
 
     async def on_event(event: Dict[str, Any]):
@@ -280,7 +294,13 @@ async def api_generate_from_pptspec(payload: Dict[str, Any] = Body(...)):
     try:
         gen_result = await generation_graph.ainvoke(
             initial_state,
-            config={"configurable": {"on_event": on_event, "pres": session.pres}},
+            config={
+                "configurable": {
+                    "on_event": on_event,
+                    "pres": session.pres,
+                    "llm_client": getattr(store.agent_runtime, "llm", None),
+                }
+            },
         )
     except Exception as e:
         logger.exception("LangGraph generation execution error")

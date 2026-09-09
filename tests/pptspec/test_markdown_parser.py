@@ -1,11 +1,13 @@
 """Unit tests for Markdown & Plain-Text Outline Parsing (PR13 Step 2)."""
 
+import pytest
 from backend.pptspec.parser import InputFormat, detect_format
 from backend.pptspec.normalizer import normalize_presentation_input
 from backend.presentation.schema import SlideType
 
 
-def test_markdown_presentation_outline():
+@pytest.mark.anyio
+async def test_markdown_presentation_outline():
     markdown_text = """
 # AnomalyAgent: 智能运维多智能体架构
 
@@ -29,7 +31,7 @@ def test_markdown_presentation_outline():
     fmt = detect_format(markdown_text)
     assert fmt == InputFormat.MARKDOWN
 
-    res = normalize_presentation_input(markdown_text, strict_truthfulness=True)
+    res = await normalize_presentation_input(markdown_text, strict_truthfulness=True)
     assert res.valid is True
     assert res.spec is not None
     assert len(res.spec.slides) == 3
@@ -43,7 +45,8 @@ def test_markdown_presentation_outline():
     assert fig_reqs[0].page == 5
 
 
-def test_chinese_plain_text_outline():
+@pytest.mark.anyio
+async def test_chinese_plain_text_outline():
     chinese_text = """
 第1页：研究背景
 - 传统人工排障效率低
@@ -58,7 +61,7 @@ def test_chinese_plain_text_outline():
 - 移除多轮协同后性能下降
 """
 
-    res = normalize_presentation_input(chinese_text, strict_truthfulness=True)
+    res = await normalize_presentation_input(chinese_text, strict_truthfulness=True)
     assert res.valid is True
     assert res.spec is not None
     assert len(res.spec.slides) == 3

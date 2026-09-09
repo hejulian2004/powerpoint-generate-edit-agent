@@ -81,7 +81,7 @@ async def test_generation_graph_fatal_validation_routing():
     }
     # Pass the canonical_spec with unsupported number directly
     from backend.pptspec.normalizer import normalize_presentation_input
-    norm = normalize_presentation_input(malicious_json, strict_truthfulness=False)
+    norm = await normalize_presentation_input(malicious_json, strict_truthfulness=False)
     initial_state["canonical_spec"] = norm.spec
 
     result = await graph.ainvoke(initial_state)

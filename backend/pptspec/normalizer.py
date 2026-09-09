@@ -245,11 +245,15 @@ def normalize_dict_to_canonical_spec(
             )
 
         elif kind_str in ("metric", "metric_result"):
+            val_raw = raw_ev.get("value")
+            if val_raw is None or str(val_raw).strip() == "":
+                warnings.append(f"MISSING_METRIC_VALUE: Metric '{ev_id}' has no value provided; omitted to prevent fabricating data.")
+                continue
             normalized_evidences.append(
                 MetricEvidence(
                     id=ev_id,
                     name=str(raw_ev.get("name") or "Metric"),
-                    value=str(raw_ev.get("value") or "0"),
+                    value=str(val_raw).strip(),
                     unit=raw_ev.get("unit"),
                     method=raw_ev.get("method"),
                 )
@@ -258,21 +262,28 @@ def normalize_dict_to_canonical_spec(
         elif kind_str == "metric_group":
             m_entries: List[MetricEntry] = []
             for m in raw_ev.get("metrics") or []:
-                if isinstance(m, dict) and "name" in m and "value" in m:
-                    m_entries.append(
-                        MetricEntry(
-                            name=str(m["name"]),
-                            value=str(m["value"]),
-                            unit=m.get("unit"),
+                if isinstance(m, dict) and "name" in m:
+                    m_val = m.get("value")
+                    if m_val is not None and str(m_val).strip() != "":
+                        m_entries.append(
+                            MetricEntry(
+                                name=str(m["name"]),
+                                value=str(m_val).strip(),
+                                unit=m.get("unit"),
+                            )
                         )
+                    else:
+                        warnings.append(f"MISSING_METRIC_VALUE: MetricGroup '{ev_id}' entry '{m.get('name')}' has no value; omitted.")
+            if m_entries:
+                normalized_evidences.append(
+                    MetricGroupEvidence(
+                        id=ev_id,
+                        group_name=str(raw_ev.get("group_name") or "Metrics"),
+                        metrics=m_entries,
                     )
-            normalized_evidences.append(
-                MetricGroupEvidence(
-                    id=ev_id,
-                    group_name=str(raw_ev.get("group_name") or "Metrics"),
-                    metrics=m_entries,
                 )
-            )
+            else:
+                warnings.append(f"MISSING_METRIC_VALUE: MetricGroup '{ev_id}' has no valid metric entries; omitted.")
 
         elif kind_str == "equation":
             normalized_evidences.append(
@@ -327,34 +338,33 @@ def normalize_dict_to_canonical_spec(
         slide_type = map_slide_type(raw_slide.get("type"), title=title_str, index=s_idx)
         visual_intent = map_visual_intent(raw_slide.get("visual_intent"), slide_type)
 
-        # Filter evidence_refs to valid IDs only
+        # Preserve all evidence_refs without silently dropping unknown ones!
+        # TruthfulnessValidator will validate references and record INVALID_EVIDENCE_REFERENCE.
         raw_refs = raw_slide.get("evidence_refs") or raw_slide.get("evidences") or []
-        cleaned_refs: List[str] = []
-        for r in raw_refs:
-            ref_str = str(r)
-            if ref_str in valid_ev_ids:
-                cleaned_refs.append(ref_str)
-            else:
-                warnings.append(f"Slide '{slide_id}' dropped unknown evidence reference '{ref_str}'.")
+        cleaned_refs: List[str] = [str(r).strip() for r in raw_refs if str(r).strip()]
 
-        # Resolve instructions / bullet items
-        instructions_raw = (
-            raw_slide.get("instructions")
-            or raw_slide.get("key_messages")
+        # Resolve bullet items from key_messages or bullets (synthesize ClaimEvidence if needed)
+        bullets_raw = (
+            raw_slide.get("key_messages")
             or raw_slide.get("bullets")
             or []
         )
-        instructions = [str(item) for item in instructions_raw if str(item).strip()]
-
-        # If a slide has bullets but no evidence_refs, synthesize ClaimEvidence for them
-        if instructions and not cleaned_refs:
-            for b_idx, bullet in enumerate(instructions, start=1):
-                new_ev_id = f"ev_auto_{slide_id}_{b_idx}"
-                if new_ev_id not in valid_ev_ids:
-                    claim = ClaimEvidence(id=new_ev_id, content=bullet)
-                    normalized_evidences.append(claim)
-                    valid_ev_ids.add(new_ev_id)
+        bullets = [str(item).strip() for item in bullets_raw if str(item).strip()]
+        for b_idx, bullet in enumerate(bullets, start=1):
+            new_ev_id = f"ev_bullet_{slide_id}_{b_idx}"
+            if new_ev_id not in valid_ev_ids:
+                claim = ClaimEvidence(id=new_ev_id, content=bullet)
+                normalized_evidences.append(claim)
+                valid_ev_ids.add(new_ev_id)
+            if new_ev_id not in cleaned_refs:
                 cleaned_refs.append(new_ev_id)
+
+        # Presentation/layout directives only in instructions (never slide text content)
+        instructions_raw = raw_slide.get("instructions") or []
+        if isinstance(instructions_raw, str):
+            instructions = [instructions_raw.strip()] if instructions_raw.strip() else []
+        else:
+            instructions = [str(item).strip() for item in instructions_raw if str(item).strip()]
 
         normalized_slides.append(
             SlideRequest(
@@ -398,38 +408,46 @@ def compute_spec_summary(spec: CanonicalPPTSpec) -> Dict[str, int]:
     }
 
 
-def normalize_presentation_input(
+async def normalize_presentation_input(
     raw_text: str,
     llm_client: Optional[Any] = None,
     strict_truthfulness: bool = True,
 ) -> NormalizationResult:
-    """End-to-end normalization pipeline with truthfulness verification."""
+    """End-to-end async normalization pipeline with truthfulness verification."""
     warnings: List[str] = []
     errors: List[str] = []
 
     # 1. Detect format & parse candidate dictionary
-    fmt, candidate = parse_presentation_input(raw_text)
-
+    fmt = detect_format(raw_text)
     spec: Optional[CanonicalPPTSpec] = None
+
     try:
+        _, candidate = parse_presentation_input(raw_text)
         spec = normalize_dict_to_canonical_spec(candidate, warnings=warnings)
     except Exception as e:
         logger.warning(f"Deterministic normalization failed: {e}")
         # 2. LLM fallback if deterministic normalization raised error and llm_client is provided
-        if llm_client is not None and hasattr(llm_client, "chat_complete"):
+        if llm_client is not None and hasattr(llm_client, "chat_completion"):
             try:
                 system_prompt = (
                     "你是一位严格的学术 PPT 结构化编译器。将用户的非结构化大纲整理为符合 CanonicalPPTSpec 的 JSON。\n"
                     "【绝密原则】: 严禁添加任何新事实，严禁添加用户未提供的数字，严禁生成假图假表。"
                 )
-                resp = llm_client.chat_complete(
+                resp = await llm_client.chat_completion(
                     messages=[
                         {"role": "system", "content": system_prompt},
                         {"role": "user", "content": raw_text},
                     ],
-                    response_format={"type": "json_object"},
                 )
-                llm_dict = json.loads(resp)
+                if isinstance(resp, dict):
+                    if "choices" in resp and resp["choices"]:
+                        content_str = resp["choices"][0]["message"].get("content", "")
+                    else:
+                        content_str = resp.get("content") or json.dumps(resp)
+                else:
+                    content_str = str(resp)
+
+                _, llm_dict = parse_presentation_input(content_str)
                 spec = normalize_dict_to_canonical_spec(llm_dict, warnings=warnings)
             except Exception as llm_err:
                 errors.append(f"LLM normalization fallback also failed: {llm_err}")

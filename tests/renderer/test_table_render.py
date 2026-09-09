@@ -65,8 +65,10 @@ def test_table_resolver_fallback(tmp_path: Path):
     resolved = resolver.resolve_table("table1")
     assert "header" in resolved
     assert "rows" in resolved
-    assert len(resolved["rows"]) >= 2
+    assert len(resolved["rows"]) >= 1
     assert len(resolved["header"]) >= 2
+    assert "76.4" not in str(resolved)
+    assert "Baseline Architecture" not in str(resolved)
 
 
 def test_render_table_r1c2_and_empty_guard(tmp_path: Path):

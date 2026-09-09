@@ -1,5 +1,6 @@
 """Unit tests for Normalizer Pipeline (PR13 Step 2)."""
 
+import pytest
 from backend.pptspec.normalizer import (
     normalize_dict_to_canonical_spec,
     compute_spec_summary,
@@ -26,14 +27,15 @@ def test_source_policy_safe_overrides():
     assert spec.source_policy.allow_external_knowledge is False
 
 
-def test_incomplete_table_demotion():
+@pytest.mark.anyio
+async def test_incomplete_table_demotion():
     """Verify that missing table rows or row length mismatches demote to placeholder without failing normalization."""
     raw = """
     We present Table 3: Summary of Baseline Latencies.
     Details on page 7.
     """
 
-    res = normalize_presentation_input(raw, strict_truthfulness=True)
+    res = await normalize_presentation_input(raw, strict_truthfulness=True)
     assert res.valid is True
     assert res.spec is not None
     assert res.summary["table_placeholders"] == 1
@@ -45,7 +47,8 @@ def test_incomplete_table_demotion():
     assert len(tbl_ev.rows) == 0
 
 
-def test_compute_spec_summary():
+@pytest.mark.anyio
+async def test_compute_spec_summary():
     raw_json = """{
         "presentation": {"title": "Summary Test"},
         "evidence": [
@@ -61,7 +64,7 @@ def test_compute_spec_summary():
             {"id": "s2", "title": "S2", "evidence_refs": ["f1", "t1", "t2"]}
         ]
     }"""
-    res = normalize_presentation_input(raw_json, strict_truthfulness=True)
+    res = await normalize_presentation_input(raw_json, strict_truthfulness=True)
     assert res.valid is True
     summary = res.summary
     assert summary["slides"] == 2

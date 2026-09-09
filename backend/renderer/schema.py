@@ -30,7 +30,7 @@ class RenderConfig(BaseModel):
     widescreen: bool = Field(True, description="Whether to render in 16:9 widescreen")
     validate_fidelity: bool = Field(True, description="Whether to run automatic fidelity validation")
     allow_synthetic_assets: bool = Field(
-        True,
+        False,
         description="Whether to generate synthetic placeholder diagrams when image assets are missing on disk",
     )
     custom_properties: Dict[str, Any] = Field(default_factory=dict, description="Arbitrary PPTX metadata")

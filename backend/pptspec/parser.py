@@ -199,6 +199,7 @@ def parse_markdown_or_text_outline(raw_text: str) -> Dict[str, Any]:
                 "title": title,
                 "objective": "",
                 "instructions": [],
+                "bullets": [],
                 "evidence_refs": [],
                 "speaker_notes": None,
             }
@@ -216,6 +217,7 @@ def parse_markdown_or_text_outline(raw_text: str) -> Dict[str, Any]:
                 "title": title,
                 "objective": "",
                 "instructions": [],
+                "bullets": [],
                 "evidence_refs": [],
                 "speaker_notes": None,
             }
@@ -228,9 +230,18 @@ def parse_markdown_or_text_outline(raw_text: str) -> Dict[str, Any]:
                 "title": doc_title,
                 "objective": "",
                 "instructions": [],
+                "bullets": [],
                 "evidence_refs": [],
                 "speaker_notes": None,
             }
+
+        # Check for explicit presentation/layout instruction
+        inst_match = re.match(r"^(?:(?:\[|\()?(?:instruction|instructions|提示|排版|布局|样式)(?:\]|\))?[:：])\s*(.*)", stripped, re.IGNORECASE)
+        if inst_match:
+            inst_text = inst_match.group(1).strip()
+            if inst_text:
+                current_slide.setdefault("instructions", []).append(inst_text)
+            continue
 
         if current_slide:
             # Figure detection: Figure 3 / Fig. 3 / 图 3
@@ -249,7 +260,6 @@ def parse_markdown_or_text_outline(raw_text: str) -> Dict[str, Any]:
                     "source_page": p_num,
                 })
                 current_slide["evidence_refs"].append(fig_id)
-                current_slide["instructions"].append(stripped)
                 continue
 
             # Table reference without full markdown table: Table 2 / 表 2
@@ -269,7 +279,6 @@ def parse_markdown_or_text_outline(raw_text: str) -> Dict[str, Any]:
                     "complete_table": False,
                 })
                 current_slide["evidence_refs"].append(tbl_id)
-                current_slide["instructions"].append(stripped)
                 continue
 
             # Bullet / claim / metric parsing
@@ -300,7 +309,7 @@ def parse_markdown_or_text_outline(raw_text: str) -> Dict[str, Any]:
                     })
                     current_slide["evidence_refs"].append(c_id)
 
-                current_slide["instructions"].append(clean_item)
+                current_slide.setdefault("bullets", []).append(clean_item)
 
     if in_table:
         flush_table()
@@ -314,7 +323,8 @@ def parse_markdown_or_text_outline(raw_text: str) -> Dict[str, Any]:
             "id": "slide_01",
             "title": doc_title,
             "objective": "演示概述",
-            "instructions": [line.strip() for line in lines if line.strip()][:5],
+            "instructions": [],
+            "bullets": [],
             "evidence_refs": [],
             "speaker_notes": None,
         })
@@ -355,6 +365,7 @@ def parse_presentation_input(raw_text: str) -> Tuple[InputFormat, Dict[str, Any]
         payload = extract_json_payload(raw_text)
         if payload is not None:
             return fmt, payload
+        raise ValueError(f"Failed to extract valid JSON payload from detected {fmt.value} input.")
 
     # 2. Markdown or plain-text outline parsing
     candidate = parse_markdown_or_text_outline(raw_text)

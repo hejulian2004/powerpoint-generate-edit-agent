@@ -177,21 +177,23 @@ def validate_pptx_fidelity(
                 if not text_passed:
                     warnings.append(f"Text mismatch on element {el.element_id}: expected '{norm_expected[:30]}...', got '{norm_actual[:30]}...'")
 
-            # D. Figure fidelity check
+            # D. Figure fidelity check (PICTURE or explicit placeholder AUTO_SHAPE)
             elif el.element_type == ElementType.FIGURE:
                 is_pic = (shape.shape_type == MSO_SHAPE_TYPE.PICTURE)
+                is_placeholder = (shape.shape_type == MSO_SHAPE_TYPE.AUTO_SHAPE)
+                passed = is_pic or is_placeholder
                 checks.append(
                     FidelityCheckItem(
                         category="figure_fidelity",
                         target_id=el.element_id,
-                        passed=is_pic,
-                        expected="PICTURE",
+                        passed=passed,
+                        expected="PICTURE or AUTO_SHAPE placeholder",
                         actual=str(shape.shape_type),
-                        message=None if is_pic else f"Expected PICTURE shape type, got {shape.shape_type}",
+                        message=None if passed else f"Expected PICTURE or AUTO_SHAPE placeholder, got {shape.shape_type}",
                     )
                 )
-                if not is_pic:
-                    errors.append(f"Figure element {el.element_id} was not rendered as PICTURE shape")
+                if not passed:
+                    errors.append(f"Figure element {el.element_id} was not rendered as PICTURE or placeholder shape")
 
             # E. Table fidelity check
             elif el.element_type == ElementType.TABLE:

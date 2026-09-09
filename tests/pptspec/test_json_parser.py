@@ -1,11 +1,13 @@
 """Unit tests for JSON & Fenced JSON Parsing (PR13 Step 2)."""
 
 import json
+import pytest
 from backend.pptspec.parser import InputFormat, detect_format, extract_json_payload, parse_presentation_input
 from backend.pptspec.normalizer import normalize_presentation_input
 
 
-def test_standard_json_input():
+@pytest.mark.anyio
+async def test_standard_json_input():
     raw = json.dumps({
         "presentation": {
             "title": "Diffusion Models for Audio Synthesis",
@@ -24,7 +26,7 @@ def test_standard_json_input():
     fmt = detect_format(raw)
     assert fmt == InputFormat.JSON
 
-    res = normalize_presentation_input(raw, strict_truthfulness=True)
+    res = await normalize_presentation_input(raw, strict_truthfulness=True)
     assert res.valid is True
     assert res.spec is not None
     assert len(res.spec.slides) == 2
@@ -32,7 +34,8 @@ def test_standard_json_input():
     assert res.summary["claims"] == 1
 
 
-def test_json_fenced_markdown():
+@pytest.mark.anyio
+async def test_json_fenced_markdown():
     payload = {
         "presentation": {"title": "Fenced Spec"},
         "evidence": [{"id": "ev1", "kind": "claim", "content": "Verified."}],
@@ -43,13 +46,14 @@ def test_json_fenced_markdown():
     fmt = detect_format(raw)
     assert fmt == InputFormat.JSON_FENCE
 
-    res = normalize_presentation_input(raw, strict_truthfulness=True)
+    res = await normalize_presentation_input(raw, strict_truthfulness=True)
     assert res.valid is True
     assert res.spec is not None
     assert res.spec.presentation.title == "Fenced Spec"
 
 
-def test_json_with_conversational_text_around_it():
+@pytest.mark.anyio
+async def test_json_with_conversational_text_around_it():
     payload = {
         "title": "Conversational Spec",
         "evidence": [{"id": "ev1", "kind": "claim", "content": "Zero-shot transfer works."}],
@@ -60,13 +64,14 @@ def test_json_with_conversational_text_around_it():
     fmt = detect_format(raw)
     assert fmt in (InputFormat.JSON_LIKE, InputFormat.JSON)
 
-    res = normalize_presentation_input(raw, strict_truthfulness=True)
+    res = await normalize_presentation_input(raw, strict_truthfulness=True)
     assert res.valid is True
     assert res.spec is not None
     assert res.spec.presentation.title == "Conversational Spec"
 
 
-def test_minor_field_variations():
+@pytest.mark.anyio
+async def test_minor_field_variations():
     """Test alias normalization: pages -> slides, heading -> title, facts -> evidence."""
     raw = json.dumps({
         "metadata": {"title": "Aliased Title"},
@@ -80,7 +85,7 @@ def test_minor_field_variations():
         ],
     })
 
-    res = normalize_presentation_input(raw, strict_truthfulness=True)
+    res = await normalize_presentation_input(raw, strict_truthfulness=True)
     assert res.valid is True
     assert res.spec is not None
     assert len(res.spec.slides) == 2

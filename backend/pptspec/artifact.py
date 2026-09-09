@@ -19,12 +19,18 @@ class NormalizationArtifact:
     """Server-side snapshot of a normalized presentation specification."""
 
     id: str
+    session_id: str
     raw_input: str
     canonical_spec: CanonicalPPTSpec
     summary: Dict[str, int]
     asset_requirements: List[AssetRequirement]
     warnings: List[str]
     created_at: float
+    expires_at: float
+
+    @property
+    def is_expired(self) -> bool:
+        return time.time() > self.expires_at
 
 
 class NormalizationArtifactStore:
@@ -36,22 +42,28 @@ class NormalizationArtifactStore:
 
     def save(
         self,
+        session_id: str,
         raw_input: str,
         spec: CanonicalPPTSpec,
         summary: Dict[str, int],
         asset_requirements: List[AssetRequirement],
         warnings: Optional[List[str]] = None,
+        ttl_seconds: Optional[int] = None,
     ) -> NormalizationArtifact:
         self._cleanup()
         artifact_id = f"norm_{uuid.uuid4().hex[:10]}"
+        now = time.time()
+        ttl = ttl_seconds if ttl_seconds is not None else self.ttl_seconds
         artifact = NormalizationArtifact(
             id=artifact_id,
+            session_id=session_id,
             raw_input=raw_input,
             canonical_spec=spec,
             summary=summary,
             asset_requirements=asset_requirements,
             warnings=list(warnings or []),
-            created_at=time.time(),
+            created_at=now,
+            expires_at=now + ttl,
         )
         self._store[artifact_id] = artifact
         return artifact
@@ -65,7 +77,7 @@ class NormalizationArtifactStore:
 
     def _cleanup(self) -> None:
         now = time.time()
-        expired = [k for k, v in self._store.items() if now - v.created_at > self.ttl_seconds]
+        expired = [k for k, v in self._store.items() if now > v.expires_at]
         for k in expired:
             self._store.pop(k, None)
 

@@ -58,7 +58,8 @@ class TakeawayListTemplate(BaseLayoutTemplate):
                     elements.append(
                         LayoutElement(
                             element_id=f"slide_{slide.index}_metric_card_{idx + 1}",
-                            source_block_id=f"metric_{idx + 1}",
+                            source_block_id=t.block_id or f"metric_{idx + 1}",
+                            source_evidence_ids=list(getattr(t, "source_evidence_ids", [])),
                             element_type=ElementType.TEXT,
                             role=t.role,
                             geometry=Rect(x=curr_x, y=card_y, width=col_w, height=col_h),
@@ -97,7 +98,8 @@ class TakeawayListTemplate(BaseLayoutTemplate):
                     elements.append(
                         LayoutElement(
                             element_id=f"slide_{slide.index}_grid_card_{idx + 1}",
-                            source_block_id=f"grid_{idx + 1}",
+                            source_block_id=t.block_id or f"grid_{idx + 1}",
+                            source_evidence_ids=list(getattr(t, "source_evidence_ids", [])),
                             element_type=ElementType.TEXT,
                             role=t.role,
                             geometry=Rect(x=cx, y=cy, width=card_w, height=card_h),
@@ -141,7 +143,8 @@ class TakeawayListTemplate(BaseLayoutTemplate):
                 elements.append(
                     LayoutElement(
                         element_id=f"slide_{slide.index}_takeaway_card_{idx + 1}",
-                        source_block_id=f"text_{idx + 1}",
+                        source_block_id=t.block_id or f"text_{idx + 1}",
+                        source_evidence_ids=list(getattr(t, "source_evidence_ids", [])),
                         element_type=ElementType.TEXT,
                         role=t.role,
                         geometry=Rect(x=zones.body_x, y=curr_y, width=zones.body_width, height=card_h),

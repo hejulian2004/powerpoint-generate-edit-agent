@@ -46,6 +46,7 @@ class TextBlock(BaseModel):
 
     kind: Literal["text"] = "text"
     block_id: Optional[str] = Field(default=None, description="Deterministic block identifier")
+    source_evidence_ids: List[str] = Field(default_factory=list, description="IDs of source evidence items")
     role: BlockRole = BlockRole.BULLET_ITEM
     content: str = Field(..., description="Text content")
     emphasis: bool = Field(default=False, description="Whether this block should be visually emphasized")
@@ -60,6 +61,7 @@ class FigureBlock(BaseModel):
 
     kind: Literal["figure"] = "figure"
     block_id: Optional[str] = Field(default=None, description="Deterministic block identifier")
+    source_evidence_ids: List[str] = Field(default_factory=list, description="IDs of source evidence items")
     source_figure_id: str = Field(..., description="Figure identifier from PaperIR or PPTSpec (e.g. 'figure1')")
     caption: str = Field(default="", description="Figure caption")
     xref_label: str = Field(default="", description="Printed reference label (e.g. 'Fig. 1')")
@@ -72,6 +74,7 @@ class TableBlock(BaseModel):
 
     kind: Literal["table"] = "table"
     block_id: Optional[str] = Field(default=None, description="Deterministic block identifier")
+    source_evidence_ids: List[str] = Field(default_factory=list, description="IDs of source evidence items")
     source_table_id: str = Field(..., description="Table identifier from PaperIR or PPTSpec (e.g. 'table1')")
     caption: str = Field(default="", description="Table caption")
     xref_label: str = Field(default="", description="Printed reference label (e.g. 'Table 1')")
@@ -87,6 +90,7 @@ class BadgeBlock(BaseModel):
 
     kind: Literal["badge"] = "badge"
     block_id: Optional[str] = Field(default=None, description="Deterministic block identifier")
+    source_evidence_ids: List[str] = Field(default_factory=list, description="IDs of source evidence items")
     text: str = Field(..., description="Badge label text")
     variant: Literal["primary", "success", "accent", "neutral"] = Field(
         default="primary", description="Visual styling variant"

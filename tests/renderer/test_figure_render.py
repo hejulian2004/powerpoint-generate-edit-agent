@@ -46,22 +46,23 @@ def test_render_figure_from_real_file(tmp_path: Path):
     assert sh.shape_type == MSO_SHAPE_TYPE.PICTURE
 
 
-def test_asset_resolver_synthetic_placeholder(tmp_path: Path):
+def test_asset_resolver_missing_figure_raises(tmp_path: Path):
+    import pytest
     resolver = AssetResolver(cache_dir=tmp_path / "cache")
-    synth_path = resolver.resolve_figure(
-        figure_id="fig_unknown_model",
-        caption_hint="Proposed Multi-Modal Transformer Architecture",
-    )
-    assert synth_path.is_file()
-    assert synth_path.suffix.lower() == ".png"
-
-    # Verify Pillow can open the synthesized placeholder
-    img = Image.open(synth_path)
-    assert img.size == (800, 500)
+    with pytest.raises(FileNotFoundError, match="could not be resolved"):
+        resolver.resolve_figure(
+            figure_id="fig_unknown_model",
+            caption_hint="Proposed Multi-Modal Transformer Architecture",
+        )
 
 
 def test_render_figure_with_resolver(tmp_path: Path):
-    resolver = AssetResolver(cache_dir=tmp_path / "cache")
+    assets_dir = tmp_path / "assets"
+    assets_dir.mkdir()
+    img_path = assets_dir / "fig_auto_placeholder.png"
+    Image.new("RGB", (400, 300), color=(100, 150, 200)).save(img_path)
+
+    resolver = AssetResolver(assets_dir=assets_dir)
     builder = PPTXBuilder()
     theme = AcademicTheme()
 
@@ -100,12 +101,7 @@ def test_asset_resolver_special_chars_and_existing_extension(tmp_path: Path):
     res_direct = resolver.resolve_figure("diagram.png")
     assert res_direct == existing_img
 
-    # 2. Special chars in figure_id (e.g. URI style with colons / question marks)
-    res_special = resolver.resolve_figure("arxiv:2401.0001/fig?1")
-    assert res_special.is_file()
-    assert res_special.suffix == ".png"
-
-    # 3. allow_synthetic=False raises FileNotFoundError when missing
+    # 2. Missing asset raises FileNotFoundError
     import pytest
     with pytest.raises(FileNotFoundError, match="could not be resolved"):
         resolver.resolve_figure("nonexistent_fig", allow_synthetic=False)

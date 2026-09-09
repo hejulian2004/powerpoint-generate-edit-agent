@@ -13,7 +13,7 @@ import tempfile
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image
 
 from ..paper.schema import PaperIR, PaperTable
 
@@ -51,12 +51,12 @@ class AssetResolver:
         caption_hint: str = "",
         width: int = 800,
         height: int = 500,
-        allow_synthetic: bool = True,
+        allow_synthetic: bool = False,
     ) -> Path:
-        """Resolve figure_id to an existing image file, or synthesize an academic placeholder image.
+        """Resolve figure_id to an existing image file on disk.
 
-        Guarantees that an image file path is always returned without crashing the renderer
-        when allow_synthetic=True.
+        Raises FileNotFoundError when missing. The PPTSpec pipeline uses
+        PresentationIR ShapeElementIR placeholders instead of fabricating images.
         """
         clean_id = figure_id.strip()
 
@@ -75,98 +75,14 @@ class AssetResolver:
         if direct_path.is_file():
             return direct_path
 
-        # 3. Check PaperIR figure metadata
-        fig_obj = self._figure_index.get(clean_id.lower())
-        caption = caption_hint or (fig_obj.caption if fig_obj else "")
-        label = fig_obj.xref_label if fig_obj and fig_obj.xref_label else clean_id
-
-        # 4. Check if synthetic placeholder generation is permitted
-        if not allow_synthetic:
-            raise FileNotFoundError(f"Figure asset '{figure_id}' could not be resolved on disk.")
-
-        # 5. Generate high-quality academic placeholder image in cache_dir with sanitized filename
-        safe_name = re.sub(r"[^\w\-]", "_", Path(clean_id).name or clean_id)
-        cached_placeholder = self.cache_dir / f"{safe_name}_synth.png"
-        if cached_placeholder.is_file():
-            return cached_placeholder
-
-        return self._generate_academic_placeholder(
-            cached_placeholder,
-            label=label,
-            caption=caption,
-            width=width,
-            height=height,
-        )
-
-    def _generate_academic_placeholder(
-        self,
-        out_path: Path,
-        label: str,
-        caption: str,
-        width: int = 800,
-        height: int = 500,
-    ) -> Path:
-        """Synthesizes a clean academic diagram placeholder image using Pillow."""
-        # Create image with soft slate background
-        img = Image.new("RGB", (width, height), color=(248, 250, 252))
-        draw = ImageDraw.Draw(img)
-
-        # Outer border
-        draw.rectangle(
-            [(0, 0), (width - 1, height - 1)],
-            outline=(203, 213, 225),
-            width=2,
-        )
-
-        # Inner diagram box
-        pad = 24
-        draw.rectangle(
-            [(pad, pad), (width - pad, height - pad)],
-            fill=(255, 255, 255),
-            outline=(226, 232, 240),
-            width=1,
-        )
-
-        # Draw decorative diagram schematic lines (architecture blocks)
-        cx = width // 2
-        cy = height // 2 - 20
-
-        # Draw 3 schematic pipeline boxes
-        box_w, box_h = 160, 80
-        gap = 40
-        b1_x = cx - box_w - gap - box_w // 2
-        b2_x = cx - box_w // 2
-        b3_x = cx + gap + box_w // 2
-
-        # Block 1: Input
-        draw.rectangle([(b1_x, cy - box_h // 2), (b1_x + box_w, cy + box_h // 2)], fill=(241, 245, 249), outline=(148, 163, 184), width=1)
-        # Block 2: Model (Highlighted)
-        draw.rectangle([(b2_x, cy - box_h // 2), (b2_x + box_w, cy + box_h // 2)], fill=(219, 234, 254), outline=(37, 99, 235), width=2)
-        # Block 3: Output
-        draw.rectangle([(b3_x, cy - box_h // 2), (b3_x + box_w, cy + box_h // 2)], fill=(241, 245, 249), outline=(148, 163, 184), width=1)
-
-        # Draw connecting arrows between boxes
-        draw.line([(b1_x + box_w, cy), (b2_x, cy)], fill=(100, 116, 139), width=2)
-        draw.polygon([(b2_x, cy), (b2_x - 6, cy - 4), (b2_x - 6, cy + 4)], fill=(100, 116, 139))
-
-        draw.line([(b2_x + box_w, cy), (b3_x, cy)], fill=(100, 116, 139), width=2)
-        draw.polygon([(b3_x, cy), (b3_x - 6, cy - 4), (b3_x - 6, cy + 4)], fill=(100, 116, 139))
-
-        # Text: Figure Label
-        label_text = f"[{label.upper()}] Academic Figure Asset"
-        draw.text((pad + 16, pad + 14), label_text, fill=(30, 41, 59))
-
-        # Bottom status label
-        draw.text((pad + 16, height - pad - 28), "[Source: PaperIR Visual Extract]", fill=(148, 163, 184))
-
-        out_path.parent.mkdir(parents=True, exist_ok=True)
-        img.save(out_path, format="PNG")
-        return out_path
+        # 3. Missing figure asset -> raise FileNotFoundError
+        raise FileNotFoundError(f"Figure asset '{figure_id}' could not be resolved on disk.")
 
     def resolve_table(
         self,
         table_id: str,
         content_payload: Optional[Dict[str, Any]] = None,
+        allow_synthetic: bool = False,
     ) -> Dict[str, Any]:
         """Resolve structured table headers and rows for a TableElement."""
         clean_id = table_id.strip().lower()
@@ -193,18 +109,16 @@ class AssetResolver:
                 "highlight_cells": payload.get("highlight_cells", []),
             }
 
-        # 3. Clean synthetic academic benchmark table fallback
+        # 3. Explicit placeholder fallback without any fabricated benchmark data
         caption = payload.get("caption") or (tbl_obj.caption if tbl_obj else "")
         xref = payload.get("xref_label") or (tbl_obj.xref_label if tbl_obj else table_id)
 
         return {
-            "header": ["Method / Model", "Accuracy (%)", "F1 Score", "Latency (ms)"],
+            "header": ["Table", "Status"],
             "rows": [
-                ["Baseline Architecture", "76.4", "0.742", "124"],
-                ["Prior SOTA (2023)", "81.2", "0.798", "98"],
-                ["Ours (Proposed Framework)", "89.5", "0.884", "45"],
+                [f"[{xref.upper()}]", "Placeholder: Raw table data not provided in paper extract"],
             ],
             "caption": caption,
             "xref_label": xref,
-            "highlight_cells": payload.get("highlight_cells", ["2,0", "2,1", "2,2", "2,3"]),
+            "highlight_cells": [],
         }

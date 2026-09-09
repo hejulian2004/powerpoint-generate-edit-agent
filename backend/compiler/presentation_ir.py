@@ -45,6 +45,7 @@ def compile_layout_element_to_ir(element: LayoutElement) -> Any:
     w = float(element.geometry.width)
     h = float(element.geometry.height)
     source_ref = element.source_block_id or element.element_id
+    source_evidence_ids = list(getattr(element, "source_evidence_ids", []))
 
     # -------------------------------------------------------------
     # 1. Figure Placeholder Element
@@ -93,6 +94,7 @@ def compile_layout_element_to_ir(element: LayoutElement) -> Any:
             height=h,
             z_index=element.z_index,
             source_ref=source_ref,
+            source_evidence_ids=source_evidence_ids,
             metadata={
                 "is_figure_placeholder": True,
                 "label": label,
@@ -161,6 +163,7 @@ def compile_layout_element_to_ir(element: LayoutElement) -> Any:
                 height=h,
                 z_index=element.z_index,
                 source_ref=source_ref,
+                source_evidence_ids=source_evidence_ids,
                 metadata={
                     "is_table_placeholder": True,
                     "label": label,
@@ -252,6 +255,7 @@ def compile_layout_element_to_ir(element: LayoutElement) -> Any:
             cells=grid_cells,
             z_index=element.z_index,
             source_ref=source_ref,
+            source_evidence_ids=source_evidence_ids,
             metadata={"columns": cols, "rows_count": len(rows)},
             style=ElementStyleIR(
                 border=BorderStyle(color="#CBD5E1", width=1.0),
@@ -277,6 +281,7 @@ def compile_layout_element_to_ir(element: LayoutElement) -> Any:
             height=h,
             z_index=element.z_index,
             source_ref=source_ref,
+            source_evidence_ids=source_evidence_ids,
             style=ElementStyleIR(
                 fill=FillStyle(type="solid", color=fill_color, alpha=1.0),
                 border=BorderStyle(color=border_color, width=border_w),
@@ -304,6 +309,7 @@ def compile_layout_element_to_ir(element: LayoutElement) -> Any:
             height=h,
             z_index=element.z_index,
             source_ref=source_ref,
+            source_evidence_ids=source_evidence_ids,
             style=ElementStyleIR(
                 fill=FillStyle(type="solid", color=fill_color, alpha=1.0),
                 border=BorderStyle(color=border_color, width=1.0),
@@ -341,6 +347,7 @@ def compile_layout_element_to_ir(element: LayoutElement) -> Any:
         height=h,
         z_index=element.z_index,
         source_ref=source_ref,
+        source_evidence_ids=source_evidence_ids,
         style=ElementStyleIR(
             fill=fill,
             border=border,

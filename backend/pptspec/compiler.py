@@ -78,6 +78,7 @@ def compile_slide_request_to_slide_spec(
                 TextBlock(
                     kind="text",
                     block_id=f"{slide_req.id}_claim_{claim_idx:02d}",
+                    source_evidence_ids=[ev.id],
                     role=role,
                     content=ev.content,
                 )
@@ -91,6 +92,7 @@ def compile_slide_request_to_slide_spec(
                 BadgeBlock(
                     kind="badge",
                     block_id=f"{slide_req.id}_metric_{metric_idx:02d}",
+                    source_evidence_ids=[ev.id],
                     text=badge_text,
                     variant="primary",
                 )
@@ -104,6 +106,7 @@ def compile_slide_request_to_slide_spec(
                     BadgeBlock(
                         kind="badge",
                         block_id=f"{slide_req.id}_metric_{metric_idx:02d}",
+                        source_evidence_ids=[ev.id],
                         text=f"{m.name}: {m.value}{u_str}",
                         variant="accent",
                     )
@@ -116,6 +119,7 @@ def compile_slide_request_to_slide_spec(
                 FigureBlock(
                     kind="figure",
                     block_id=f"{slide_req.id}_figure_{fig_idx:02d}",
+                    source_evidence_ids=[ev.id],
                     source_figure_id=ev.id,
                     caption=ev.caption or "",
                     xref_label=ev.label,
@@ -131,6 +135,7 @@ def compile_slide_request_to_slide_spec(
                 TableBlock(
                     kind="table",
                     block_id=f"{slide_req.id}_table_{tbl_idx:02d}",
+                    source_evidence_ids=[ev.id],
                     source_table_id=ev.id,
                     caption=ev.caption or "",
                     xref_label=f"Table {tbl_idx}",
@@ -147,6 +152,7 @@ def compile_slide_request_to_slide_spec(
                 TextBlock(
                     kind="text",
                     block_id=f"{slide_req.id}_eq_{eq_idx:02d}",
+                    source_evidence_ids=[ev.id],
                     role=BlockRole.CALLOUT,
                     content=f"Formula: {ev.latex}",
                 )
@@ -158,28 +164,14 @@ def compile_slide_request_to_slide_spec(
                 TextBlock(
                     kind="text",
                     block_id=f"{slide_req.id}_quote_{quote_idx:02d}",
+                    source_evidence_ids=[ev.id],
                     role=BlockRole.LEAD_SUMMARY,
                     content=f'"{ev.content}"',
                 )
             )
             quote_idx += 1
 
-    # 2. Add bullet items from instructions if not covered by evidence claims
-    inst_idx = 1
-    existing_texts = {b.content for b in blocks if isinstance(b, TextBlock)}
-    for inst in slide_req.instructions:
-        if inst not in existing_texts:
-            blocks.append(
-                TextBlock(
-                    kind="text",
-                    block_id=f"{slide_req.id}_inst_{inst_idx:02d}",
-                    role=BlockRole.BULLET_ITEM,
-                    content=inst,
-                )
-            )
-            inst_idx += 1
-
-    # 3. Ensure title slides have appropriate badges and subtitle
+    # 2. Ensure title slides have appropriate badges and subtitle
     subtitle: Optional[str] = None
     if slide_type == SlideType.TITLE:
         authors = ", ".join(spec.source_document.authors) if spec.source_document.authors else ""

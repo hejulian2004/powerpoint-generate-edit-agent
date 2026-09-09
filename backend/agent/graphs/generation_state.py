@@ -33,6 +33,9 @@ class PPTGenerationState(TypedDict, total=False):
 
     visual_issues: List[VisualIssue]
 
+    spec_repair_attempts: int
+    max_spec_repair_attempts: int
+
     repair_iteration: int
     max_repair_iterations: int
 

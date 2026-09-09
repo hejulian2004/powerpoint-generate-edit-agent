@@ -93,7 +93,8 @@ class TwoColumnContrastTemplate(BaseLayoutTemplate):
                 elements.append(
                     LayoutElement(
                         element_id=f"slide_{slide.index}_{side}_col_{idx + 1}",
-                        source_block_id=f"{side}_text_{idx + 1}",
+                        source_block_id=item.block_id or f"{side}_text_{idx + 1}",
+                        source_evidence_ids=list(getattr(item, "source_evidence_ids", [])),
                         element_type=ElementType.TEXT,
                         role=item.role,
                         geometry=Rect(x=col_x, y=curr_y, width=col_w, height=item_h),
