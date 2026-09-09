@@ -30,6 +30,7 @@ from fastapi.testclient import TestClient
 
 from backend.agent.graphs.generation import build_generation_graph, generation_graph
 from backend.agent.graphs.generation_state import PPTGenerationState
+from backend.evaluation.evaluator import RuleBasedEvaluator
 from backend.main import app
 from backend.compiler.presentation_ir import compile_layout_to_presentation_ir
 from backend.evaluation.schema import IssueSeverity, IssueType, VisualIssue
@@ -38,6 +39,7 @@ from backend.layout.engine import generate_deck_layout
 from backend.layout.schema import DeckLayoutSpec, ElementType, LayoutElement, LayoutSpec, Rect, VisualIntent
 from backend.pptspec.artifact import NormalizationArtifactStore, artifact_store
 from backend.pptspec.compiler import compile_pptspec_to_deckspec
+from backend.session.manager import session_manager
 from backend.pptspec.normalizer import (
     normalize_dict_to_canonical_spec,
     normalize_presentation_input,
@@ -66,9 +68,34 @@ from backend.renderer.assets import AssetResolver
 # 1. Visual Repair Branch Executes
 # =====================================================================
 @pytest.mark.anyio
-async def test_visual_repair_branch_executes():
+async def test_visual_repair_branch_executes(monkeypatch):
     """Verify that when visual defects occur, visual_repair_node executes with transaction safety and heals."""
     graph = build_generation_graph()
+
+    evaluator_calls = 0
+    modified_x = None
+
+    def mock_evaluate_deck(self, slide_images=None, deck_spec=None):
+        nonlocal evaluator_calls, modified_x
+        evaluator_calls += 1
+        if evaluator_calls == 1 and deck_spec and deck_spec.slides:
+            slide = deck_spec.slides[0]
+            el = slide.elements[0]
+            # Force element to overflow canvas horizontally to trigger a real CLAMP_TO_CANVAS repair
+            modified_x = deck_spec.canvas.width + 50.0
+            el.geometry.x = modified_x
+            return [
+                VisualIssue(
+                    slide_id=slide.slide_id,
+                    element_id=el.element_id,
+                    issue_type=IssueType.OVERFLOW,
+                    severity=IssueSeverity.ERROR,
+                    description=f"Element '{el.element_id}' exceeds canvas width",
+                )
+            ]
+        return []
+
+    monkeypatch.setattr(RuleBasedEvaluator, "evaluate_deck", mock_evaluate_deck)
 
     # Provide raw input and matching canonical spec
     raw_text = "Paper Title. Our framework achieves 85% accuracy."
@@ -86,9 +113,11 @@ async def test_visual_repair_branch_executes():
         ],
     )
 
+    session_id = "test_vr_sess"
+    session_manager.get_or_create(session_id)
     initial_state: PPTGenerationState = {
         "raw_input": raw_text,
-        "session_id": "test_vr_sess",
+        "session_id": session_id,
         "canonical_spec": spec,
         "mode": "generate",
         "max_repair_iterations": 2,
@@ -96,10 +125,24 @@ async def test_visual_repair_branch_executes():
 
     result = await graph.ainvoke(initial_state)
 
+    # Assert evaluator was called twice (first reported issue, second verified healing)
+    assert evaluator_calls == 2
+    assert result["repair_iteration"] == 1
     assert result["status"] == "completed"
     assert result.get("presentation_ir") is not None
-    # DeckLayout was compiled to PresentationIR
-    assert len(result["presentation_ir"].slides) == 1
+
+    # Verify that the healed element's geometry actually changed and was clamped back inside canvas
+    healed_deck = result["deck_layout"]
+    healed_el = healed_deck.slides[0].elements[0]
+    assert healed_el.geometry.x < modified_x
+    assert healed_el.geometry.x + healed_el.geometry.width <= healed_deck.canvas.width
+
+    # Verify session persistence
+    sess = session_manager.get_session(session_id)
+    assert sess is not None
+    assert sess.pres is not None
+
+    session_manager.delete_session(session_id)
 
 
 # =====================================================================
@@ -107,7 +150,7 @@ async def test_visual_repair_branch_executes():
 # =====================================================================
 def test_instruction_numeric_not_truthfulness_checked():
     """Instructions containing numbers like '图片占页面 60%' must NOT be checked as factual numbers."""
-    raw_input = "We introduce our algorithm."  # Does NOT contain '60' or '60%'
+    raw_input = "We introduce our algorithm. Our algorithm is robust."  # Does NOT contain '60' or '60%'
 
     spec = CanonicalPPTSpec(
         spec_version="1.0",
@@ -229,7 +272,7 @@ def test_invalid_evidence_ref_not_dropped():
     assert "ghost_evidence_404" in spec.slides[0].evidence_refs
 
     # Truthfulness validator flags INVALID_EVIDENCE_REFERENCE and fails validation
-    res = validate_truthfulness("Some raw text", spec, strict=False)
+    res = validate_truthfulness("Valid claim. Some raw text", spec, strict=False)
     assert res.valid is False
     assert any("INVALID_EVIDENCE_REFERENCE" in err and "ghost_evidence_404" in err for err in res.errors)
 
@@ -315,8 +358,16 @@ def test_artifact_expired_rejected():
         "/api/pptspec/generate",
         json={"normalization_id": art.id, "session_id": "session_exp"},
     )
-    assert resp.status_code in (404, 410)
-    assert any(code in resp.json()["detail"] for code in ("ARTIFACT_EXPIRED", "ARTIFACT_NOT_FOUND"))
+    assert resp.status_code == 410
+    assert "ARTIFACT_EXPIRED" in resp.json()["detail"]
+
+    # Unknown artifact returns 404
+    resp_404 = client.post(
+        "/api/pptspec/generate",
+        json={"normalization_id": "norm_ghost_404", "session_id": "session_exp"},
+    )
+    assert resp_404.status_code == 404
+    assert "ARTIFACT_NOT_FOUND" in resp_404.json()["detail"]
 
 
 # =====================================================================
@@ -336,8 +387,8 @@ async def test_llm_normalizer_fallback_called():
         "choices": [{"message": {"content": mock_spec_json}}]
     }
 
-    # Broken JSON format triggers deterministic parsing failure
-    raw_malformed = "```json\n{\n  \"presentation\": { \"title\": \"Broken JSON\",\n  \"unclosed_dict\": [1, 2,\n"
+    # Broken JSON format triggers deterministic parsing failure, but contains factual raw text
+    raw_malformed = "Evidence grounded in raw text.\n```json\n{\n  \"presentation\": { \"title\": \"Broken JSON\",\n  \"unclosed_dict\": [1, 2,\n"
 
     res = await normalize_presentation_input(
         raw_text=raw_malformed,
@@ -451,16 +502,13 @@ def test_no_synthetic_academic_assets():
         assert "[Source: PaperIR Visual Extract]" not in content, f"Fake extract tag in {py_file}"
         assert "_generate_academic_placeholder" not in content, f"Fake diagram generator in {py_file}"
 
-    # Behavioral gate: AssetResolver on missing assets
+    # Behavioral gate: AssetResolver on missing assets raises FileNotFoundError
     resolver = AssetResolver()
     with pytest.raises(FileNotFoundError):
         resolver.resolve_figure("nonexistent_paper_figure")
 
-    tbl = resolver.resolve_table("nonexistent_paper_table")
-    # Table fallback returns explicit placeholder, never fabricated benchmark numbers
-    assert "76.4" not in str(tbl)
-    assert "89.5" not in str(tbl)
-    assert tbl["header"] == ["Table", "Status"]
+    with pytest.raises(FileNotFoundError):
+        resolver.resolve_table("nonexistent_paper_table")
 
 
 # =====================================================================
@@ -629,4 +677,152 @@ async def test_e2e_missing_assets_strict_placeholder_only():
     assert "81.2" not in ir_json
     assert "Baseline Architecture" not in ir_json
     assert "Prior SOTA" not in ir_json
+
+
+# =====================================================================
+# 16. Markdown Bullet & Loose JSON Bullet Deduplication
+# =====================================================================
+@pytest.mark.anyio
+async def test_markdown_bullet_no_duplicate_evidence():
+    """Markdown 1 bullet must map to exactly 1 evidence item, not duplicated in bullets."""
+    md_text = """
+## Slide 1: 研究背景
+- 云原生系统微服务规模庞大
+- 传统规则告警误报率高达 45%
+"""
+    res = await normalize_presentation_input(md_text, strict_truthfulness=True)
+    assert res.valid is True
+    assert res.spec is not None
+    s1 = res.spec.slides[0]
+    # Exactly 2 evidences, not 4
+    assert len(s1.evidence_refs) == 2
+    assert len(res.spec.evidence) == 2
+
+
+@pytest.mark.anyio
+async def test_json_bullet_deduplication():
+    """Loose JSON with 1 figure ref and 1 bullet must yield exactly 1 figure + 1 claim."""
+    loose_json = json.dumps({
+        "presentation": {"title": "Test"},
+        "evidence": [
+            {"id": "f1", "kind": "figure_reference", "label": "Figure 1", "source_page": 2}
+        ],
+        "slides": [
+            {
+                "id": "s1",
+                "title": "System Architecture",
+                "evidence_refs": ["f1"],
+                "bullets": ["Overall system pipeline overview."],
+            }
+        ],
+    })
+    res = await normalize_presentation_input(loose_json, strict_truthfulness=True)
+    assert res.valid is True
+    assert res.spec is not None
+    s1 = res.spec.slides[0]
+    # 1 figure + 1 claim = exactly 2 evidence refs
+    assert len(s1.evidence_refs) == 2
+    assert len(res.spec.evidence) == 2
+    claim_evs = [ev for ev in res.spec.evidence if ev.kind == "claim"]
+    assert len(claim_evs) == 1
+    assert claim_evs[0].content == "Overall system pipeline overview."
+
+
+# =====================================================================
+# 17. Metric BadgeBlock Full Pipeline Propagation
+# =====================================================================
+def test_badge_block_end_to_end_propagation():
+    """MetricEvidence -> BadgeBlock -> LayoutElement.BADGE -> PresentationIR ShapeElementIR."""
+    spec = CanonicalPPTSpec(
+        presentation=PresentationConfig(title="Badge Flow"),
+        evidence=[
+            MetricEvidence(id="m1", name="Accuracy", value="85%"),
+        ],
+        slides=[
+            SlideRequest(
+                id="slide_01",
+                type=SlideType.RESULT,
+                title="Evaluation Results",
+                evidence_refs=["m1"],
+            )
+        ],
+    )
+
+    deck_spec = compile_pptspec_to_deckspec(spec)
+    s1 = deck_spec.slides[0]
+    badge_blocks = [b for b in s1.blocks if b.kind == "badge"]
+    assert len(badge_blocks) == 1
+    assert badge_blocks[0].text == "Accuracy: 85%"
+    assert "m1" in badge_blocks[0].source_evidence_ids
+
+    # Layout generation
+    deck_layout = generate_deck_layout(deck_spec)
+    layout_s1 = deck_layout.slides[0]
+    badge_elements = [e for e in layout_s1.elements if e.element_type == ElementType.BADGE]
+    assert len(badge_elements) == 1
+    assert badge_elements[0].content == "Accuracy: 85%"
+    assert badge_elements[0].source_block_id == badge_blocks[0].block_id
+    assert badge_elements[0].source_evidence_ids == ["m1"]
+
+    # IR compilation
+    pres_ir = compile_layout_to_presentation_ir(deck_layout)
+    ir_s1 = pres_ir.slides[0]
+    ir_badges = [
+        e for e in ir_s1.elements
+        if isinstance(e, ShapeElementIR) and e.name == "Badge"
+    ]
+    assert len(ir_badges) == 1
+    assert "Accuracy: 85%" in ir_badges[0].text_content.paragraphs[0].runs[0].text
+    assert ir_badges[0].source_ref == badge_blocks[0].block_id
+    assert ir_badges[0].source_evidence_ids == ["m1"]
+
+
+# =====================================================================
+# 18. Table source_reference Original Label Preservation
+# =====================================================================
+@pytest.mark.anyio
+async def test_table_source_reference_preservation():
+    """Table 7 in input retains 'Table 7' across parser, spec, block, and IR placeholder (no 'Table 1' rewrite)."""
+    raw_md = """
+# Empirical Study
+
+## Slide 1: Main Baseline Comparison
+- Refer to Table 7 for baseline comparisons on page 12
+"""
+    res = await normalize_presentation_input(raw_md, strict_truthfulness=True)
+    assert res.valid is True
+    assert res.spec is not None
+
+    tbl_ev = [ev for ev in res.spec.evidence if ev.kind == "table"][0]
+    assert tbl_ev.source_reference == "Table 7"
+
+    reqs = res.asset_requirements
+    assert len(reqs) == 1
+    assert "Table 7" in reqs[0].label
+
+    # Compile to SlideSpec
+    deck_spec = compile_pptspec_to_deckspec(res.spec)
+    s1 = deck_spec.slides[0]
+    tbl_block = [b for b in s1.blocks if b.kind == "table"][0]
+    # xref_label must NOT be rewritten to 'Table 1'
+    assert tbl_block.xref_label == "Table 7"
+
+    # Layout and IR
+    deck_layout = generate_deck_layout(deck_spec)
+    pres_ir = compile_layout_to_presentation_ir(deck_layout)
+    ir_s1 = pres_ir.slides[0]
+
+    # Check placeholder shape text
+    placeholders = [
+        e for e in ir_s1.elements
+        if isinstance(e, ShapeElementIR) and e.metadata.get("is_table_placeholder")
+    ]
+    assert len(placeholders) == 1
+    ph = placeholders[0]
+    all_text = " ".join(r.text for p in ph.text_content.paragraphs for r in p.runs)
+    assert "[TABLE 7]" in all_text
+    assert "请粘贴论文原始 Table 7" in all_text
+
+
+
 

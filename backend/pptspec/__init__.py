@@ -22,6 +22,7 @@ from .errors import (
     NormalizationError,
     ValidationError,
     UnsupportedNumericError,
+    UnsupportedTextualFactError,
     InvalidEvidenceReferenceError,
     IncompleteTableError,
 )
@@ -29,6 +30,7 @@ from .validator import (
     TruthfulnessValidator,
     validate_truthfulness,
     collect_factual_numeric_tokens,
+    normalize_for_textual_match,
 )
 from .prompt_template import (
     get_general_prompt,
@@ -80,11 +82,13 @@ __all__ = [
     "NormalizationError",
     "ValidationError",
     "UnsupportedNumericError",
+    "UnsupportedTextualFactError",
     "InvalidEvidenceReferenceError",
     "IncompleteTableError",
     "TruthfulnessValidator",
     "validate_truthfulness",
     "collect_factual_numeric_tokens",
+    "normalize_for_textual_match",
     "get_general_prompt",
     "get_strict_prompt",
     "InputFormat",

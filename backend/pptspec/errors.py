@@ -51,6 +51,18 @@ class UnsupportedNumericError(ValidationError):
         super().__init__(msg, code="UNSUPPORTED_NUMERIC_VALUE", details=d)
 
 
+class UnsupportedTextualFactError(ValidationError):
+    """Raised by Truthfulness Guard when non-numeric factual text in the spec has no grounding in raw input."""
+
+    def __init__(self, fact_type: str, content: str, context: str = "", details: Optional[Dict[str, Any]] = None):
+        msg = f"Unsupported textual fact [{fact_type}] '{content}' not grounded in raw input. Context: {context}"
+        d = details or {}
+        d["fact_type"] = fact_type
+        d["content"] = content
+        d["context"] = context
+        super().__init__(msg, code="UNSUPPORTED_TEXTUAL_FACT", details=d)
+
+
 class InvalidEvidenceReferenceError(ValidationError):
     """Raised when a slide references an evidence ID that does not exist in the spec."""
 

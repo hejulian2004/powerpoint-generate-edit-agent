@@ -247,7 +247,7 @@ class CanonicalPPTSpec(BaseModel):
                         AssetRequirement(
                             slide_id=slide.id,
                             asset_type="table",
-                            label=ev.caption or f"Table ({ev.id})",
+                            label=ev.source_reference or ev.caption or f"Table ({ev.id})",
                             page=ev.source_page,
                             caption=ev.caption,
                         )

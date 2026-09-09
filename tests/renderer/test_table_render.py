@@ -1,6 +1,7 @@
 """Unit tests for Table Rendering (PR11)."""
 
 from pathlib import Path
+import pytest
 from pptx import Presentation
 
 from backend.layout.schema import ElementType, LayoutElement, LayoutSpec, Rect, VisualIntent
@@ -62,13 +63,8 @@ def test_render_table_basic(tmp_path: Path):
 
 def test_table_resolver_fallback(tmp_path: Path):
     resolver = AssetResolver()
-    resolved = resolver.resolve_table("table1")
-    assert "header" in resolved
-    assert "rows" in resolved
-    assert len(resolved["rows"]) >= 1
-    assert len(resolved["header"]) >= 2
-    assert "76.4" not in str(resolved)
-    assert "Baseline Architecture" not in str(resolved)
+    with pytest.raises(FileNotFoundError):
+        resolver.resolve_table("table1")
 
 
 def test_render_table_r1c2_and_empty_guard(tmp_path: Path):

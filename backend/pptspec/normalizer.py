@@ -39,7 +39,7 @@ from .schema import (
     SourcePolicy,
     TableEvidence,
 )
-from .validator import TruthfulnessValidator, validate_truthfulness
+from .validator import TruthfulnessValidator, validate_truthfulness, normalize_for_textual_match
 
 logger = logging.getLogger(__name__)
 
@@ -54,7 +54,7 @@ SLIDE_TYPE_KEYWORDS: List[Tuple[re.Pattern, SlideType]] = [
     (re.compile(r"方法概览|架构|模型概览|framework|method\s*overview|system\s*overview", re.I), SlideType.METHOD_OVERVIEW),
     (re.compile(r"方法|算法|细节|实现|method|detail|algorithm|architecture", re.I), SlideType.METHOD_DETAIL),
     (re.compile(r"实验设置|数据集|实验环境|setup|dataset|setting", re.I), SlideType.EXPERIMENT_SETUP),
-    (re.compile(r"实验结果|对比|性能|benchmark|result|evaluation|performance", re.I), SlideType.RESULT),
+    (re.compile(r"实验结果|对比|性能|benchmark|result|evaluation|performance|compare|comparison", re.I), SlideType.RESULT),
     (re.compile(r"消融|ablation", re.I), SlideType.ABLATION),
     (re.compile(r"局限|limitation|不足", re.I), SlideType.LIMITATION),
     (re.compile(r"总结|结论|未来|conclusion|summary|future", re.I), SlideType.CONCLUSION),
@@ -233,12 +233,20 @@ def normalize_dict_to_canonical_spec(
             if not is_complete and (cols or rows):
                 warnings.append(f"Table '{ev_id}' data is incomplete or has mismatched rows; demoted to placeholder.")
 
+            caption_val = raw_ev.get("caption")
+            source_ref = raw_ev.get("source_reference") or raw_ev.get("xref_label") or raw_ev.get("label")
+            if not source_ref and caption_val:
+                tbl_match = re.search(r"((?:Table|表)\s*\d+)", str(caption_val), re.IGNORECASE)
+                if tbl_match:
+                    source_ref = tbl_match.group(1).strip()
+
             normalized_evidences.append(
                 TableEvidence(
                     id=ev_id,
+                    source_reference=source_ref,
                     columns=cols,
                     rows=rows,
-                    caption=raw_ev.get("caption"),
+                    caption=caption_val,
                     source_page=page_val,
                     complete_table=is_complete,
                 )
@@ -344,20 +352,37 @@ def normalize_dict_to_canonical_spec(
         cleaned_refs: List[str] = [str(r).strip() for r in raw_refs if str(r).strip()]
 
         # Resolve bullet items from key_messages or bullets (synthesize ClaimEvidence if needed)
+        # Avoid duplicate synthesis if an evidence with equivalent normalized content is already referenced
+        referenced_contents = {
+            normalize_for_textual_match(getattr(ev, "content", ""))
+            for ev in normalized_evidences
+            if ev.id in cleaned_refs and getattr(ev, "content", "")
+        }
+        for ev in normalized_evidences:
+            if ev.id in cleaned_refs and isinstance(ev, MetricEvidence):
+                referenced_contents.add(normalize_for_textual_match(ev.name))
+                referenced_contents.add(normalize_for_textual_match(f"{ev.name} {ev.value}"))
+
         bullets_raw = (
             raw_slide.get("key_messages")
             or raw_slide.get("bullets")
             or []
         )
         bullets = [str(item).strip() for item in bullets_raw if str(item).strip()]
+        synthesized_count = 0
         for b_idx, bullet in enumerate(bullets, start=1):
-            new_ev_id = f"ev_bullet_{slide_id}_{b_idx}"
+            norm_b = normalize_for_textual_match(bullet)
+            if not norm_b or norm_b in referenced_contents:
+                continue
+            synthesized_count += 1
+            new_ev_id = f"ev_bullet_{slide_id}_{synthesized_count}"
             if new_ev_id not in valid_ev_ids:
                 claim = ClaimEvidence(id=new_ev_id, content=bullet)
                 normalized_evidences.append(claim)
                 valid_ev_ids.add(new_ev_id)
             if new_ev_id not in cleaned_refs:
                 cleaned_refs.append(new_ev_id)
+            referenced_contents.add(norm_b)
 
         # Presentation/layout directives only in instructions (never slide text content)
         instructions_raw = raw_slide.get("instructions") or []

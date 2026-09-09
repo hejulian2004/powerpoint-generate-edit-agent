@@ -138,7 +138,7 @@ def compile_slide_request_to_slide_spec(
                     source_evidence_ids=[ev.id],
                     source_table_id=ev.id,
                     caption=ev.caption or "",
-                    xref_label=f"Table {tbl_idx}",
+                    xref_label=ev.source_reference or f"Table ({ev.id})",
                     columns=ev.columns,
                     rows=ev.rows,
                     placeholder=not ev.complete_table,

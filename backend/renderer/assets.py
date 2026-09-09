@@ -109,16 +109,5 @@ class AssetResolver:
                 "highlight_cells": payload.get("highlight_cells", []),
             }
 
-        # 3. Explicit placeholder fallback without any fabricated benchmark data
-        caption = payload.get("caption") or (tbl_obj.caption if tbl_obj else "")
-        xref = payload.get("xref_label") or (tbl_obj.xref_label if tbl_obj else table_id)
-
-        return {
-            "header": ["Table", "Status"],
-            "rows": [
-                [f"[{xref.upper()}]", "Placeholder: Raw table data not provided in paper extract"],
-            ],
-            "caption": caption,
-            "xref_label": xref,
-            "highlight_cells": [],
-        }
+        # 3. Missing table data -> symmetric with resolve_figure, raise FileNotFoundError
+        raise FileNotFoundError(f"Table data for '{table_id}' could not be resolved.")

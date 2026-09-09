@@ -15,6 +15,7 @@ Guarantees factual provenance:
 from __future__ import annotations
 
 import re
+import unicodedata
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Set, Tuple, Union
 
@@ -22,6 +23,7 @@ from .errors import (
     IncompleteTableError,
     InvalidEvidenceReferenceError,
     UnsupportedNumericError,
+    UnsupportedTextualFactError,
     ValidationError,
 )
 from .schema import (
@@ -36,16 +38,19 @@ from .schema import (
 
 @dataclass(frozen=True)
 class NumericToken:
-    """Structured representation of a factual numeric token including value, uncertainty, and units."""
+    """Structured representation of a factual numeric token including value, comparator, uncertainty, and units."""
 
     raw_text: str
     value: str
+    comparator: Optional[str] = None  # "<", "<=", ">", ">="
     percent: bool = False
     uncertainty: Optional[str] = None
     unit: Optional[str] = None
 
     def is_equivalent(self, other: "NumericToken") -> bool:
-        """Determines numeric equivalence strictly preserving %, uncertainty, and unit."""
+        """Determines numeric equivalence strictly preserving comparator, %, uncertainty, and unit."""
+        if (self.comparator or "") != (other.comparator or ""):
+            return False
         if self.percent != other.percent:
             return False
         if (self.uncertainty or "") != (other.uncertainty or ""):
@@ -58,13 +63,35 @@ class NumericToken:
             return self.value == other.value
 
 
-# Regex matching numbers with optional +/- uncertainty, %, and attached unit
+_KNOWN_UNITS = (
+    r"tokens/s|GB/s|MB/s|KB/s|FPS|fps|ms|µs|us|ns|s|min|GB|MB|KB|TB|GHz|MHz|Hz|°C|分钟|秒|毫秒|小时"
+)
+
+# Regex matching numbers with optional comparator, +/- uncertainty, %, and attached unit
 _STRUCTURED_NUMERIC_RE = re.compile(
+    r"(?P<cmp><=|>=|≤|≥|<|>)?\s*"
     r"(?P<val>[+-]?(?:\d+\.\d+|\.\d+|\d+)(?:[eE][+-]?\d+)?)"
     r"(?:\s*(?:±|\+/-)\s*(?P<unc>\d+(?:\.\d+)?))?"
-    r"(?:\s*(?P<pct>%))?"
-    r"(?:(?<=[0-9%])(?P<unit>[a-zA-Z]{1,6}))?"
+    r"(?:"
+    r"(?:\s*(?P<pct>%))"
+    r"|"
+    r"(?:\s*(?P<unit>" + _KNOWN_UNITS + r"))"
+    r"|"
+    r"(?:(?<=[0-9])(?P<unit_attached>[a-zA-Z]{1,6}))"
+    r")?",
+    re.UNICODE,
 )
+
+
+def _normalize_comparator(cmp_str: Optional[str]) -> Optional[str]:
+    if not cmp_str:
+        return None
+    cmp_clean = cmp_str.strip()
+    if cmp_clean == "≤":
+        return "<="
+    if cmp_clean == "≥":
+        return ">="
+    return cmp_clean
 
 
 def parse_numeric_tokens(text: str) -> List[NumericToken]:
@@ -78,9 +105,10 @@ def parse_numeric_tokens(text: str) -> List[NumericToken]:
         if not val_str or val_str in ("+", "-", "%", "+-", "-+"):
             continue
 
+        cmp_str = _normalize_comparator(match.group("cmp"))
         unc_str = match.group("unc")
         pct_str = match.group("pct")
-        unit_str = match.group("unit")
+        unit_str = match.group("unit") or match.group("unit_attached")
 
         # Handle 'percent' or 'pct' unit
         is_percent = bool(pct_str)
@@ -88,11 +116,16 @@ def parse_numeric_tokens(text: str) -> List[NumericToken]:
             is_percent = True
             unit_str = None
 
+        # Ignore ordinal suffixes
+        if unit_str and unit_str.lower() in ("st", "nd", "rd", "th"):
+            unit_str = None
+
         raw_match = match.group(0).strip()
         tokens.append(
             NumericToken(
                 raw_text=raw_match,
                 value=val_str,
+                comparator=cmp_str,
                 percent=is_percent,
                 uncertainty=unc_str,
                 unit=unit_str,
@@ -130,6 +163,7 @@ def collect_factual_numeric_tokens(spec: CanonicalPPTSpec) -> List[Tuple[Numeric
                     NumericToken(
                         raw_text=t.raw_text,
                         value=t.value,
+                        comparator=t.comparator,
                         percent=t.percent or (unit_clean == "%"),
                         uncertainty=t.uncertainty,
                         unit=t.unit or (unit_clean if unit_clean != "%" else None),
@@ -149,6 +183,7 @@ def collect_factual_numeric_tokens(spec: CanonicalPPTSpec) -> List[Tuple[Numeric
                         NumericToken(
                             raw_text=t.raw_text,
                             value=t.value,
+                            comparator=t.comparator,
                             percent=t.percent or (unit_clean == "%"),
                             uncertainty=t.uncertainty,
                             unit=t.unit or (unit_clean if unit_clean != "%" else None),
@@ -193,6 +228,43 @@ def check_token_in_raw_text(token: Union[NumericToken, str], raw_text: str) -> b
 
     raw_tokens = parse_numeric_tokens(raw_text)
     return any(token.is_equivalent(r_tok) for r_tok in raw_tokens)
+
+
+def normalize_for_textual_match(text: str) -> str:
+    """Normalize text for strict literal-grounding checks:
+    - Unicode normalization (NFKC)
+    - Strip Markdown markup (links, bold, italic, code, headings, blockquotes)
+    - Collapse whitespace/newlines to single space
+    - Lowercase
+    - Strip leading/trailing punctuation and quotes
+    """
+    if not text:
+        return ""
+    norm = unicodedata.normalize("NFKC", str(text))
+    # Replace markdown links [text](url) -> text
+    norm = re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", norm)
+    # Remove images ![alt](url) -> alt
+    norm = re.sub(r"!\[([^\]]*)\]\([^)]+\)", r"\1", norm)
+    # Remove bold, italics, code, headers, blockquotes, bullets
+    norm = re.sub(r"[*_`#>]", " ", norm)
+    # Collapse multiple whitespace/newlines
+    norm = re.sub(r"\s+", " ", norm).strip().lower()
+    # Strip outer quotes / punctuation
+    norm = norm.strip("\"'`.,;:!?()[]{}")
+    return norm
+
+
+def is_text_grounded(target: str, raw_text: str) -> bool:
+    """Determine whether target text is grounded in raw_text via strict literal normalization."""
+    if not target or not target.strip():
+        return True
+    if not raw_text or not raw_text.strip():
+        return False
+    target_norm = normalize_for_textual_match(target)
+    if not target_norm:
+        return True
+    raw_norm = normalize_for_textual_match(raw_text)
+    return target_norm in raw_norm
 
 
 @dataclass
@@ -255,6 +327,45 @@ class TruthfulnessValidator:
                 errors.append(err)
                 if self.strict:
                     raise UnsupportedNumericError(token=token.raw_text, context=context)
+
+        # 4. Textual Provenance Guard (Strict Literal Grounding)
+        # Verifies that non-numeric factual evidence strings originate directly from raw input.
+        # Explicitly exempts layout/presentation directives: presentation.title, slide.title,
+        # slide.objective, slide.instructions, ev.id, slide.id, spec_version.
+        for ev in spec.evidence:
+            if isinstance(ev, (ClaimEvidence, QuoteEvidence)):
+                if ev.content and not is_text_grounded(ev.content, raw_input):
+                    err = f"UNSUPPORTED_TEXTUAL_FACT: Factual claim/quote '{ev.content}' ({ev.id}) is not grounded in raw input."
+                    errors.append(err)
+                    if self.strict:
+                        raise UnsupportedTextualFactError(fact_type=ev.kind, content=ev.content, context=f"Evidence {ev.id}")
+            elif isinstance(ev, FigureReferenceEvidence):
+                if ev.caption and not is_text_grounded(ev.caption, raw_input):
+                    err = f"UNSUPPORTED_TEXTUAL_FACT: Figure caption '{ev.caption}' ({ev.id}) is not grounded in raw input."
+                    errors.append(err)
+                    if self.strict:
+                        raise UnsupportedTextualFactError(fact_type="figure_caption", content=ev.caption, context=f"Figure {ev.id}")
+            elif isinstance(ev, TableEvidence):
+                if ev.caption and not is_text_grounded(ev.caption, raw_input):
+                    err = f"UNSUPPORTED_TEXTUAL_FACT: Table caption '{ev.caption}' ({ev.id}) is not grounded in raw input."
+                    errors.append(err)
+                    if self.strict:
+                        raise UnsupportedTextualFactError(fact_type="table_caption", content=ev.caption, context=f"Table {ev.id}")
+
+        if spec.source_document:
+            if spec.source_document.authors:
+                for author in spec.source_document.authors:
+                    if author and not is_text_grounded(author, raw_input):
+                        err = f"UNSUPPORTED_TEXTUAL_FACT: Author '{author}' is not grounded in raw input."
+                        errors.append(err)
+                        if self.strict:
+                            raise UnsupportedTextualFactError(fact_type="author", content=author, context="source_document.authors")
+            if spec.source_document.venue:
+                if not is_text_grounded(spec.source_document.venue, raw_input):
+                    err = f"UNSUPPORTED_TEXTUAL_FACT: Venue '{spec.source_document.venue}' is not grounded in raw input."
+                    errors.append(err)
+                    if self.strict:
+                        raise UnsupportedTextualFactError(fact_type="venue", content=spec.source_document.venue, context="source_document.venue")
 
         valid = len(errors) == 0
         return TruthfulnessValidationResult(

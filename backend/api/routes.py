@@ -258,11 +258,12 @@ async def api_generate_from_pptspec(payload: Dict[str, Any] = Body(...)):
         raise HTTPException(status_code=400, detail="normalization_id is required")
 
     session_id = payload.get("session_id") or store.active_session_id
-    artifact = artifact_store.get(norm_id)
+    artifact = artifact_store.get(norm_id, include_expired=True)
     if not artifact:
         raise HTTPException(status_code=404, detail="ARTIFACT_NOT_FOUND: Normalization artifact not found.")
 
     if artifact.is_expired:
+        artifact_store.delete(norm_id)
         raise HTTPException(status_code=410, detail="ARTIFACT_EXPIRED: Normalization artifact has expired.")
 
     if artifact.session_id != session_id:

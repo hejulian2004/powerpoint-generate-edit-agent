@@ -195,21 +195,23 @@ def validate_pptx_fidelity(
                 if not passed:
                     errors.append(f"Figure element {el.element_id} was not rendered as PICTURE or placeholder shape")
 
-            # E. Table fidelity check
+            # E. Table fidelity check (TABLE or explicit placeholder AUTO_SHAPE)
             elif el.element_type == ElementType.TABLE:
-                is_table = shape.has_table
+                is_tbl = shape.has_table
+                is_placeholder = (shape.shape_type == MSO_SHAPE_TYPE.AUTO_SHAPE)
+                passed = is_tbl or is_placeholder
                 checks.append(
                     FidelityCheckItem(
                         category="table_fidelity",
                         target_id=el.element_id,
-                        passed=is_table,
-                        expected="TABLE",
-                        actual="TABLE" if is_table else "NON_TABLE",
-                        message=None if is_table else f"Expected TABLE shape type for element {el.element_id}",
+                        passed=passed,
+                        expected="TABLE or AUTO_SHAPE placeholder",
+                        actual="TABLE" if is_tbl else ("AUTO_SHAPE" if is_placeholder else str(shape.shape_type)),
+                        message=None if passed else f"Expected TABLE or AUTO_SHAPE placeholder for element {el.element_id}",
                     )
                 )
-                if not is_table:
-                    errors.append(f"Table element {el.element_id} was not rendered as TABLE shape")
+                if not passed:
+                    errors.append(f"Table element {el.element_id} was not rendered as TABLE or placeholder shape")
 
     is_valid = len(errors) == 0
 

@@ -149,12 +149,18 @@ def parse_markdown_or_text_outline(raw_text: str) -> Dict[str, Any]:
         if cols:
             tbl_id = f"ev_tbl_{ev_counter}"
             ev_counter += 1
+            tbl_source_ref = None
+            if table_caption:
+                m = re.search(r"((?:Table|表)\s*\d+)", table_caption, re.IGNORECASE)
+                if m:
+                    tbl_source_ref = m.group(1).strip()
             tbl_ev = {
                 "id": tbl_id,
                 "kind": "table",
+                "source_reference": tbl_source_ref,
                 "columns": cols,
                 "rows": rows,
-                "caption": table_caption or "实验对比表",
+                "caption": table_caption if table_caption else None,
                 "complete_table": all(len(r) == len(cols) for r in rows) if rows else False,
             }
             evidence_items.append(tbl_ev)
@@ -263,15 +269,16 @@ def parse_markdown_or_text_outline(raw_text: str) -> Dict[str, Any]:
                 continue
 
             # Table reference without full markdown table: Table 2 / 表 2
-            tbl_ref_match = re.search(r"(?:Table|表)\s*(\d+)", stripped, re.IGNORECASE)
+            tbl_ref_match = re.search(r"((?:Table|表)\s*\d+)", stripped, re.IGNORECASE)
             if tbl_ref_match and not (stripped.startswith("|") and stripped.endswith("|")):
-                tbl_label = f"Table {tbl_ref_match.group(1)}"
+                tbl_raw_ref = tbl_ref_match.group(1).strip()
                 p_num = int(page_match.group(1)) if page_match else None
                 tbl_id = f"ev_tbl_{ev_counter}"
                 ev_counter += 1
                 evidence_items.append({
                     "id": tbl_id,
                     "kind": "table",
+                    "source_reference": tbl_raw_ref,
                     "columns": [],
                     "rows": [],
                     "caption": stripped,
@@ -308,8 +315,6 @@ def parse_markdown_or_text_outline(raw_text: str) -> Dict[str, Any]:
                         "content": clean_item,
                     })
                     current_slide["evidence_refs"].append(c_id)
-
-                current_slide.setdefault("bullets", []).append(clean_item)
 
     if in_table:
         flush_table()

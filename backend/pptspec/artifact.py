@@ -68,9 +68,14 @@ class NormalizationArtifactStore:
         self._store[artifact_id] = artifact
         return artifact
 
-    def get(self, artifact_id: str) -> Optional[NormalizationArtifact]:
-        self._cleanup()
-        return self._store.get(artifact_id)
+    def get(self, artifact_id: str, *, include_expired: bool = False) -> Optional[NormalizationArtifact]:
+        artifact = self._store.get(artifact_id)
+        if artifact is None:
+            return None
+        if artifact.is_expired and not include_expired:
+            self._store.pop(artifact_id, None)
+            return None
+        return artifact
 
     def delete(self, artifact_id: str) -> bool:
         return self._store.pop(artifact_id, None) is not None
