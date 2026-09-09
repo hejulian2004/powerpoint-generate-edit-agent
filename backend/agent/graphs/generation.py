@@ -357,6 +357,7 @@ def validation_route(state: PPTGenerationState) -> Literal["compile_slidespec_no
         "UNSUPPORTED_NUMERIC_VALUE",
         "UNSUPPORTED_TEXTUAL_FACT",
         "UNSUPPORTED_SOURCE_LOCATOR",
+        "UNSUPPORTED_FACT_RELATION",
         "INVALID_EVIDENCE_REFERENCE",
     )
 

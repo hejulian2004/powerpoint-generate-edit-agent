@@ -23,12 +23,14 @@ from .errors import (
     ValidationError,
     UnsupportedNumericError,
     UnsupportedTextualFactError,
+    UnsupportedFactRelationError,
     InvalidEvidenceReferenceError,
     IncompleteTableError,
 )
 from .validator import (
     TruthfulnessValidator,
     validate_truthfulness,
+    validate_metric_binding,
     collect_factual_numeric_tokens,
     normalize_for_textual_match,
 )
@@ -83,10 +85,12 @@ __all__ = [
     "ValidationError",
     "UnsupportedNumericError",
     "UnsupportedTextualFactError",
+    "UnsupportedFactRelationError",
     "InvalidEvidenceReferenceError",
     "IncompleteTableError",
     "TruthfulnessValidator",
     "validate_truthfulness",
+    "validate_metric_binding",
     "collect_factual_numeric_tokens",
     "normalize_for_textual_match",
     "get_general_prompt",

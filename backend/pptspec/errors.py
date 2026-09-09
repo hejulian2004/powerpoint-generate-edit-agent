@@ -81,3 +81,26 @@ class IncompleteTableError(ValidationError):
         d = details or {}
         d["table_id"] = table_id
         super().__init__(f"Incomplete table '{table_id}': {message}", code="INCOMPLETE_TABLE", details=d)
+
+
+class UnsupportedFactRelationError(ValidationError):
+    """Raised when composite facts (e.g. Metric name/method ↔ value) cross-recombine or lack local contextual binding."""
+
+    def __init__(
+        self,
+        fact_type: str,
+        subject: str,
+        relation: str,
+        target: str,
+        context: str = "",
+        details: Optional[Dict[str, Any]] = None,
+    ):
+        msg = f"Unsupported factual relation [{fact_type}] '{subject}' {relation} '{target}' not grounded in raw input. Context: {context}"
+        d = details or {}
+        d["fact_type"] = fact_type
+        d["subject"] = subject
+        d["relation"] = relation
+        d["target"] = target
+        d["context"] = context
+        super().__init__(msg, code="UNSUPPORTED_FACT_RELATION", details=d)
+

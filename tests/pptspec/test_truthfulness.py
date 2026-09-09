@@ -5,6 +5,7 @@ from backend.presentation.schema import SlideType
 from backend.pptspec.errors import (
     UnsupportedNumericError,
     UnsupportedTextualFactError,
+    UnsupportedFactRelationError,
     InvalidEvidenceReferenceError,
 )
 from backend.pptspec.schema import (
@@ -477,4 +478,159 @@ def test_metric_mixed_value_grounded_passes():
     )
     res = validate_truthfulness(raw_input, spec, strict=True)
     assert res.valid is True
+
+
+def test_metric_name_value_binding_valid():
+    """Valid metric where name and value are bound in local context passes."""
+    raw_input = """
+    Evaluation Report:
+    Accuracy: 92.4%
+    F1 Score: 89.5%
+    """
+    spec = CanonicalPPTSpec(
+        presentation=PresentationConfig(title="Test"),
+        evidence=[
+            MetricEvidence(id="m1", name="Accuracy", value="92.4%"),
+            MetricEvidence(id="m2", name="F1 Score", value="89.5%"),
+        ],
+        slides=[SlideRequest(id="s1", type=SlideType.RESULT, title="Res", evidence_refs=["m1", "m2"])],
+    )
+    res = validate_truthfulness(raw_input, spec, strict=True)
+    assert res.valid is True
+
+
+def test_metric_name_value_binding_rejects_cross_metric_recombination():
+    """Accuracy 80.0% and F1 92.4% -> spec recombining Accuracy: 92.4% must raise UnsupportedFactRelationError."""
+    raw_input = """
+    Evaluation Report:
+    Accuracy: 80.0%
+    F1: 92.4%
+    """
+    # LLM swaps values: pairs Accuracy with 92.4%
+    spec = CanonicalPPTSpec(
+        presentation=PresentationConfig(title="Test"),
+        evidence=[
+            MetricEvidence(id="m1", name="Accuracy", value="92.4%"),
+        ],
+        slides=[SlideRequest(id="s1", type=SlideType.RESULT, title="Res", evidence_refs=["m1"])],
+    )
+    with pytest.raises(UnsupportedFactRelationError) as exc_info:
+        validate_truthfulness(raw_input, spec, strict=True)
+    assert exc_info.value.code == "UNSUPPORTED_FACT_RELATION"
+    assert "Accuracy" in str(exc_info.value)
+    assert "92.4%" in str(exc_info.value)
+
+
+def test_metric_group_binding_rejects_cross_metric_recombination():
+    """MetricGroup entries must bind their own entry.name with entry.value without cross-entry leakage."""
+    raw_input = """
+    Benchmark:
+    Precision: 75.0%
+    Recall: 90.0%
+    """
+    # Precision paired with 90.0% inside MetricGroup
+    spec = CanonicalPPTSpec(
+        presentation=PresentationConfig(title="Test"),
+        evidence=[
+            MetricGroupEvidence(
+                id="mg1",
+                group_name="Benchmark",
+                metrics=[
+                    MetricEntry(name="Precision", value="90.0%"),
+                ],
+            )
+        ],
+        slides=[SlideRequest(id="s1", type=SlideType.RESULT, title="Res", evidence_refs=["mg1"])],
+    )
+    with pytest.raises(UnsupportedFactRelationError) as exc_info:
+        validate_truthfulness(raw_input, spec, strict=True)
+    assert exc_info.value.code == "UNSUPPORTED_FACT_RELATION"
+
+
+def test_metric_binding_same_line_multiple_metrics():
+    """Compact single line containing multiple metrics (e.g. 'Accuracy: 80.0%, F1: 92.4%') passes for correct pairs."""
+    raw_input = "Final results: Accuracy: 80.0%, F1: 92.4%."
+    # Both correct pairs
+    spec = CanonicalPPTSpec(
+        presentation=PresentationConfig(title="Test"),
+        evidence=[
+            MetricEvidence(id="m1", name="Accuracy", value="80.0%"),
+            MetricEvidence(id="m2", name="F1", value="92.4%"),
+        ],
+        slides=[SlideRequest(id="s1", type=SlideType.RESULT, title="Res", evidence_refs=["m1", "m2"])],
+    )
+    res = validate_truthfulness(raw_input, spec, strict=True)
+    assert res.valid is True
+
+    # Recombined pair on same line must fail
+    spec_bad = CanonicalPPTSpec(
+        presentation=PresentationConfig(title="Test"),
+        evidence=[
+            MetricEvidence(id="m1", name="Accuracy", value="92.4%"),
+        ],
+        slides=[SlideRequest(id="s1", type=SlideType.RESULT, title="Res", evidence_refs=["m1"])],
+    )
+    with pytest.raises(UnsupportedFactRelationError):
+        validate_truthfulness(raw_input, spec_bad, strict=True)
+
+
+def test_metric_binding_json_neighbor_objects():
+    """In raw JSON input, neighboring metric objects must not cross '{' or '}' boundaries to recombine."""
+    raw_input = """[
+        {"name": "Accuracy", "value": "80.0%"},
+        {"name": "F1", "value": "92.4%"}
+    ]"""
+    # Cross-object recombination: Accuracy with 92.4%
+    spec_bad = CanonicalPPTSpec(
+        presentation=PresentationConfig(title="Test"),
+        evidence=[
+            MetricEvidence(id="m1", name="Accuracy", value="92.4%"),
+        ],
+        slides=[SlideRequest(id="s1", type=SlideType.RESULT, title="Res", evidence_refs=["m1"])],
+    )
+    with pytest.raises(UnsupportedFactRelationError):
+        validate_truthfulness(raw_input, spec_bad, strict=True)
+
+    # Valid objects pass
+    spec_good = CanonicalPPTSpec(
+        presentation=PresentationConfig(title="Test"),
+        evidence=[
+            MetricEvidence(id="m1", name="Accuracy", value="80.0%"),
+            MetricEvidence(id="m2", name="F1", value="92.4%"),
+        ],
+        slides=[SlideRequest(id="s1", type=SlideType.RESULT, title="Res", evidence_refs=["m1", "m2"])],
+    )
+    res = validate_truthfulness(raw_input, spec_good, strict=True)
+    assert res.valid is True
+
+
+def test_metric_method_binding_rejects_cross_method_value():
+    """Same metric name under different methods must bind to the correct method value."""
+    raw_input = """
+    Baseline Accuracy: 80%
+    Ours Accuracy: 92%
+    """
+    # Spec pairs method="Baseline" with 92%
+    spec_bad = CanonicalPPTSpec(
+        presentation=PresentationConfig(title="Test"),
+        evidence=[
+            MetricEvidence(id="m1", name="Accuracy", value="92%", method="Baseline"),
+        ],
+        slides=[SlideRequest(id="s1", type=SlideType.RESULT, title="Res", evidence_refs=["m1"])],
+    )
+    with pytest.raises(UnsupportedFactRelationError):
+        validate_truthfulness(raw_input, spec_bad, strict=True)
+
+    # Correct pair method="Baseline" with 80%
+    spec_good = CanonicalPPTSpec(
+        presentation=PresentationConfig(title="Test"),
+        evidence=[
+            MetricEvidence(id="m1", name="Accuracy", value="80%", method="Baseline"),
+            MetricEvidence(id="m2", name="Accuracy", value="92%", method="Ours"),
+        ],
+        slides=[SlideRequest(id="s1", type=SlideType.RESULT, title="Res", evidence_refs=["m1", "m2"])],
+    )
+    res = validate_truthfulness(raw_input, spec_good, strict=True)
+    assert res.valid is True
+
 

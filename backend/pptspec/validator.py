@@ -22,6 +22,7 @@ from typing import Any, Dict, List, Optional, Set, Tuple, Union
 from .errors import (
     IncompleteTableError,
     InvalidEvidenceReferenceError,
+    UnsupportedFactRelationError,
     UnsupportedNumericError,
     UnsupportedTextualFactError,
     ValidationError,
@@ -435,6 +436,248 @@ def validate_source_locator(
         return has_page_in_text(raw_input, page)
 
 
+def validate_metric_binding(
+    raw_input: str,
+    name: str,
+    value: str,
+    method: Optional[str] = None,
+    unit: Optional[str] = None,
+    window_chars: int = 200,
+) -> bool:
+    """Validate that a Metric name and value belong to the same local factual relation in raw_input.
+
+    Guarantees:
+    - Locates occurrences of name in raw_input.
+    - Within a local window (+/- window_chars), searches for candidate value (equivalent NumericTokens and semantic remainders).
+    - Between name and the candidate value, strictly forbids:
+      * JSON object boundaries ('{' or '}')
+      * Paragraph boundaries (double newlines '\\n\\s*\\n')
+      * New metric / key-value declarations (newline followed by bullet or field name with colon/equal)
+      * Other intervening unequal NumericTokens (which belong to a different metric)
+    - If method is specified, requires method to also appear in the same bounded local window.
+    """
+    if not name or not value or not raw_input:
+        return False
+
+    name_clean = name.strip()
+    if not name_clean:
+        return False
+
+    # Extract target numeric token from value if present
+    target_toks = parse_numeric_tokens(value)
+    target_tok: Optional[NumericToken] = None
+    if target_toks:
+        t = target_toks[0]
+        unit_clean = unit.strip() if unit else None
+        target_tok = NumericToken(
+            raw_text=t.raw_text,
+            value=t.value,
+            comparator=t.comparator,
+            percent=t.percent or (unit_clean == "%"),
+            uncertainty=t.uncertainty,
+            unit=t.unit or (unit_clean if unit_clean != "%" else None),
+        )
+
+    target_semantic = extract_non_numeric_semantic_text(value)
+
+    # Find occurrences of name in raw_input (case-insensitive literal match)
+    # Escape name for regex search
+    pattern = re.compile(re.escape(name_clean), re.IGNORECASE)
+    matches = list(pattern.finditer(raw_input))
+    if not matches:
+        # Fallback: check normalized textual match
+        name_norm = normalize_for_textual_match(name_clean)
+        if not name_norm:
+            return False
+        # Try finding words
+        words = [re.escape(w) for w in name_clean.split() if w]
+        if words:
+            flex_pattern = re.compile(r"\s+".join(words), re.IGNORECASE)
+            matches = list(flex_pattern.finditer(raw_input))
+
+    if not matches:
+        return False
+
+    # Forbidden patterns in intervening text between name and value
+    new_metric_decl_re = re.compile(
+        r"(?:\r?\n)\s*(?:[-*•]?\s*[\w\u4e00-\u9fa5]{1,25}\s*[:：=])",
+        re.UNICODE,
+    )
+    double_newline_re = re.compile(r"\r?\n\s*\r?\n")
+
+    for m in matches:
+        start = max(0, m.start() - window_chars)
+        end = min(len(raw_input), m.end() + window_chars)
+
+        # Candidate 1: value is AFTER name
+        after_text = raw_input[m.end():end]
+        # Candidate 2: value is BEFORE name
+        before_text = raw_input[start:m.start()]
+
+        def check_intervening(inter: str, cand_tok: Optional[NumericToken]) -> bool:
+            # Cannot cross JSON object boundaries
+            if "{" in inter or "}" in inter:
+                return False
+            # Cannot cross paragraph boundaries
+            if double_newline_re.search(inter):
+                return False
+            # Cannot cross new metric / key-value declaration
+            if new_metric_decl_re.search(inter):
+                return False
+            # Cannot cross an intervening different numeric token
+            inter_toks = parse_numeric_tokens(inter)
+            if cand_tok is not None:
+                # Any token in inter that is NOT equivalent to cand_tok is a collision
+                for it in inter_toks:
+                    if not it.is_equivalent(cand_tok):
+                        return False
+            elif inter_toks:
+                # If target is non-numeric, any numeric token in between is a collision
+                return False
+            return True
+
+        # Check in after_text
+        if target_tok is not None:
+            raw_tokens_after = list(_STRUCTURED_NUMERIC_RE.finditer(after_text))
+            for tok_match in raw_tokens_after:
+                parsed_candidates = parse_numeric_tokens(tok_match.group(0))
+                for pt in parsed_candidates:
+                    if target_tok.is_equivalent(pt):
+                        inter = after_text[:tok_match.start()]
+                        if check_intervening(inter, target_tok):
+                            # Verify target_semantic if any
+                            if target_semantic and not is_text_grounded(target_semantic, after_text[:tok_match.end() + 50]):
+                                continue
+                            # Verify method if required (must also satisfy intervening constraints with name/value)
+                            if method:
+                                # Determine actual scope from name start to value end (or vice versa)
+                                scope_start = m.start()
+                                scope_end = m.end() + tok_match.end()
+                                # Method could be before name or after value
+                                method_bound = False
+                                method_pattern = re.compile(re.escape(method.strip()), re.IGNORECASE)
+                                for mm in method_pattern.finditer(raw_input[start:end]):
+                                    actual_m_start = start + mm.start()
+                                    actual_m_end = start + mm.end()
+                                    # Method must connect without crossing forbidden boundaries
+                                    if actual_m_end <= scope_start:
+                                        conn = raw_input[actual_m_end:scope_start]
+                                        if check_intervening(conn, None):
+                                            method_bound = True
+                                            break
+                                    elif actual_m_start >= scope_end:
+                                        conn = raw_input[scope_end:actual_m_start]
+                                        if check_intervening(conn, None):
+                                            method_bound = True
+                                            break
+                                    elif actual_m_start >= scope_start and actual_m_end <= scope_end:
+                                        method_bound = True
+                                        break
+                                if not method_bound:
+                                    continue
+                            return True
+
+        if target_semantic and target_tok is None:
+            # Pure non-numeric target (e.g. "high", "excellent")
+            sem_match = re.search(re.escape(target_semantic), after_text, re.IGNORECASE)
+            if sem_match:
+                inter = after_text[:sem_match.start()]
+                if check_intervening(inter, None):
+                    if method:
+                        scope_start = m.start()
+                        scope_end = m.end() + sem_match.end()
+                        method_bound = False
+                        method_pattern = re.compile(re.escape(method.strip()), re.IGNORECASE)
+                        for mm in method_pattern.finditer(raw_input[start:end]):
+                            actual_m_start = start + mm.start()
+                            actual_m_end = start + mm.end()
+                            if actual_m_end <= scope_start:
+                                conn = raw_input[actual_m_end:scope_start]
+                                if check_intervening(conn, None):
+                                    method_bound = True
+                                    break
+                            elif actual_m_start >= scope_end:
+                                conn = raw_input[scope_end:actual_m_start]
+                                if check_intervening(conn, None):
+                                    method_bound = True
+                                    break
+                            elif actual_m_start >= scope_start and actual_m_end <= scope_end:
+                                method_bound = True
+                                break
+                        if not method_bound:
+                            continue
+                    return True
+
+        # Check in before_text
+        if target_tok is not None:
+            raw_tokens_before = list(_STRUCTURED_NUMERIC_RE.finditer(before_text))
+            for tok_match in reversed(raw_tokens_before):
+                parsed_candidates = parse_numeric_tokens(tok_match.group(0))
+                for pt in parsed_candidates:
+                    if target_tok.is_equivalent(pt):
+                        inter = before_text[tok_match.end():]
+                        if check_intervening(inter, target_tok):
+                            if target_semantic and not is_text_grounded(target_semantic, before_text[max(0, tok_match.start() - 50):]):
+                                continue
+                            if method:
+                                scope_start = start + tok_match.start()
+                                scope_end = m.end()
+                                method_bound = False
+                                method_pattern = re.compile(re.escape(method.strip()), re.IGNORECASE)
+                                for mm in method_pattern.finditer(raw_input[start:end]):
+                                    actual_m_start = start + mm.start()
+                                    actual_m_end = start + mm.end()
+                                    if actual_m_end <= scope_start:
+                                        conn = raw_input[actual_m_end:scope_start]
+                                        if check_intervening(conn, None):
+                                            method_bound = True
+                                            break
+                                    elif actual_m_start >= scope_end:
+                                        conn = raw_input[scope_end:actual_m_start]
+                                        if check_intervening(conn, None):
+                                            method_bound = True
+                                            break
+                                    elif actual_m_start >= scope_start and actual_m_end <= scope_end:
+                                        method_bound = True
+                                        break
+                                if not method_bound:
+                                    continue
+                            return True
+
+        if target_semantic and target_tok is None:
+            sem_matches = list(re.finditer(re.escape(target_semantic), before_text, re.IGNORECASE))
+            if sem_matches:
+                last_sem = sem_matches[-1]
+                inter = before_text[last_sem.end():]
+                if check_intervening(inter, None):
+                    if method:
+                        scope_start = start + last_sem.start()
+                        scope_end = m.end()
+                        method_bound = False
+                        method_pattern = re.compile(re.escape(method.strip()), re.IGNORECASE)
+                        for mm in method_pattern.finditer(raw_input[start:end]):
+                            actual_m_start = start + mm.start()
+                            actual_m_end = start + mm.end()
+                            if actual_m_end <= scope_start:
+                                conn = raw_input[actual_m_end:scope_start]
+                                if check_intervening(conn, None):
+                                    method_bound = True
+                                    break
+                            elif actual_m_start >= scope_end:
+                                conn = raw_input[scope_end:actual_m_start]
+                                if check_intervening(conn, None):
+                                    method_bound = True
+                                    break
+                            elif actual_m_start >= scope_start and actual_m_end <= scope_end:
+                                method_bound = True
+                                break
+                        if not method_bound:
+                            continue
+                    return True
+
+    return False
+
+
 @dataclass
 class TruthfulnessValidationResult:
     valid: bool
@@ -538,6 +781,50 @@ class TruthfulnessValidator:
                 errors.append(err)
                 if self.strict:
                     raise UnsupportedTextualFactError(fact_type="year", content=year_str, context="source_document.year")
+
+        # 6. Composite Metric Relation Guard
+        # Enforces local contextual binding between metric name (and method if present) and its value,
+        # preventing LLM from cross-recombining independently valid facts.
+        for ev in spec.evidence:
+            if isinstance(ev, MetricEvidence):
+                if ev.name and ev.value:
+                    if not validate_metric_binding(
+                        raw_input,
+                        name=ev.name,
+                        value=ev.value,
+                        method=ev.method,
+                        unit=ev.unit,
+                    ):
+                        err = f"UNSUPPORTED_FACT_RELATION: Metric '{ev.name}' is not contextually bound to value '{ev.value}' (method: {ev.method}) in raw input."
+                        errors.append(err)
+                        if self.strict:
+                            raise UnsupportedFactRelationError(
+                                fact_type="metric",
+                                subject=ev.name,
+                                relation="has_value",
+                                target=ev.value,
+                                context=f"Metric {ev.id}",
+                            )
+            elif isinstance(ev, MetricGroupEvidence):
+                for m in ev.metrics:
+                    if m.name and m.value:
+                        if not validate_metric_binding(
+                            raw_input,
+                            name=m.name,
+                            value=m.value,
+                            method=None,
+                            unit=m.unit,
+                        ):
+                            err = f"UNSUPPORTED_FACT_RELATION: MetricGroup entry '{m.name}' is not contextually bound to value '{m.value}' in raw input."
+                            errors.append(err)
+                            if self.strict:
+                                raise UnsupportedFactRelationError(
+                                    fact_type="metric_entry",
+                                    subject=m.name,
+                                    relation="has_value",
+                                    target=m.value,
+                                    context=f"MetricGroup '{ev.group_name}' -> '{m.name}' ({ev.id})",
+                                )
 
         valid = len(errors) == 0
         return TruthfulnessValidationResult(
