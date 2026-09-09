@@ -12,6 +12,7 @@ from backend.pptspec.schema import (
     PresentationConfig,
     SourceDocument,
     ClaimEvidence,
+    EquationEvidence,
     MetricEvidence,
     MetricGroupEvidence,
     MetricEntry,
@@ -392,3 +393,88 @@ def test_source_locator_rejects_wrong_page_binding():
         slides=[SlideRequest(id="s1", type=SlideType.RESULT, title="T", evidence_refs=["f1"])],
     )
     assert validate_truthfulness(raw_input, spec_correct_bind, strict=True).valid is True
+
+
+def test_equation_textual_provenance_grounded():
+    """Equation Evidence with latex and description grounded in raw_input passes validation."""
+    raw_input = """
+    We formulate the loss function as:
+    $$\\mathcal{L} = \\alpha \\mathcal{L}_{cls} + \\beta \\mathcal{L}_{reg}$$
+    where the description is multi-task weighted objective.
+    """
+    spec = CanonicalPPTSpec(
+        presentation=PresentationConfig(title="Test"),
+        evidence=[
+            EquationEvidence(
+                id="eq1",
+                latex="\\mathcal{L} = \\alpha \\mathcal{L}_{cls} + \\beta \\mathcal{L}_{reg}",
+                description="multi-task weighted objective",
+            )
+        ],
+        slides=[SlideRequest(id="s1", type=SlideType.METHOD_DETAIL, title="Loss", evidence_refs=["eq1"])],
+    )
+    res = validate_truthfulness(raw_input, spec, strict=True)
+    assert res.valid is True
+
+
+def test_equation_textual_provenance_rejects_hallucination():
+    """Equation Evidence with hallucinated latex or description raises UnsupportedTextualFactError."""
+    raw_input = "We evaluate the model without showing formal mathematical equations."
+    spec = CanonicalPPTSpec(
+        presentation=PresentationConfig(title="Test"),
+        evidence=[
+            EquationEvidence(
+                id="eq1",
+                latex="E = mc^2",
+                description="mass-energy equivalence",
+            )
+        ],
+        slides=[SlideRequest(id="s1", type=SlideType.METHOD_DETAIL, title="Equation", evidence_refs=["eq1"])],
+    )
+    with pytest.raises(UnsupportedTextualFactError):
+        validate_truthfulness(raw_input, spec, strict=True)
+
+
+def test_metric_text_value_rejects_hallucination():
+    """MetricEvidence with non-numeric text value (e.g. 'excellent') not in raw_input must be rejected."""
+    raw_input = "Accuracy is thoroughly discussed across benchmark datasets."
+    # LLM hallucinates metric value="excellent"
+    spec = CanonicalPPTSpec(
+        presentation=PresentationConfig(title="Test"),
+        evidence=[
+            MetricEvidence(id="m1", name="Accuracy", value="excellent")
+        ],
+        slides=[SlideRequest(id="s1", type=SlideType.RESULT, title="Res", evidence_refs=["m1"])],
+    )
+    with pytest.raises(UnsupportedTextualFactError):
+        validate_truthfulness(raw_input, spec, strict=True)
+
+
+def test_metric_mixed_value_rejects_hallucinated_suffix():
+    """Metric with valid numeric value 92.4% but hallucinated semantic suffix '(best)' must be rejected."""
+    raw_input = "Our model achieves an accuracy of 92.4% on ImageNet."
+    # LLM appends hallucinated '(best)' to value
+    spec = CanonicalPPTSpec(
+        presentation=PresentationConfig(title="Test"),
+        evidence=[
+            MetricEvidence(id="m1", name="Accuracy", value="92.4% (best)")
+        ],
+        slides=[SlideRequest(id="s1", type=SlideType.RESULT, title="Res", evidence_refs=["m1"])],
+    )
+    with pytest.raises(UnsupportedTextualFactError):
+        validate_truthfulness(raw_input, spec, strict=True)
+
+
+def test_metric_mixed_value_grounded_passes():
+    """Metric with mixed value whose numeric and semantic parts are both grounded passes."""
+    raw_input = "Our model achieves an accuracy of 92.4% (best) on ImageNet."
+    spec = CanonicalPPTSpec(
+        presentation=PresentationConfig(title="Test"),
+        evidence=[
+            MetricEvidence(id="m1", name="Accuracy", value="92.4% (best)")
+        ],
+        slides=[SlideRequest(id="s1", type=SlideType.RESULT, title="Res", evidence_refs=["m1"])],
+    )
+    res = validate_truthfulness(raw_input, spec, strict=True)
+    assert res.valid is True
+

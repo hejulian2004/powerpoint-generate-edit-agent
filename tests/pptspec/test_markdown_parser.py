@@ -76,3 +76,62 @@ async def test_chinese_plain_text_outline():
     assert len(reqs) == 2
     assert any(r.asset_type == "figure" and "Figure 2" in r.label for r in reqs)
     assert any(r.asset_type == "table" and "Table 2" in r.label for r in reqs)
+
+
+@pytest.mark.anyio
+async def test_markdown_numeric_leading_bullet_preserved():
+    """Numbers right after list bullets like '- 89.5% accuracy' must NOT be stripped by lstrip."""
+    text = """
+    # Model Results
+    - 89.5% accuracy achieved across 5 runs
+    - 1. 76.2% baseline
+    """
+    res = await normalize_presentation_input(text, strict_truthfulness=True)
+    assert res.valid is True
+    assert res.spec is not None
+    # Check that the claim or metric preserves the leading number 89.5%
+    ev_contents = [
+        getattr(ev, "content", None) or getattr(ev, "value", None)
+        for ev in res.spec.evidence
+    ]
+    assert any("89.5%" in str(c) for c in ev_contents)
+
+
+@pytest.mark.anyio
+async def test_plain_text_leading_year_preserved():
+    """Lines beginning with a 4-digit year like '2024 results demonstrate...' must preserve the year."""
+    text = """
+    # Overview
+    2024 results demonstrate superior convergence and stability.
+    """
+    res = await normalize_presentation_input(text, strict_truthfulness=True)
+    assert res.valid is True
+    assert res.spec is not None
+    claims = [ev for ev in res.spec.evidence if ev.kind == "claim"]
+    assert len(claims) >= 1
+    assert "2024" in claims[0].content
+
+
+@pytest.mark.anyio
+async def test_top_level_markdown_table_assigned_to_default_slide():
+    """Markdown table right under top-level title without ## Slide header must be bound to default slide."""
+    text = """
+    # Results Summary
+
+    | Model | Accuracy |
+    |---|---|
+    | Baseline | 75.0% |
+    | Ours | 92.4% |
+    """
+    res = await normalize_presentation_input(text, strict_truthfulness=True)
+    assert res.valid is True
+    assert res.spec is not None
+    assert len(res.spec.slides) >= 1
+    default_slide = res.spec.slides[0]
+    # Table must be in evidence
+    tbls = [ev for ev in res.spec.evidence if ev.kind == "table"]
+    assert len(tbls) == 1
+    tbl_id = tbls[0].id
+    # Default slide must contain this table in its evidence_refs
+    assert tbl_id in default_slide.evidence_refs
+

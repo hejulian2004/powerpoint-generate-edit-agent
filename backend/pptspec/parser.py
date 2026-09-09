@@ -130,6 +130,21 @@ def parse_markdown_or_text_outline(raw_text: str) -> Dict[str, Any]:
     table_source_page: Optional[int] = None
     pending_table_ref: Optional[Dict[str, Any]] = None
 
+    def _ensure_current_slide() -> Dict[str, Any]:
+        nonlocal current_slide, slides_data, pres_title
+        if current_slide is None:
+            s_idx = len(slides_data) + 1
+            current_slide = {
+                "id": f"slide_{s_idx:02d}",
+                "title": pres_title,
+                "objective": "",
+                "instructions": [],
+                "bullets": [],
+                "evidence_refs": [],
+                "speaker_notes": None,
+            }
+        return current_slide
+
     def flush_pending_table():
         nonlocal pending_table_ref, ev_counter, current_slide
         if not pending_table_ref:
@@ -146,8 +161,8 @@ def parse_markdown_or_text_outline(raw_text: str) -> Dict[str, Any]:
             "source_page": pending_table_ref.get("source_page"),
             "complete_table": False,
         })
-        if current_slide:
-            current_slide["evidence_refs"].append(tbl_id)
+        slide = _ensure_current_slide()
+        slide["evidence_refs"].append(tbl_id)
         pending_table_ref = None
 
     def flush_table():
@@ -189,8 +204,8 @@ def parse_markdown_or_text_outline(raw_text: str) -> Dict[str, Any]:
                 "complete_table": all(len(r) == len(cols) for r in rows) if rows else False,
             }
             evidence_items.append(tbl_ev)
-            if current_slide:
-                current_slide["evidence_refs"].append(tbl_id)
+            slide = _ensure_current_slide()
+            slide["evidence_refs"].append(tbl_id)
 
         table_lines = []
         table_caption = None
@@ -328,7 +343,7 @@ def parse_markdown_or_text_outline(raw_text: str) -> Dict[str, Any]:
                 continue
 
             # Bullet / claim / metric parsing
-            clean_item = stripped.lstrip("-*•0123456789.、) ").strip()
+            clean_item = re.sub(r"^\s*(?:[-*•]\s+|\d+[.)、]\s*)", "", stripped).strip()
             if clean_item:
                 # Check for explicit metric (e.g. Accuracy: 89.5% or F1 = 0.884 or 准确率达到 89.5%)
                 metric_match = re.search(r"([\w\u4e00-\u9fa5\s]+)\s*(?:[:：=]|达到|约为|为)\s*([+-]?\d+(?:\.\d+)?%?(?:[a-zA-Z]+)?)", clean_item)

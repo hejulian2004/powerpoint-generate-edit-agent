@@ -29,6 +29,7 @@ from .errors import (
 from .schema import (
     CanonicalPPTSpec,
     ClaimEvidence,
+    EquationEvidence,
     FigureReferenceEvidence,
     MetricEvidence,
     MetricGroupEvidence,
@@ -276,15 +277,27 @@ class FactualTextField:
     context: str
 
 
+def extract_non_numeric_semantic_text(text: str) -> str:
+    """Extract non-numeric semantic remainder from a text string after removing structured numeric tokens.
+
+    Invariant:
+    - Strips structured numeric spans (using _STRUCTURED_NUMERIC_RE)
+    - Strips outer punctuation, brackets, quotes, and whitespace
+    - Returns exact remaining semantic text for factual textual grounding check (no stemming, no synonyms)
+    """
+    if not text or not str(text).strip():
+        return ""
+    # Strip all structured numeric expressions
+    remainder = _STRUCTURED_NUMERIC_RE.sub(" ", str(text))
+    # Strip common outer punctuation, brackets, quotes, and normalize whitespace
+    remainder = re.sub(r"\s+", " ", remainder).strip()
+    remainder = remainder.strip("\"'`.,;:!?()[]{}~#")
+    return remainder
+
+
 def _is_purely_numeric(text: str) -> bool:
     """Check if a string represents purely numeric/symbol data handled by NumericToken."""
-    cleaned = text.strip()
-    if not cleaned:
-        return True
-    # Strip common numeric decorations
-    stripped = re.sub(r"[+-]?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?", "", cleaned)
-    stripped = re.sub(r"[\s%±<>=≤≥.,:;()\[\]/-]", "", stripped)
-    return len(stripped) == 0
+    return extract_non_numeric_semantic_text(text) == ""
 
 
 def collect_factual_text_fields(spec: CanonicalPPTSpec) -> List[FactualTextField]:
@@ -308,12 +321,20 @@ def collect_factual_text_fields(spec: CanonicalPPTSpec) -> List[FactualTextField
                 fields.append(FactualTextField(fact_type="metric_name", content=ev.name, context=f"Metric name ({ev.id})"))
             if ev.method:
                 fields.append(FactualTextField(fact_type="metric_method", content=ev.method, context=f"Metric method ({ev.id})"))
+            if ev.value:
+                sem_val = extract_non_numeric_semantic_text(ev.value)
+                if sem_val:
+                    fields.append(FactualTextField(fact_type="metric_value_text", content=sem_val, context=f"Metric value '{ev.name}' ({ev.id})"))
         elif isinstance(ev, MetricGroupEvidence):
             if ev.group_name:
                 fields.append(FactualTextField(fact_type="metric_group_name", content=ev.group_name, context=f"MetricGroup '{ev.group_name}' ({ev.id})"))
             for m in ev.metrics:
                 if m.name:
                     fields.append(FactualTextField(fact_type="metric_entry_name", content=m.name, context=f"MetricGroup entry '{m.name}' ({ev.id})"))
+                if m.value:
+                    sem_val = extract_non_numeric_semantic_text(m.value)
+                    if sem_val:
+                        fields.append(FactualTextField(fact_type="metric_value_text", content=sem_val, context=f"MetricGroup '{ev.group_name}' -> '{m.name}' value ({ev.id})"))
         elif isinstance(ev, TableEvidence):
             if ev.caption:
                 fields.append(FactualTextField(fact_type="table_caption", content=ev.caption, context=f"Table caption ({ev.id})"))
@@ -412,19 +433,6 @@ def validate_source_locator(
             return True
     else:
         return has_page_in_text(raw_input, page)
-
-
-def is_text_grounded(target: str, raw_text: str) -> bool:
-    """Determine whether target text is grounded in raw_text via strict literal normalization."""
-    if not target or not target.strip():
-        return True
-    if not raw_text or not raw_text.strip():
-        return False
-    target_norm = normalize_for_textual_match(target)
-    if not target_norm:
-        return True
-    raw_norm = normalize_for_textual_match(raw_text)
-    return target_norm in raw_norm
 
 
 @dataclass
