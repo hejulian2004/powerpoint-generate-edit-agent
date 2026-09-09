@@ -108,6 +108,31 @@ def test_create_slide_undo_redo():
     assert pres.active_slide_id == sid
 
 
+def test_create_slide_out_of_range_position_undo_redo():
+    """Out-of-range position appends at end; undo/redo must round-trip identically."""
+    pres = PresentationIR(title="Test Deck")
+    history = HistoryManager()
+
+    for i in range(3):
+        tools.execute("create_slide", {"title": f"S{i}"}, pres, history)
+
+    res = tools.execute("create_slide", {"title": "OUT", "position": 10}, pres, history)
+    assert res["success"]
+    assert [s.slide_num for s in pres.slides] == [1, 2, 3, 4]
+    assert [s.title for s in pres.slides] == ["S0", "S1", "S2", "OUT"]
+    sid = res["slide_id"]
+
+    cmd = history.undo(pres)
+    assert cmd is not None
+    assert [s.title for s in pres.slides] == ["S0", "S1", "S2"]
+
+    cmd = history.redo(pres)
+    assert cmd is not None
+    assert [s.title for s in pres.slides] == ["S0", "S1", "S2", "OUT"]
+    assert [s.slide_num for s in pres.slides] == [1, 2, 3, 4]
+    assert pres.get_slide(sid) is not None
+
+
 def test_delete_slide_undo_redo():
     pres = PresentationIR(title="Test Deck")
     history = HistoryManager()

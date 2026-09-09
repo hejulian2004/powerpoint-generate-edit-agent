@@ -89,12 +89,15 @@ def create_slide(
     )
 
     if position is not None and 1 <= position <= len(pres.slides):
-        pres.slides.insert(position - 1, new_slide)
+        insert_idx = position - 1
+        pres.slides.insert(insert_idx, new_slide)
         # renumber
         for idx, s in enumerate(pres.slides):
             s.slide_num = idx + 1
     else:
+        insert_idx = len(pres.slides)
         pres.slides.append(new_slide)
+        new_slide.slide_num = insert_idx + 1
 
     pres.active_slide_id = new_slide.id
     pres.version += 1
@@ -105,7 +108,7 @@ def create_slide(
         slide_id=new_slide.id,
         before={"active_slide_id": prev_active_slide_id},
         after=new_slide.model_dump(),
-        position=slide_num - 1,
+        position=insert_idx,
         prev_active_slide_id=prev_active_slide_id
     )
 
