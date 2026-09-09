@@ -11,7 +11,7 @@ export const CanvasToolbar: React.FC = () => {
     addShapeQuick,
     addTextQuick,
     addConnectorQuick,
-    sendChatMessage,
+    optimizeLayoutDirect,
     showGrid,
     setShowGrid
   } = usePPTStore()
@@ -32,7 +32,7 @@ export const CanvasToolbar: React.FC = () => {
       <button
         draggable
         onDragStart={(e) => handleDragStart(e, 'text')}
-        onClick={addTextQuick}
+        onClick={() => addTextQuick()}
         title="拖拽至画布或点击添加文本"
         className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg hover:bg-[#1C1E2A] text-[#C2C6D6] hover:text-white text-xs font-medium transition-all cursor-grab active:cursor-grabbing"
       >
@@ -109,7 +109,7 @@ export const CanvasToolbar: React.FC = () => {
 
       {/* 8. Smart Alignment */}
       <button
-        onClick={() => sendChatMessage('帮我自动规整当前页所有卡片的对齐与水平等距排版')}
+        onClick={optimizeLayoutDirect}
         title="智能规整当前页元素排版与对齐"
         className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg hover:bg-[#1C1E2A] text-[#C2C6D6] hover:text-white text-xs font-medium transition-all"
       >

@@ -208,6 +208,73 @@ async def websocket_endpoint(websocket: WebSocket):
                     if new_preview:
                         await store.broadcast(new_preview, session_id=session.session_id)
 
+            # Direct GUI manipulation (create slide, delete slide, add shape/text, delete element, etc.)
+            # Decoupled from agent dialogue - does not append to chat messages
+            elif msg_type == "direct_action":
+                action = data.get("action", "")
+                args = data.get("payload", {})
+                if "slide_id" not in args and session.active_slide_id:
+                    args["slide_id"] = session.active_slide_id
+
+                async with session.mutation_lock:
+                    if action == "create_slide":
+                        bg = args.get("background_color", "#FFFFFF")
+                        res = tools.execute("create_slide", {
+                            "title": args.get("title", "新建幻灯片"),
+                            "background_color": bg
+                        }, session.pres, session.history)
+                        if res.get("success"):
+                            new_sid = res.get("slide_id") or (session.pres.slides[-1].id if session.pres.slides else None)
+                            if new_sid:
+                                session.set_active_slide(new_sid)
+                    elif action == "delete_slide":
+                        res = tools.execute("delete_slide", {
+                            "slide_id_or_num": args.get("slide_id_or_num", args.get("slide_id", ""))
+                        }, session.pres, session.history)
+                        if res.get("success"):
+                            if not session.get_active_slide() and session.pres.slides:
+                                session.set_active_slide(session.pres.slides[0].id)
+                    elif action == "duplicate_slide":
+                        res = tools.execute("duplicate_slide", {
+                            "slide_id": args.get("slide_id")
+                        }, session.pres, session.history)
+                    elif action == "delete_element":
+                        elem_id = args.get("element_id")
+                        if elem_id:
+                            tools.execute("delete_element", {
+                                "element_id": elem_id,
+                                "slide_id": args.get("slide_id")
+                            }, session.pres, session.history)
+                            session.last_target_id = None
+                    elif action == "duplicate_element":
+                        elem_id = args.get("element_id")
+                        if elem_id:
+                            tools.execute("duplicate_element", {
+                                "element_id": elem_id,
+                                "slide_id": args.get("slide_id")
+                            }, session.pres, session.history)
+                    elif action == "set_slide_background":
+                        color = args.get("color", "#FFFFFF")
+                        tools.execute("set_slide_background", {
+                            "color": color,
+                            "slide_id": args.get("slide_id")
+                        }, session.pres, session.history)
+                    elif action in ("add_shape", "add_text", "add_connector", "optimize_layout", "apply_theme"):
+                        tools.execute(action, args, session.pres, session.history)
+
+                    await store.broadcast({
+                        "type": "presentation_updated",
+                        "session_id": session.session_id,
+                        "presentation": session.pres.model_dump(),
+                        "can_undo": session.history.can_undo(),
+                        "can_redo": session.history.can_redo(),
+                        "active_slide_id": session.active_slide_id,
+                        "last_target_id": session.last_target_id
+                    }, session_id=session.session_id)
+                    new_preview = build_preview_update(session)
+                    if new_preview:
+                        await store.broadcast(new_preview, session_id=session.session_id)
+
             # Client requested immediate preview
             elif msg_type == "preview_request":
                 target_slide_id = data.get("slide_id")

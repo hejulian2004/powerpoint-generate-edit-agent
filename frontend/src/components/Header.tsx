@@ -14,9 +14,9 @@ export const Header: React.FC = () => {
     sessionId,
     triggerUndo,
     triggerRedo,
+    addNewSlide,
     setSettingsOpen,
-    setPptspecModalOpen,
-    sendChatMessage
+    setPptspecModalOpen
   } = usePPTStore()
 
   const fileInputRef = useRef<HTMLInputElement>(null)
@@ -49,7 +49,7 @@ export const Header: React.FC = () => {
   }
 
   const handleNewSlide = () => {
-    sendChatMessage('帮我新增一页幻灯片，采用黑白灰极简背景。')
+    addNewSlide()
   }
 
   return (

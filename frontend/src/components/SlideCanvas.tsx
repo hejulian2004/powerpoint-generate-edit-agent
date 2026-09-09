@@ -27,7 +27,9 @@ export const SlideCanvas: React.FC = () => {
     setZoom,
     selectedElementId,
     setSelectedElementId,
-    sendChatMessage,
+    deleteSelectedElement,
+    addShapeQuick,
+    addTextQuick,
     showGrid,
     updateElementDirect
   } = usePPTStore()
@@ -40,9 +42,7 @@ export const SlideCanvas: React.FC = () => {
   const selectedElement = slide?.elements.find((e) => e.id === selectedElementId) || null
 
   const handleDeleteSelected = () => {
-    if (!selectedElement) return
-    sendChatMessage(`请帮我删除选中的图元 (ID: ${selectedElement.id})`)
-    setSelectedElementId(null)
+    deleteSelectedElement()
   }
 
   // 1. Mouse down on any element -> Select & Start Dragging Move
@@ -183,15 +183,15 @@ export const SlideCanvas: React.FC = () => {
     const dropY = Math.round(Math.max(40, Math.min(600, (e.clientY - rect.top) / scale)))
 
     if (shapeType === 'text') {
-      sendChatMessage(`在当前页坐标 x=${dropX}, y=${dropY} 添加一个文本标题`)
+      addTextQuick(dropX, dropY)
     } else {
-      sendChatMessage(`在当前页坐标 x=${dropX}, y=${dropY} 添加一个 ${shapeType} 卡片`)
+      addShapeQuick(shapeType, dropX, dropY)
     }
   }
 
   if (!slide) {
     return (
-      <div className="flex-1 bg-[#08090B] flex items-center justify-center text-[#55586A] text-sm font-tabular">
+      <div className="flex-1 bg-[#14151C] flex items-center justify-center text-[#55586A] text-sm font-tabular">
         暂无选中的幻灯片
       </div>
     )
@@ -199,7 +199,7 @@ export const SlideCanvas: React.FC = () => {
 
   return (
     <main
-      className="flex-1 bg-[#08090B] relative flex flex-col items-center justify-center p-8 overflow-hidden select-none"
+      className="flex-1 bg-[#14151C] relative flex flex-col items-center justify-center p-8 overflow-hidden select-none"
       onClick={() => setSelectedElementId(null)}
     >
       {/* Floating Canvas Top Toolbar (Supports Drag to Canvas) */}
@@ -211,7 +211,7 @@ export const SlideCanvas: React.FC = () => {
           className="absolute inset-0 pointer-events-none opacity-40"
           style={{
             backgroundImage:
-              'linear-gradient(to right, #1B1D27 1px, transparent 1px), linear-gradient(to bottom, #1B1D27 1px, transparent 1px)',
+              'linear-gradient(to right, #242735 1px, transparent 1px), linear-gradient(to bottom, #242735 1px, transparent 1px)',
             backgroundSize: '32px 32px'
           }}
         />
@@ -219,7 +219,7 @@ export const SlideCanvas: React.FC = () => {
 
       {/* Subtle Studio Backdrop Dot Pattern */}
       <div
-        className="absolute inset-0 opacity-[0.04] pointer-events-none"
+        className="absolute inset-0 opacity-[0.06] pointer-events-none"
         style={{
           backgroundImage: 'radial-gradient(#F1F2F6 1px, transparent 1px)',
           backgroundSize: '28px 28px'
@@ -231,7 +231,7 @@ export const SlideCanvas: React.FC = () => {
         ref={canvasRef}
         onDragOver={handleDragOver}
         onDrop={handleDrop}
-        className="relative w-full max-w-[1120px] aspect-video rounded-xl shadow-[0_24px_54px_-12px_rgba(0,0,0,0.85)] border border-[#222533] overflow-hidden bg-[#0D0E13] transition-transform duration-150"
+        className="relative w-full max-w-[1120px] aspect-video rounded-xl shadow-[0_24px_54px_-12px_rgba(0,0,0,0.5)] border border-[#2B2E3C] overflow-hidden bg-white transition-transform duration-150"
         style={{
           transform: `scale(${zoom})`,
           cursor: dragState ? (dragState.mode === 'resize' ? 'crosshair' : 'grabbing') : 'default'

@@ -4,7 +4,7 @@ import { usePPTStore } from '../store/usePPTStore'
 import { SVGRendererComponent } from './SVGRendererComponent'
 
 export const Sidebar: React.FC = () => {
-  const { presentation, activeSlideId, setActiveSlideId, sendChatMessage } = usePPTStore()
+  const { presentation, activeSlideId, setActiveSlideId, addNewSlide, deleteSlide } = usePPTStore()
 
   if (!presentation) {
     return (
@@ -14,19 +14,19 @@ export const Sidebar: React.FC = () => {
     )
   }
 
-  const handleDeleteSlide = (e: React.MouseEvent, _slideId: string, slideNum: number) => {
+  const handleDeleteSlide = (e: React.MouseEvent, slideId: string, slideNum: number) => {
     e.stopPropagation()
     if (presentation.slides.length <= 1) {
       alert('演示文稿至少需保留一页幻灯片')
       return
     }
     if (confirm(`确定删除第 ${slideNum} 页幻灯片吗？`)) {
-      sendChatMessage(`请帮我删除第 ${slideNum} 页幻灯片`)
+      deleteSlide(slideId)
     }
   }
 
   const handleAddSlide = () => {
-    sendChatMessage('帮我新增一页黑白灰极简幻灯片')
+    addNewSlide()
   }
 
   return (
