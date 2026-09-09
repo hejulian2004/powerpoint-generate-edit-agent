@@ -227,8 +227,7 @@ class PresentationStore:
     def __init__(self):
         self.session_manager: SessionManager = session_manager
         self.active_session_id: str = SessionManager.DEFAULT_SESSION_ID
-        default_pres = create_default_demo_presentation()
-        self.session_manager.get_or_create(self.active_session_id, pres_factory=lambda: default_pres)
+        self.session_manager.get_or_create(self.active_session_id)
         self.agent_runtime = AgentRuntime()
         self.active_websockets: List[WebSocket] = []
         self.session_websockets: Dict[str, List[WebSocket]] = {}
@@ -236,10 +235,7 @@ class PresentationStore:
 
     @property
     def active_session(self) -> PPTSession:
-        return self.session_manager.get_or_create(
-            self.active_session_id,
-            pres_factory=create_default_demo_presentation
-        )
+        return self.session_manager.get_or_create(self.active_session_id)
 
     @property
     def presentation(self) -> PresentationIR:

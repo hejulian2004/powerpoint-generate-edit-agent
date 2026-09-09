@@ -37,6 +37,32 @@ def _deserialize_element(data: Dict[str, Any]) -> ElementIR:
     return cls.model_validate(data)
 
 
+def _renumber_slides(pres: PresentationIR) -> None:
+    """Renumbers every slide in order to keep slide_num consistent after insertion/removal."""
+    for idx, s in enumerate(pres.slides):
+        s.slide_num = idx + 1
+
+
+def _insert_slide(pres: PresentationIR, slide_data: Dict[str, Any], position: int) -> SlideIR:
+    """Inserts a slide (deserialized from slide_data) at the given 0-based position."""
+    slide = SlideIR.model_validate(slide_data)
+    if not any(s.id == slide.id for s in pres.slides):
+        idx = max(0, min(position, len(pres.slides)))
+        pres.slides.insert(idx, slide)
+        _renumber_slides(pres)
+    return slide
+
+
+def _remove_slide(pres: PresentationIR, slide_id: str) -> bool:
+    """Removes the slide with the given id and renumbers the remaining slides."""
+    idx = next((i for i, s in enumerate(pres.slides) if s.id == slide_id), None)
+    if idx is None:
+        return False
+    pres.slides.pop(idx)
+    _renumber_slides(pres)
+    return True
+
+
 class MutationCommand(ABC):
     """Abstract Base Class for all reversible PPT-IR mutation commands."""
 
@@ -289,6 +315,128 @@ class DeleteElementCommand(MutationCommand):
     def to_dict(self) -> Dict[str, Any]:
         d = super().to_dict()
         d["before"] = self.before_data
+        return d
+
+
+class AddSlideCommand(MutationCommand):
+    """Command that adds a new slide to a presentation (create_slide / duplicate_slide)."""
+
+    def __init__(
+        self,
+        slide_id: str,
+        slide_data: Dict[str, Any],
+        position: int = 0,
+        prev_active_slide_id: Optional[str] = None,
+        action: str = "create_slide",
+        description: str = "",
+        source: str = "agent_tool",
+        command_id: Optional[str] = None,
+        timestamp: Optional[float] = None
+    ):
+        super().__init__(
+            command_id=command_id,
+            action=action,
+            description=description,
+            timestamp=timestamp,
+            source=source,
+            slide_id=slide_id
+        )
+        self.slide_data = copy.deepcopy(slide_data)
+        self.position = position
+        self.prev_active_slide_id = prev_active_slide_id
+        self.before = {"active_slide_id": prev_active_slide_id}
+        self.after = self.slide_data
+
+    def execute(self, pres: PresentationIR) -> bool:
+        _insert_slide(pres, self.slide_data, self.position)
+        pres.active_slide_id = self.slide_id
+        return True
+
+    def undo(self, pres: PresentationIR) -> bool:
+        ok = _remove_slide(pres, self.slide_id)
+        if ok:
+            pres.active_slide_id = self.prev_active_slide_id
+        return ok
+
+    def redo(self, pres: PresentationIR) -> bool:
+        return self.execute(pres)
+
+    def to_event(self) -> MutationEvent:
+        return MutationEvent(
+            action=self.action,
+            element_id=self.slide_id or "",
+            before=self.before,
+            after=self.after,
+            timestamp=str(self.timestamp),
+            source=self.source
+        )
+
+    def to_dict(self) -> Dict[str, Any]:
+        d = super().to_dict()
+        d["before"] = self.before
+        d["after"] = self.after
+        d["position"] = self.position
+        return d
+
+
+class DeleteSlideCommand(MutationCommand):
+    """Command that deletes a slide, preserving its snapshot for undo/redo."""
+
+    def __init__(
+        self,
+        slide_id: str,
+        slide_data: Dict[str, Any],
+        position: int = 0,
+        active_after_delete: Optional[str] = None,
+        action: str = "delete_slide",
+        description: str = "",
+        source: str = "agent_tool",
+        command_id: Optional[str] = None,
+        timestamp: Optional[float] = None
+    ):
+        super().__init__(
+            command_id=command_id,
+            action=action,
+            description=description,
+            timestamp=timestamp,
+            source=source,
+            slide_id=slide_id
+        )
+        self.slide_data = copy.deepcopy(slide_data)
+        self.position = position
+        self.active_after_delete = active_after_delete
+        self.before = {"slide": self.slide_data, "active_slide_id": active_after_delete}
+        self.after = {}
+
+    def execute(self, pres: PresentationIR) -> bool:
+        ok = _remove_slide(pres, self.slide_id)
+        if ok:
+            pres.active_slide_id = self.active_after_delete
+        return ok
+
+    def undo(self, pres: PresentationIR) -> bool:
+        _insert_slide(pres, self.slide_data, self.position)
+        pres.active_slide_id = self.slide_id
+        return True
+
+    def redo(self, pres: PresentationIR) -> bool:
+        return self.execute(pres)
+
+    def to_event(self) -> MutationEvent:
+        return MutationEvent(
+            action=self.action,
+            element_id=self.slide_id or "",
+            before=self.before,
+            after=self.after,
+            timestamp=str(self.timestamp),
+            source=self.source
+        )
+
+    def to_dict(self) -> Dict[str, Any]:
+        d = super().to_dict()
+        d["before"] = self.before
+        d["after"] = self.after
+        d["position"] = self.position
         return d
 
 

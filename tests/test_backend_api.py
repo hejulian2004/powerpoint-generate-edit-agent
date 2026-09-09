@@ -5,7 +5,8 @@ from pathlib import Path
 from fastapi.testclient import TestClient
 import pytest
 from backend.main import app
-from backend.state.store import store
+from backend.state.store import store, create_default_demo_presentation
+from backend.session.manager import session_manager
 from pptx_agent_converter.extractor.pptx_parser import PPTXParser
 import tempfile
 import os
@@ -15,7 +16,16 @@ client = TestClient(app)
 _FRONTEND_DIST_INDEX = Path(__file__).resolve().parents[1] / "frontend" / "dist" / "index.html"
 
 
+def _seed_default_demo():
+    """Seeds a fresh demo presentation into the default session for deterministic API tests."""
+    session = session_manager.get_or_create("default")
+    session.pres = create_default_demo_presentation()
+    session.history.clear()
+    return session
+
+
 def test_api_get_presentation():
+    _seed_default_demo()
     resp = client.get("/api/presentation")
     assert resp.status_code == 200
     data = resp.json()
@@ -24,6 +34,7 @@ def test_api_get_presentation():
 
 
 def test_api_slide_svg():
+    _seed_default_demo()
     pres = store.get_presentation()
     first_slide_id = pres.slides[0].id
     resp = client.get(f"/api/slide/{first_slide_id}/svg")
