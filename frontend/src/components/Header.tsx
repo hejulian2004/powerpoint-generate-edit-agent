@@ -1,7 +1,7 @@
 import React, { useRef } from 'react'
 import {
   Undo2, Redo2, Plus, Upload, Download, Settings,
-  Layers
+  Layers, Sparkles
 } from 'lucide-react'
 import { usePPTStore } from '../store/usePPTStore'
 
@@ -14,6 +14,7 @@ export const Header: React.FC = () => {
     triggerUndo,
     triggerRedo,
     setSettingsOpen,
+    setPptspecModalOpen,
     sendChatMessage
   } = usePPTStore()
 
@@ -101,6 +102,15 @@ export const Header: React.FC = () => {
 
       {/* Right Action Tools: Import, Export, Settings, Status */}
       <div className="flex items-center gap-2">
+        <button
+          onClick={() => setPptspecModalOpen(true)}
+          title="使用外部 AI 分析结果生成 PPT (CanonicalPPTSpec)"
+          className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg bg-blue-600/20 hover:bg-blue-600/30 text-blue-300 hover:text-white border border-blue-500/30 transition-all shadow-sm"
+        >
+          <Sparkles className="w-3.5 h-3.5 text-blue-400" />
+          <span>AI 论文导入生成</span>
+        </button>
+
         <input
           ref={fileInputRef}
           type="file"

@@ -121,6 +121,8 @@ class PipelineArchitectureTemplate(BaseLayoutTemplate):
                             "source_figure_id": fig.source_figure_id,
                             "caption": fig.caption,
                             "xref_label": fig.xref_label,
+                            "placeholder": getattr(fig, "placeholder", True),
+                            "source_page": getattr(fig, "source_page", None),
                         },
                         z_index=1,
                     )
@@ -175,6 +177,10 @@ class PipelineArchitectureTemplate(BaseLayoutTemplate):
                             "caption": tbl.caption,
                             "xref_label": tbl.xref_label,
                             "highlight_cells": tbl.highlight_cells,
+                            "columns": getattr(tbl, "columns", []),
+                            "rows": getattr(tbl, "rows", []),
+                            "placeholder": getattr(tbl, "placeholder", False),
+                            "source_page": getattr(tbl, "source_page", None),
                         },
                         z_index=1,
                     )

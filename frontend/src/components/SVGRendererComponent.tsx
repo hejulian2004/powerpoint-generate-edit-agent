@@ -342,6 +342,28 @@ export const SVGRendererComponent: React.FC<Props> = ({
           </>
         )}
 
+        {elem.type === 'table' && (
+          <g id={`table-${elem.id}`} className="table-container">
+            {((elem as any).cells || []).flatMap((row: any[], rIdx: number) => {
+              const cW = elem.width / Math.max((elem as any).cols || 1, 1)
+              const cH = elem.height / Math.max((elem as any).rows || 1, 1)
+              return row.map((cell: any, cIdx: number) => {
+                const cx = elem.x + cIdx * cW
+                const cy = elem.y + rIdx * cH
+                const fill = cell.style?.fill?.color || '#FFFFFF'
+                const stroke = cell.style?.border?.color || '#CBD5E1'
+                const strokeW = cell.style?.border?.width || 1
+                return (
+                  <g key={`cell-${rIdx}-${cIdx}`}>
+                    <rect x={cx} y={cy} width={cW} height={cH} fill={fill} stroke={stroke} strokeWidth={strokeW} />
+                    {cell.text_content && renderTextContent(cell.text_content, cx, cy, cW, cH, 6)}
+                  </g>
+                )
+              })
+            })}
+          </g>
+        )}
+
         {elem.type === 'group' && (
           <g id={`group-content-${elem.id}`} className="group-container">
             {(elem as GroupElementIR).children?.map((child) => renderElementNode(child))}

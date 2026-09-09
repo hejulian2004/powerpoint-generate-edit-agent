@@ -25,6 +25,7 @@ interface PPTState {
   canUndo: boolean
   canRedo: boolean
   settingsOpen: boolean
+  pptspecModalOpen: boolean
   zoom: number
   showGrid: boolean
   previewSvg: string | null
@@ -40,6 +41,7 @@ interface PPTState {
   setSelectedElementId: (id: string | null) => void
   setActiveRightTab: (tab: 'copilot' | 'inspector') => void
   setSettingsOpen: (open: boolean) => void
+  setPptspecModalOpen: (open: boolean) => void
   setZoom: (zoom: number) => void
   setShowGrid: (show: boolean) => void
   setMutationStatus: (status: MutationStatus) => void
@@ -85,6 +87,7 @@ export const usePPTStore = create<PPTState>((set, get) => ({
   canUndo: false,
   canRedo: false,
   settingsOpen: false,
+  pptspecModalOpen: false,
   zoom: 1.0,
   showGrid: false,
   previewSvg: null,
@@ -119,6 +122,7 @@ export const usePPTStore = create<PPTState>((set, get) => ({
 
   setActiveRightTab: (tab) => set({ activeRightTab: tab }),
   setSettingsOpen: (open) => set({ settingsOpen: open }),
+  setPptspecModalOpen: (open) => set({ pptspecModalOpen: open }),
   setZoom: (zoom) => set({ zoom }),
   setShowGrid: (show) => set({ showGrid: show }),
 

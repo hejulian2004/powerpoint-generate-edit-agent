@@ -76,6 +76,10 @@ class BenchmarkComparisonTemplate(BaseLayoutTemplate):
                             "caption": tbl.caption,
                             "xref_label": tbl.xref_label,
                             "highlight_cells": tbl.highlight_cells,
+                            "columns": getattr(tbl, "columns", []),
+                            "rows": getattr(tbl, "rows", []),
+                            "placeholder": getattr(tbl, "placeholder", False),
+                            "source_page": getattr(tbl, "source_page", None),
                         },
                         z_index=1,
                     )
@@ -121,15 +125,17 @@ class BenchmarkComparisonTemplate(BaseLayoutTemplate):
                         role=BlockRole.CALLOUT,
                         geometry=Rect(x=zones.body_x, y=zones.body_y, width=left_w, height=fig_h),
                         style=ElementStyle(
-                            background_color="#F8FAFC",
+                            background_color="#F1F5F9",
                             border_color="#CBD5E1",
                             border_width=1.0,
-                            corner_radius=6.0,
+                            corner_radius=8.0,
                         ),
                         content={
                             "source_figure_id": fig.source_figure_id,
                             "caption": fig.caption,
                             "xref_label": fig.xref_label,
+                            "placeholder": getattr(fig, "placeholder", True),
+                            "source_page": getattr(fig, "source_page", None),
                         },
                         z_index=1,
                     )

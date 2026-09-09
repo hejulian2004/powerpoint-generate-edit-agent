@@ -45,6 +45,7 @@ class TextBlock(BaseModel):
     """Textual semantic unit."""
 
     kind: Literal["text"] = "text"
+    block_id: Optional[str] = Field(default=None, description="Deterministic block identifier")
     role: BlockRole = BlockRole.BULLET_ITEM
     content: str = Field(..., description="Text content")
     emphasis: bool = Field(default=False, description="Whether this block should be visually emphasized")
@@ -55,28 +56,37 @@ class TextBlock(BaseModel):
 
 
 class FigureBlock(BaseModel):
-    """Visual asset block referencing an extracted figure from PaperIR."""
+    """Visual asset block referencing an extracted figure or figure placeholder."""
 
     kind: Literal["figure"] = "figure"
-    source_figure_id: str = Field(..., description="Figure identifier from PaperIR (e.g. 'figure1')")
+    block_id: Optional[str] = Field(default=None, description="Deterministic block identifier")
+    source_figure_id: str = Field(..., description="Figure identifier from PaperIR or PPTSpec (e.g. 'figure1')")
     caption: str = Field(default="", description="Figure caption")
     xref_label: str = Field(default="", description="Printed reference label (e.g. 'Fig. 1')")
+    placeholder: bool = Field(default=True, description="Whether this figure is an explicit placeholder")
+    source_page: Optional[int] = Field(default=None, description="Source paper page number")
 
 
 class TableBlock(BaseModel):
-    """Structured table block referencing an extracted table from PaperIR."""
+    """Structured table block referencing an extracted table or table placeholder."""
 
     kind: Literal["table"] = "table"
-    source_table_id: str = Field(..., description="Table identifier from PaperIR (e.g. 'table1')")
+    block_id: Optional[str] = Field(default=None, description="Deterministic block identifier")
+    source_table_id: str = Field(..., description="Table identifier from PaperIR or PPTSpec (e.g. 'table1')")
     caption: str = Field(default="", description="Table caption")
     xref_label: str = Field(default="", description="Printed reference label (e.g. 'Table 1')")
     highlight_cells: List[str] = Field(default_factory=list, description="Cell references to highlight")
+    columns: List[str] = Field(default_factory=list, description="Table column names if structured")
+    rows: List[List[str]] = Field(default_factory=list, description="Table rows if structured")
+    placeholder: bool = Field(default=False, description="Whether this table is an explicit placeholder")
+    source_page: Optional[int] = Field(default=None, description="Source paper page number")
 
 
 class BadgeBlock(BaseModel):
     """Small categorical badge or key benchmark metric callout."""
 
     kind: Literal["badge"] = "badge"
+    block_id: Optional[str] = Field(default=None, description="Deterministic block identifier")
     text: str = Field(..., description="Badge label text")
     variant: Literal["primary", "success", "accent", "neutral"] = Field(
         default="primary", description="Visual styling variant"

@@ -175,3 +175,137 @@ async def chat_interaction(payload: Dict[str, Any] = Body(...)):
     })
 
     return result
+
+
+# =====================================================================
+# PPTSpec & LangGraph Generation API Endpoints (PR13)
+# =====================================================================
+
+from ..pptspec.prompt_template import get_general_prompt, get_strict_prompt
+from ..pptspec.schema import CanonicalPPTSpec
+from ..pptspec.normalizer import normalize_presentation_input
+from ..pptspec.validator import validate_truthfulness
+from ..pptspec.artifact import artifact_store
+from ..agent.graphs.generation import generation_graph
+
+
+@router.get("/pptspec/prompts/general")
+async def api_get_general_prompt():
+    """Return recommended general external-AI analysis prompt."""
+    return {"prompt": get_general_prompt()}
+
+
+@router.get("/pptspec/prompts/strict")
+async def api_get_strict_prompt():
+    """Return strict JSON prompt with dynamic CanonicalPPTSpec JSON schema attached."""
+    return {"prompt": get_strict_prompt()}
+
+
+@router.get("/pptspec/schema")
+async def api_get_pptspec_schema():
+    """Return internal CanonicalPPTSpec JSON Schema."""
+    return CanonicalPPTSpec.model_json_schema()
+
+
+@router.post("/pptspec/normalize")
+async def api_normalize_pptspec(payload: Dict[str, Any] = Body(...)):
+    """Flexible ingestion and normalization of external AI output.
+
+    Caches valid artifacts server-side and returns a normalization_id to prevent
+    client-side specification tampering.
+    """
+    raw_content = payload.get("content", "").strip()
+    if not raw_content:
+        raise HTTPException(status_code=400, detail="Input content cannot be empty")
+
+    norm_res = normalize_presentation_input(raw_content, strict_truthfulness=False)
+
+    norm_id = None
+    if norm_res.valid and norm_res.spec is not None:
+        artifact = artifact_store.save(
+            raw_input=raw_content,
+            spec=norm_res.spec,
+            summary=norm_res.summary,
+            asset_requirements=norm_res.asset_requirements,
+            warnings=norm_res.warnings,
+        )
+        norm_id = artifact.id
+
+    return {
+        "valid": norm_res.valid,
+        "normalization_id": norm_id,
+        "spec": norm_res.spec.model_dump() if norm_res.spec else None,
+        "warnings": norm_res.warnings,
+        "errors": norm_res.errors,
+        "summary": norm_res.summary,
+        "asset_requirements": [r.model_dump() for r in norm_res.asset_requirements],
+    }
+
+
+@router.post("/pptspec/generate")
+async def api_generate_from_pptspec(payload: Dict[str, Any] = Body(...)):
+    """Orchestrates LangGraph PPT generation from a verified NormalizationArtifact."""
+    norm_id = payload.get("normalization_id")
+    if not norm_id:
+        raise HTTPException(status_code=400, detail="normalization_id is required")
+
+    artifact = artifact_store.get(norm_id)
+    if not artifact:
+        raise HTTPException(status_code=404, detail="Normalization artifact not found or expired. Please parse again.")
+
+    # Re-enforce Truthfulness Guard on server side before generation
+    val_res = validate_truthfulness(artifact.raw_input, artifact.canonical_spec, strict=False)
+    if not val_res.valid:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Truthfulness validation failed: {'; '.join(val_res.errors)}"
+        )
+
+    # Session binding
+    session_id = payload.get("session_id") or store.active_session_id
+    session = store.session_manager.get_or_create(session_id)
+
+    async def on_event(event: Dict[str, Any]):
+        event["session_id"] = session_id
+        await store.broadcast(event, session_id=session_id)
+
+    initial_state = {
+        "session_id": session_id,
+        "raw_input": artifact.raw_input,
+        "canonical_spec": artifact.canonical_spec,
+        "mode": "generate",
+        "max_repair_iterations": 3,
+    }
+
+    try:
+        gen_result = await generation_graph.ainvoke(
+            initial_state,
+            config={"configurable": {"on_event": on_event, "pres": session.pres}},
+        )
+    except Exception as e:
+        logger.exception("LangGraph generation execution error")
+        raise HTTPException(status_code=500, detail=f"Generation pipeline error: {e}")
+
+    if gen_result.get("error") or not gen_result.get("presentation_ir"):
+        raise HTTPException(
+            status_code=500,
+            detail=f"Generation failed: {gen_result.get('error') or 'Unknown generation error'}"
+        )
+
+    # Broadcast presentation state to all connected session clients
+    await store.broadcast({
+        "type": "presentation_loaded",
+        "session_id": session_id,
+        "presentation": session.pres.model_dump(),
+        "active_slide_id": session.active_slide_id,
+        "can_undo": session.history.can_undo(),
+        "can_redo": session.history.can_redo(),
+    }, session_id=session_id)
+
+    return {
+        "success": True,
+        "session_id": session_id,
+        "presentation": session.pres.model_dump(),
+        "summary": artifact.summary,
+        "asset_requirements": [r.model_dump() for r in artifact.asset_requirements],
+    }
