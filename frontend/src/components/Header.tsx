@@ -11,6 +11,7 @@ export const Header: React.FC = () => {
     canUndo,
     canRedo,
     wsConnected,
+    sessionId,
     triggerUndo,
     triggerRedo,
     setSettingsOpen,
@@ -28,12 +29,12 @@ export const Header: React.FC = () => {
     formData.append('file', file)
 
     try {
-      const res = await fetch('/api/upload', {
+      const res = await fetch(`/api/upload?session_id=${encodeURIComponent(sessionId)}`, {
         method: 'POST',
         body: formData
       })
       if (!res.ok) throw new Error('Upload failed')
-      const presRes = await fetch('/api/presentation')
+      const presRes = await fetch(`/api/presentation?session_id=${encodeURIComponent(sessionId)}`)
       const presData = await presRes.json()
       usePPTStore.getState().setPresentation(presData)
     } catch (err) {
@@ -44,7 +45,7 @@ export const Header: React.FC = () => {
   }
 
   const handleExport = () => {
-    window.location.href = '/api/export'
+    window.location.href = `/api/export?session_id=${encodeURIComponent(sessionId)}`
   }
 
   const handleNewSlide = () => {

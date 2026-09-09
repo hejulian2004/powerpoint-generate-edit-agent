@@ -276,7 +276,7 @@ export const usePPTStore = create<PPTState>((set, get) => ({
       fetch('/api/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ message: text })
+        body: JSON.stringify({ message: text, session_id: sessionId })
       })
         .then((res) => res.json())
         .then((data) => {
@@ -289,7 +289,7 @@ export const usePPTStore = create<PPTState>((set, get) => ({
             toolCalls: data.tools_executed,
             visionCritique: data.vision_critique
           })
-          fetch('/api/presentation')
+          fetch(`/api/presentation?session_id=${encodeURIComponent(sessionId)}`)
             .then((r) => r.json())
             .then((p) => set({ presentation: p }))
         })
@@ -310,11 +310,15 @@ export const usePPTStore = create<PPTState>((set, get) => ({
     if (ws && ws.readyState === WebSocket.OPEN) {
       ws.send(JSON.stringify({ type: 'undo', session_id: sessionId }))
     } else {
-      fetch('/api/action/undo', { method: 'POST' })
+      fetch(`/api/action/undo?session_id=${encodeURIComponent(sessionId)}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ session_id: sessionId })
+      })
         .then((r) => r.json())
         .then((data) => {
           if (data.success) {
-            fetch('/api/presentation')
+            fetch(`/api/presentation?session_id=${encodeURIComponent(sessionId)}`)
               .then((r) => r.json())
               .then((p) => set({ presentation: p }))
           }
@@ -327,11 +331,15 @@ export const usePPTStore = create<PPTState>((set, get) => ({
     if (ws && ws.readyState === WebSocket.OPEN) {
       ws.send(JSON.stringify({ type: 'redo', session_id: sessionId }))
     } else {
-      fetch('/api/action/redo', { method: 'POST' })
+      fetch(`/api/action/redo?session_id=${encodeURIComponent(sessionId)}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ session_id: sessionId })
+      })
         .then((r) => r.json())
         .then((data) => {
           if (data.success) {
-            fetch('/api/presentation')
+            fetch(`/api/presentation?session_id=${encodeURIComponent(sessionId)}`)
               .then((r) => r.json())
               .then((p) => set({ presentation: p }))
           }

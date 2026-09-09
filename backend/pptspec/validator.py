@@ -14,6 +14,7 @@ Guarantees factual provenance:
 
 from __future__ import annotations
 
+import json
 import re
 import unicodedata
 from dataclasses import dataclass, field
@@ -368,37 +369,115 @@ def collect_factual_text_fields(spec: CanonicalPPTSpec) -> List[FactualTextField
     return fields
 
 
+def find_closest_locator_for_caption(
+    raw_input: str,
+    caption: str,
+    max_dist: int = 200,
+) -> List[Tuple[str, str]]:
+    """Finds (locator_type, number) for all occurrences of caption in raw_input."""
+    results: List[Tuple[str, str]] = []
+    cap_clean = caption.strip()
+    if not cap_clean:
+        return results
+
+    cap_re = re.compile(re.escape(cap_clean), re.IGNORECASE)
+    matches = list(cap_re.finditer(raw_input))
+    if not matches:
+        words = [w for w in cap_clean.split() if len(w) > 2]
+        if words:
+            word_pattern = r"\b" + r"\b.*?\b".join(re.escape(w) for w in words[:3]) + r"\b"
+            matches = list(re.finditer(word_pattern, raw_input, re.IGNORECASE))
+
+    locator_pattern = re.compile(r"((?:Figure|Fig\.?|Table|图|表)\s*(\d+)(?!\d))", re.IGNORECASE)
+
+    for m in matches:
+        cap_start = m.start()
+        cap_end = m.end()
+
+        before_start = max(0, cap_start - max_dist)
+        before_text = raw_input[before_start:cap_start]
+        locs_before = list(locator_pattern.finditer(before_text))
+
+        after_end = min(len(raw_input), cap_end + max_dist)
+        after_text = raw_input[cap_end:after_end]
+        locs_after = list(locator_pattern.finditer(after_text))
+
+        best_loc: Optional[Tuple[str, str]] = None
+
+        if locs_before:
+            last_before = locs_before[-1]
+            intervening = before_text[last_before.end():]
+            if "\n\n" not in intervening:
+                prefix = last_before.group(1).split()[0]
+                num = last_before.group(2)
+                best_loc = (prefix, num)
+
+        if not best_loc and locs_after:
+            first_after = locs_after[0]
+            intervening = after_text[:first_after.start()]
+            if "\n\n" not in intervening:
+                prefix = first_after.group(1).split()[0]
+                num = first_after.group(2)
+                best_loc = (prefix, num)
+
+        if best_loc:
+            results.append(best_loc)
+
+    return results
+
+
 def validate_source_locator(
     raw_input: str,
     label: Optional[str] = None,
     page: Optional[int] = None,
+    caption: Optional[str] = None,
     window_chars: int = 200,
 ) -> bool:
     """Validate that a Figure/Table label and/or source_page exist in raw_input.
 
-    If both label and page are provided, enforces that page must appear within a contextual
-    window (+/- window_chars) of the label in the raw input.
+    If label and page/caption are provided, enforces that page/caption must appear within a contextual
+    window (+/- window_chars) of the label in the raw input, and no conflicting locator intervenes.
+    Supports Chinese compact locators (e.g. '图7展示' -> Figure 7, without matching '图70').
     """
-    if not label and page is None:
+    if not label and page is None and not caption:
         return True
 
     def has_page_in_text(text: str, p: int) -> bool:
-        p_pattern = rf"(?i)(?:page|p\.|第)\s*{p}(?:\s*页|\b)"
+        p_pattern = rf"(?i)(?:page|p\.|第)\s*{p}(?:\s*页|(?!\d))"
         return bool(re.search(p_pattern, text))
+
+    intervening_locator_re = re.compile(r"(?i)(?:Figure|Fig\.?|Table|图|表)\s*\d+(?!\d)")
 
     if label:
         num_match = re.search(r"((?:Figure|Fig\.?|Table|图|表)\s*(\d+))", label, re.IGNORECASE)
         if num_match:
             label_prefix = num_match.group(1).split()[0]
             n_val = num_match.group(2)
-            if re.match(r"(?i)fig|figure|图", label_prefix):
-                label_re = re.compile(rf"(?:Figure|Fig\.?|图)\s*{n_val}\b", re.IGNORECASE)
+            is_fig = bool(re.match(r"(?i)fig|figure|图", label_prefix))
+            if is_fig:
+                label_re = re.compile(rf"(?:Figure|Fig\.?|图)\s*{n_val}(?!\d)", re.IGNORECASE)
             else:
-                label_re = re.compile(rf"(?:Table|表)\s*{n_val}\b", re.IGNORECASE)
+                label_re = re.compile(rf"(?:Table|表)\s*{n_val}(?!\d)", re.IGNORECASE)
 
             matches = list(label_re.finditer(raw_input))
             if not matches:
                 return False
+
+            # Caption binding check: ensure caption is contextually bound to this exact locator
+            if caption and caption.strip():
+                bound_locators = find_closest_locator_for_caption(raw_input, caption)
+                if bound_locators:
+                    matched_caption = False
+                    for b_prefix, b_num in bound_locators:
+                        b_is_fig = bool(re.match(r"(?i)fig|figure|图", b_prefix))
+                        if b_num == n_val and b_is_fig == is_fig:
+                            matched_caption = True
+                            break
+                    if not matched_caption:
+                        return False
+                else:
+                    if not is_text_grounded(caption, raw_input):
+                        return False
 
             if page is not None:
                 bound = False
@@ -406,34 +485,202 @@ def validate_source_locator(
                     start = max(0, m.start() - window_chars)
                     end = min(len(raw_input), m.end() + window_chars)
                     window_text = raw_input[start:end]
-                    if has_page_in_text(window_text, page):
-                        # Ensure no other figure/table label appears between m and the page citation in window
-                        before_m = raw_input[start:m.start()]
-                        after_m = raw_input[m.end():end]
-                        # If page is after m, check if another locator intervenes
-                        p_match = re.search(rf"(?i)(?:page|p\.|第)\s*{page}(?:\s*页|\b)", after_m)
-                        if p_match:
-                            intervening = after_m[:p_match.start()]
-                            if re.search(r"(?i)(?:Figure|Fig\.?|Table|图|表)\s*\d+\b", intervening):
-                                continue
-                        # If page is before m, check if another locator intervenes
-                        p_match_before = re.search(rf"(?i)(?:page|p\.|第)\s*{page}(?:\s*页|\b)", before_m)
-                        if p_match_before:
-                            intervening = before_m[p_match_before.end():]
-                            if re.search(r"(?i)(?:Figure|Fig\.?|Table|图|表)\s*\d+\b", intervening):
-                                continue
-                        bound = True
-                        break
+
+                    before_m = raw_input[start:m.start()]
+                    after_m = raw_input[m.end():end]
+
+                    if not has_page_in_text(window_text, page):
+                        continue
+                    p_match = re.search(rf"(?i)(?:page|p\.|第)\s*{page}(?:\s*页|(?!\d))", after_m)
+                    if p_match:
+                        intervening = after_m[:p_match.start()]
+                        if intervening_locator_re.search(intervening):
+                            continue
+                    p_match_before = re.search(rf"(?i)(?:page|p\.|第)\s*{page}(?:\s*页|(?!\d))", before_m)
+                    if p_match_before:
+                        intervening = before_m[p_match_before.end():]
+                        if intervening_locator_re.search(intervening):
+                            continue
+
+                    bound = True
+                    break
                 return bound
             return True
         else:
             if not is_text_grounded(label, raw_input):
                 return False
-            if page is not None:
-                return has_page_in_text(raw_input, page)
+            if page is not None and not has_page_in_text(raw_input, page):
+                return False
+            if caption and not is_text_grounded(caption, raw_input):
+                return False
             return True
     else:
-        return has_page_in_text(raw_input, page)
+        if page is not None and not has_page_in_text(raw_input, page):
+            return False
+        if caption and not is_text_grounded(caption, raw_input):
+            return False
+        return True
+
+
+def _clean_table_cell(cell: Any) -> str:
+    s = str(cell).strip()
+    s = re.sub(r"[*_`~]", "", s).strip()
+    return s
+
+
+def _cells_match(c1: Any, c2: Any) -> bool:
+    s1 = _clean_table_cell(c1)
+    s2 = _clean_table_cell(c2)
+    if s1.lower() == s2.lower():
+        return True
+    norm1 = normalize_for_textual_match(s1)
+    norm2 = normalize_for_textual_match(s2)
+    if norm1 and norm2 and norm1 == norm2:
+        return True
+    toks1 = parse_numeric_tokens(s1)
+    toks2 = parse_numeric_tokens(s2)
+    if toks1 and toks2 and len(toks1) == len(toks2):
+        if all(t1.is_equivalent(t2) for t1, t2 in zip(toks1, toks2)):
+            return True
+    return False
+
+
+def extract_candidate_tables(raw_input: str) -> List[Tuple[List[str], List[List[str]]]]:
+    """Extracts candidate structured tables (columns, rows) from Markdown and JSON in raw_input."""
+    candidates: List[Tuple[List[str], List[List[str]]]] = []
+
+    # 1. Parse Markdown tables
+    lines = raw_input.splitlines()
+    i = 0
+    while i < len(lines):
+        line = lines[i].strip()
+        if "|" in line:
+            table_lines = [line]
+            j = i + 1
+            while j < len(lines) and "|" in lines[j]:
+                table_lines.append(lines[j].strip())
+                j += 1
+
+            if len(table_lines) >= 2:
+                cols: List[str] = []
+                rows: List[List[str]] = []
+                divider_found = False
+
+                for t_line in table_lines:
+                    cells = [c.strip() for c in t_line.strip("|").split("|")]
+                    if not cells or all(c == "" for c in cells):
+                        continue
+                    if all(re.match(r"^:?-+:?$", c) for c in cells):
+                        divider_found = True
+                        continue
+                    if not cols:
+                        cols = cells
+                    else:
+                        rows.append(cells)
+
+                if divider_found and cols and rows:
+                    candidates.append((cols, rows))
+                elif not divider_found and len(table_lines) >= 2:
+                    header = [c.strip() for c in table_lines[0].strip("|").split("|") if c.strip()]
+                    body_rows = [
+                        [c.strip() for c in l.strip("|").split("|") if c.strip()]
+                        for l in table_lines[1:]
+                    ]
+                    if header and body_rows:
+                        candidates.append((header, body_rows))
+
+            i = j
+        else:
+            i += 1
+
+    # 2. Parse JSON / fenced code block JSON tables
+    json_candidates: List[Any] = []
+    for match in re.finditer(r"```(?:json)?\s*([\s\S]*?)\s*```", raw_input, re.IGNORECASE):
+        try:
+            json_candidates.append(json.loads(match.group(1)))
+        except Exception:
+            pass
+    raw_stripped = raw_input.strip()
+    if raw_stripped.startswith(("{", "[")):
+        try:
+            json_candidates.append(json.loads(raw_stripped))
+        except Exception:
+            pass
+
+    for obj in json_candidates:
+        if isinstance(obj, dict):
+            if "columns" in obj and "rows" in obj and isinstance(obj["columns"], list) and isinstance(obj["rows"], list):
+                candidates.append((obj["columns"], obj["rows"]))
+            if "evidence" in obj and isinstance(obj["evidence"], list):
+                for ev in obj["evidence"]:
+                    if isinstance(ev, dict) and ev.get("kind") == "table":
+                        cols = ev.get("columns", [])
+                        rows = ev.get("rows", [])
+                        if cols and rows:
+                            candidates.append((cols, rows))
+        elif isinstance(obj, list) and obj:
+            if all(isinstance(item, dict) for item in obj):
+                cols = list(obj[0].keys())
+                rows = [[str(item.get(c, "")) for c in cols] for item in obj]
+                candidates.append((cols, rows))
+
+    return candidates
+
+
+def validate_complete_table_binding(
+    raw_input: str,
+    table: TableEvidence,
+) -> bool:
+    """Validate that table structure (columns and rows) provenance can be proven from raw_input.
+
+    Prevents cross-row, cross-column, or numeric recombination hallucinations by proving
+    that the exact relation of headers and ordered cell contents exists as a coherent table
+    in raw_input.
+    """
+    if not table.columns or not table.rows:
+        return False
+
+    candidates = extract_candidate_tables(raw_input)
+    if not candidates:
+        return False
+
+    tbl_cols = table.columns
+    tbl_rows = table.rows
+
+    for cand_cols, cand_rows in candidates:
+        if len(cand_cols) != len(tbl_cols):
+            continue
+        if not all(_cells_match(tc, cc) for tc, cc in zip(tbl_cols, cand_cols)):
+            continue
+
+        if len(cand_rows) < len(tbl_rows):
+            continue
+
+        matched = False
+        if len(cand_rows) == len(tbl_rows):
+            all_rows_match = True
+            for tr, cr in zip(tbl_rows, cand_rows):
+                if len(tr) != len(cr) or not all(_cells_match(tc, cc) for tc, cc in zip(tr, cr)):
+                    all_rows_match = False
+                    break
+            if all_rows_match:
+                matched = True
+        else:
+            for start_idx in range(len(cand_rows) - len(tbl_rows) + 1):
+                sub_cr = cand_rows[start_idx : start_idx + len(tbl_rows)]
+                all_rows_match = True
+                for tr, cr in zip(tbl_rows, sub_cr):
+                    if len(tr) != len(cr) or not all(_cells_match(tc, cc) for tc, cc in zip(tr, cr)):
+                        all_rows_match = False
+                        break
+                if all_rows_match:
+                    matched = True
+                    break
+
+        if matched:
+            return True
+
+    return False
 
 
 def validate_metric_binding(
@@ -755,14 +1002,14 @@ class TruthfulnessValidator:
         # and that label + page citations are contextually bound.
         for ev in spec.evidence:
             if isinstance(ev, FigureReferenceEvidence):
-                if not validate_source_locator(raw_input, label=ev.label, page=ev.source_page):
+                if not validate_source_locator(raw_input, label=ev.label, page=ev.source_page, caption=ev.caption):
                     err = f"UNSUPPORTED_SOURCE_LOCATOR: Figure locator '{ev.label}' (page: {ev.source_page}) is not grounded in raw input."
                     errors.append(err)
                     if self.strict:
                         raise UnsupportedTextualFactError(fact_type="figure_locator", content=ev.label, context=f"Figure {ev.id}")
             elif isinstance(ev, TableEvidence):
                 if ev.source_reference or ev.source_page is not None:
-                    if not validate_source_locator(raw_input, label=ev.source_reference, page=ev.source_page):
+                    if not validate_source_locator(raw_input, label=ev.source_reference, page=ev.source_page, caption=ev.caption):
                         err = f"UNSUPPORTED_SOURCE_LOCATOR: Table locator '{ev.source_reference}' (page: {ev.source_page}) is not grounded in raw input."
                         errors.append(err)
                         if self.strict:
@@ -825,6 +1072,19 @@ class TruthfulnessValidator:
                                     target=m.value,
                                     context=f"MetricGroup '{ev.group_name}' -> '{m.name}' ({ev.id})",
                                 )
+
+        # 7. Complete Table Structure Relation Guard
+        # Only after individual numeric and textual tokens pass (steps 3 & 4),
+        # verify that the overall table structure (ordered columns and rows) is proven
+        # from raw_input. If structure cannot be provenance-bound, demote complete_table to False,
+        # ensuring it renders as a ShapeElementIR placeholder rather than an editable TableElementIR,
+        # without fatal-rejecting legitimately grounded tokens.
+        for ev in spec.evidence:
+            if isinstance(ev, TableEvidence) and ev.complete_table:
+                if not validate_complete_table_binding(raw_input, ev):
+                    ev.complete_table = False
+                    msg = f"Table '{ev.id}' structure could not be provenance-bound; demoted to placeholder."
+                    warnings.append(msg)
 
         valid = len(errors) == 0
         return TruthfulnessValidationResult(

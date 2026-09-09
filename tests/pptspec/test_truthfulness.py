@@ -634,3 +634,228 @@ def test_metric_method_binding_rejects_cross_method_value():
     assert res.valid is True
 
 
+def test_table_binding_valid_markdown_table():
+    """A fully verified Markdown table preserves complete_table=True and compiles into TableElementIR."""
+    from backend.pptspec.compiler import compile_pptspec_to_deckspec
+    from backend.compiler.presentation_ir import compile_layout_to_presentation_ir
+    from backend.layout.engine import generate_deck_layout
+    from backend.ir.models import TableElementIR
+
+    raw_input = """
+    | Method | Accuracy | F1 |
+    | --- | --- | --- |
+    | Model A | 80% | 0.70 |
+    | Model B | 92% | 0.88 |
+    """
+    spec = CanonicalPPTSpec(
+        presentation=PresentationConfig(title="Table Test"),
+        evidence=[
+            TableEvidence(
+                id="t1",
+                columns=["Method", "Accuracy", "F1"],
+                rows=[["Model A", "80%", "0.70"], ["Model B", "92%", "0.88"]],
+                complete_table=True,
+            )
+        ],
+        slides=[SlideRequest(id="s1", type=SlideType.RESULT, title="Results", evidence_refs=["t1"])],
+    )
+    res = validate_truthfulness(raw_input, spec, strict=True)
+    assert res.valid is True
+    assert spec.evidence[0].complete_table is True
+
+    deck_spec = compile_pptspec_to_deckspec(spec)
+    deck_layout = generate_deck_layout(deck_spec)
+    pres_ir = compile_layout_to_presentation_ir(deck_layout)
+
+    table_elements = [el for s in pres_ir.slides for el in s.elements if isinstance(el, TableElementIR)]
+    assert len(table_elements) == 1
+    assert len(table_elements[0].cells) == 3  # 1 header + 2 data rows
+
+
+def test_table_binding_rejects_cross_row_recombination():
+    """Recombined rows with swapped factual tokens are demoted to complete_table=False, rendering as placeholders."""
+    from backend.pptspec.compiler import compile_pptspec_to_deckspec
+    from backend.compiler.presentation_ir import compile_layout_to_presentation_ir
+    from backend.layout.engine import generate_deck_layout
+    from backend.ir.models import TableElementIR, ShapeElementIR
+
+    raw_input = """
+    | Method | Accuracy | F1 |
+    | --- | --- | --- |
+    | Model A | 80% | 0.70 |
+    | Model B | 92% | 0.88 |
+    """
+    # Cross-row recombination: Model A gets 92% and 0.88, Model B gets 80% and 0.70
+    spec = CanonicalPPTSpec(
+        presentation=PresentationConfig(title="Table Test"),
+        evidence=[
+            TableEvidence(
+                id="t1",
+                columns=["Method", "Accuracy", "F1"],
+                rows=[["Model A", "92%", "0.88"], ["Model B", "80%", "0.70"]],
+                complete_table=True,
+            )
+        ],
+        slides=[SlideRequest(id="s1", type=SlideType.RESULT, title="Results", evidence_refs=["t1"])],
+    )
+    res = validate_truthfulness(raw_input, spec, strict=False)
+    assert res.valid is True
+    assert spec.evidence[0].complete_table is False
+    assert any("structure could not be provenance-bound" in w for w in res.warnings)
+
+    deck_spec = compile_pptspec_to_deckspec(spec)
+    deck_layout = generate_deck_layout(deck_spec)
+    pres_ir = compile_layout_to_presentation_ir(deck_layout)
+
+    table_elements = [el for s in pres_ir.slides for el in s.elements if isinstance(el, TableElementIR)]
+    assert len(table_elements) == 0
+
+    placeholders = [
+        el for s in pres_ir.slides for el in s.elements
+        if isinstance(el, ShapeElementIR) and el.metadata.get("is_table_placeholder")
+    ]
+    assert len(placeholders) == 1
+
+
+def test_table_binding_rejects_column_value_recombination():
+    """Recombined columns (values swapped between columns) are safely demoted to placeholders."""
+    raw_input = """
+    | Method | Accuracy | F1 |
+    | --- | --- | --- |
+    | Model A | 80% | 0.70 |
+    | Model B | 92% | 0.88 |
+    """
+    spec = CanonicalPPTSpec(
+        presentation=PresentationConfig(title="Table Test"),
+        evidence=[
+            TableEvidence(
+                id="t1",
+                columns=["Method", "Accuracy", "F1"],
+                rows=[["Model A", "0.70", "80%"], ["Model B", "0.88", "92%"]],
+                complete_table=True,
+            )
+        ],
+        slides=[SlideRequest(id="s1", type=SlideType.RESULT, title="Results", evidence_refs=["t1"])],
+    )
+    res = validate_truthfulness(raw_input, spec, strict=False)
+    assert spec.evidence[0].complete_table is False
+    assert any("structure could not be provenance-bound" in w for w in res.warnings)
+
+
+def test_table_fabricated_numeric_is_fatal_not_downgraded():
+    """Fabricated numeric values in a table cell trigger fatal UNSUPPORTED_NUMERIC_VALUE, not demotion."""
+    raw_input = """
+    | Method | Accuracy | F1 |
+    | --- | --- | --- |
+    | Model A | 80% | 0.70 |
+    | Model B | 92% | 0.88 |
+    """
+    # 99.9% is completely invented
+    spec = CanonicalPPTSpec(
+        presentation=PresentationConfig(title="Table Test"),
+        evidence=[
+            TableEvidence(
+                id="t1",
+                columns=["Method", "Accuracy", "F1"],
+                rows=[["Model A", "99.9%", "0.70"], ["Model B", "92%", "0.88"]],
+                complete_table=True,
+            )
+        ],
+        slides=[SlideRequest(id="s1", type=SlideType.RESULT, title="Results", evidence_refs=["t1"])],
+    )
+    with pytest.raises(UnsupportedNumericError):
+        validate_truthfulness(raw_input, spec, strict=True)
+
+    res = validate_truthfulness(raw_input, spec, strict=False)
+    assert res.valid is False
+    assert any("UNSUPPORTED_NUMERIC_VALUE" in e for e in res.errors)
+
+
+def test_figure_caption_locator_binding():
+    """Figure caption must bind to the local window of the correct Figure locator."""
+    raw_input = """
+    Figure 3: System Architecture of the proposed framework.
+    Figure 7: Ablation studies on various hyper-parameters.
+    """
+    # Valid binding
+    spec_ok = CanonicalPPTSpec(
+        presentation=PresentationConfig(title="Test"),
+        evidence=[FigureReferenceEvidence(id="f1", label="Figure 3", caption="System Architecture")],
+        slides=[SlideRequest(id="s1", type=SlideType.RESULT, title="Arch", evidence_refs=["f1"])],
+    )
+    assert validate_truthfulness(raw_input, spec_ok, strict=True).valid is True
+
+    # Cross-caption hallucination: Figure 7 claiming System Architecture
+    spec_cross = CanonicalPPTSpec(
+        presentation=PresentationConfig(title="Test"),
+        evidence=[FigureReferenceEvidence(id="f1", label="Figure 7", caption="System Architecture")],
+        slides=[SlideRequest(id="s1", type=SlideType.RESULT, title="Arch", evidence_refs=["f1"])],
+    )
+    with pytest.raises(UnsupportedTextualFactError):
+        validate_truthfulness(raw_input, spec_cross, strict=True)
+
+
+def test_table_caption_locator_binding():
+    """Table caption must bind to the local window of the correct Table locator."""
+    raw_input = """
+    Table 1: Main benchmark performance comparison.
+    Table 2: Ablation analysis of components.
+    """
+    # Valid binding
+    spec_ok = CanonicalPPTSpec(
+        presentation=PresentationConfig(title="Test"),
+        evidence=[TableEvidence(id="t1", source_reference="Table 1", caption="Main benchmark", columns=[], rows=[], complete_table=False)],
+        slides=[SlideRequest(id="s1", type=SlideType.RESULT, title="Table", evidence_refs=["t1"])],
+    )
+    assert validate_truthfulness(raw_input, spec_ok, strict=True).valid is True
+
+    # Cross-caption hallucination: Table 2 claiming Main benchmark
+    spec_cross = CanonicalPPTSpec(
+        presentation=PresentationConfig(title="Test"),
+        evidence=[TableEvidence(id="t1", source_reference="Table 2", caption="Main benchmark", columns=[], rows=[], complete_table=False)],
+        slides=[SlideRequest(id="s1", type=SlideType.RESULT, title="Table", evidence_refs=["t1"])],
+    )
+    with pytest.raises(UnsupportedTextualFactError):
+        validate_truthfulness(raw_input, spec_cross, strict=True)
+
+
+def test_chinese_compact_figure_locator():
+    """Compact Chinese Figure locator (图7) matches Figure 7 without regex word-boundary failure, but rejects Figure 70."""
+    raw_input = "如论文图7展示了整体模型的特征抽取架构。"
+
+    spec_fig7 = CanonicalPPTSpec(
+        presentation=PresentationConfig(title="Test"),
+        evidence=[FigureReferenceEvidence(id="f1", label="Figure 7")],
+        slides=[SlideRequest(id="s1", type=SlideType.RESULT, title="Fig", evidence_refs=["f1"])],
+    )
+    assert validate_truthfulness(raw_input, spec_fig7, strict=True).valid is True
+
+    spec_fig70 = CanonicalPPTSpec(
+        presentation=PresentationConfig(title="Test"),
+        evidence=[FigureReferenceEvidence(id="f1", label="Figure 70")],
+        slides=[SlideRequest(id="s1", type=SlideType.RESULT, title="Fig", evidence_refs=["f1"])],
+    )
+    with pytest.raises(UnsupportedTextualFactError):
+        validate_truthfulness(raw_input, spec_fig70, strict=True)
+
+
+def test_chinese_compact_table_locator():
+    """Compact Chinese Table locator (表2) matches Table 2 without regex word-boundary failure, but rejects Table 20."""
+    raw_input = "见表2给出的不同模型消融实验数据。"
+
+    spec_tbl2 = CanonicalPPTSpec(
+        presentation=PresentationConfig(title="Test"),
+        evidence=[TableEvidence(id="t1", source_reference="Table 2", columns=[], rows=[], complete_table=False)],
+        slides=[SlideRequest(id="s1", type=SlideType.RESULT, title="Tbl", evidence_refs=["t1"])],
+    )
+    assert validate_truthfulness(raw_input, spec_tbl2, strict=True).valid is True
+
+    spec_tbl20 = CanonicalPPTSpec(
+        presentation=PresentationConfig(title="Test"),
+        evidence=[TableEvidence(id="t1", source_reference="Table 20", columns=[], rows=[], complete_table=False)],
+        slides=[SlideRequest(id="s1", type=SlideType.RESULT, title="Tbl", evidence_refs=["t1"])],
+    )
+    with pytest.raises(UnsupportedTextualFactError):
+        validate_truthfulness(raw_input, spec_tbl20, strict=True)
+
+
