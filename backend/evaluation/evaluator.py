@@ -376,19 +376,22 @@ class OpenAICompatibleVisionEvaluator(VisualEvaluator):
         if not choices:
             raise VisualEvaluationError("VLM response contained empty choices")
 
-        content = choices[0].get("message", {}).get("content", "")
-        # Clean possible markdown fence
-        content = content.strip()
-        if content.startswith("```json"):
-            content = content[7:]
-        if content.startswith("```"):
-            content = content[3:]
-        if content.endswith("```"):
-            content = content[:-3]
-        content = content.strip()
+        content = choices[0].get("message", {}).get("content", "").strip()
+        import re
+
+        # Robustly extract JSON from potential markdown fences or surrounding narrative
+        json_fence_match = re.search(r"```(?:json)?\s*([\s\S]*?)\s*```", content)
+        if json_fence_match:
+            candidate_json = json_fence_match.group(1).strip()
+        else:
+            json_obj_match = re.search(r"(\{[\s\S]*\}|\[[\s\S]*\])", content)
+            if json_obj_match:
+                candidate_json = json_obj_match.group(1).strip()
+            else:
+                candidate_json = content
 
         try:
-            parsed = json.loads(content)
+            parsed = json.loads(candidate_json)
         except Exception as exc:
             raise VisualEvaluationError(f"VLM response is not valid JSON: {exc}. Content: {content[:100]}") from exc
 

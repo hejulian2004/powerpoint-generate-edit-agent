@@ -324,4 +324,40 @@ def test_vlm_evaluator_raises_on_error_or_malformed_json() -> None:
         evaluator3.evaluate(None, slide)
 
 
+def test_vlm_evaluator_handles_conversational_framing_and_markdown_fence() -> None:
+    """Verify VLM parser extracts valid issues even if LLM surrounds markdown block with conversational text."""
+    conversational_content = """Certainly! Here is my analysis of the slide:
+```json
+{
+  "issues": [
+    {
+      "slide": "s1",
+      "issue": "OVERFLOW",
+      "severity": "ERROR",
+      "element": "el_card",
+      "description": "Card exceeds slide right margin"
+    }
+  ]
+}
+```
+I hope this feedback helps you refine the presentation!"""
+
+    def conversational_client(payload):
+        return {"choices": [{"message": {"content": conversational_content}}]}
+
+    evaluator = OpenAICompatibleVisionEvaluator(api_key="sk-test", client_fn=conversational_client)
+    slide = LayoutSpec(
+        slide_id="s1",
+        slide_index=1,
+        visual_intent=VisualIntent.TITLE_HERO,
+        canvas=Canvas(width=1280, height=720),
+        elements=[],
+    )
+    issues = evaluator.evaluate(None, slide)
+    assert len(issues) == 1
+    assert issues[0].issue_type == IssueType.OVERFLOW
+    assert issues[0].element_id == "el_card"
+
+
+
 

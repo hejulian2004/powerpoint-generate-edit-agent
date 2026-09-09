@@ -265,4 +265,37 @@ def test_patch_transaction_commits_valid_patch(base_slide: LayoutSpec) -> None:
     assert result_spec.get_element("txt_title").style.text.font_size == 26.0
 
 
+def test_patch_transaction_allows_partial_fix_without_false_rollback() -> None:
+    """Verify that moving an already-overflowing element closer to boundaries is committed and not falsely rejected."""
+    from backend.evaluation.patch import apply_patch_transaction
+
+    overflowing_slide = LayoutSpec(
+        slide_id="slide_overflow",
+        slide_index=1,
+        visual_intent=VisualIntent.TITLE_HERO,
+        canvas=Canvas(width=1280, height=720),
+        elements=[
+            LayoutElement(
+                element_id="el_out",
+                element_type=ElementType.TEXT,
+                geometry=Rect(x=1200.0, y=100.0, width=200.0, height=50.0),  # extends to 1400 (> 1280)
+                content="Far overflow",
+            )
+        ],
+    )
+
+    # Partial fix: move left by 50px (now extends to 1350, still > 1280, but does not introduce new violations)
+    partial_patch = LayoutPatch(
+        slide_id="slide_overflow",
+        target_element="el_out",
+        operation=PatchOperation.MOVE,
+        parameters={"dx": -50.0},
+    )
+
+    result_spec, patch_res = apply_patch_transaction(overflowing_slide, partial_patch)
+    assert patch_res.success is True
+    assert result_spec.get_element("el_out").geometry.x == 1150.0
+
+
+
 

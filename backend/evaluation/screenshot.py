@@ -88,7 +88,7 @@ $ppt = $null
 $pres = $null
 try {{
     $ppt = New-Object -ComObject PowerPoint.Application
-    $pres = $ppt.Presentations.Open('{safe_in_path}', [Microsoft.Office.Core.MsoTriState]::msoTrue, [Microsoft.Office.Core.MsoTriState]::msoFalse, [Microsoft.Office.Core.MsoTriState]::msoFalse)
+    $pres = $ppt.Presentations.Open('{safe_in_path}', -1, 0, 0)
     for ($i = 1; $i -le $pres.Slides.Count; $i++) {{
         $slidePath = Join-Path '{safe_out_dir}' ("$i.png")
         $pres.Slides.Item($i).Export($slidePath, "PNG", {width_px}, {height_px})
@@ -144,7 +144,10 @@ class LibreOfficeBackend(ScreenshotBackend):
         self.soffice_cmd = shutil.which("soffice") or shutil.which("libreoffice")
 
     def is_available(self) -> bool:
-        return self.soffice_cmd is not None
+        if self.soffice_cmd is None:
+            return False
+        import importlib.util
+        return importlib.util.find_spec("pypdfium2") is not None
 
     def render(
         self,

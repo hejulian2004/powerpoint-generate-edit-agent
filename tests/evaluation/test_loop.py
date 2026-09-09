@@ -380,9 +380,10 @@ def test_overlap_shift_left_and_top_margins_clamped() -> None:
     patches = generate_patches_for_issues([issue], slide)
     assert len(patches) == 1
     # Desired shift would be -(60 + 8) = -68, which from x=10 would be x=-58
-    # Clamped to margin - x = 20 - 10 = +10, so x + dx >= 20.0
+    # Clamped to canvas left bound so 10.0 + dx >= 0.0 and dx <= 0.0 (never invert into right_el)
     dx = patches[0].parameters["dx"]
-    assert 10.0 + dx >= 20.0
+    assert 10.0 + dx >= 0.0
+    assert dx <= 0.0
 
 
 def test_resize_height_clamp_at_bottom_margin() -> None:
@@ -738,6 +739,163 @@ def test_repair_final_output_is_best_deck_when_last_iteration_worsens(tmp_path: 
     final_render_x = recorded_renders[-1]
     assert final_render_x == 1200.0
     assert res.stop_reason == "worsened"
+
+
+def test_max_iterations_one_preserves_accepted_patches(tmp_path: Path) -> None:
+    """Reviewer High Bug 1: Running with max_iterations=1 must preserve accepted patches, not discard them."""
+    deck = DeckLayoutSpec(
+        title="Single Iteration Deck",
+        canvas=Canvas(width=1280, height=720),
+        slides=[
+            LayoutSpec(
+                slide_id="s1",
+                slide_index=1,
+                visual_intent=VisualIntent.TITLE_HERO,
+                elements=[
+                    LayoutElement(
+                        element_id="title",
+                        element_type=ElementType.TEXT,
+                        geometry=Rect(x=80.0, y=50.0, width=900.0, height=70.0),
+                        content="Title",
+                    ),
+                    LayoutElement(
+                        element_id="overflowing_card",
+                        element_type=ElementType.TEXT,
+                        geometry=Rect(x=1200.0, y=200.0, width=160.0, height=120.0),  # extends to 1360 (> 1280)
+                        content="Overflowing card",
+                    ),
+                ],
+            )
+        ],
+    )
+
+    out_pptx = tmp_path / "max_iter_one.pptx"
+    renderer = ScreenshotRenderer(backend=FallbackScreenshotBackend())
+
+    res = evaluate_and_repair(
+        deck_layout=deck,
+        output_pptx_path=out_pptx,
+        screenshot_renderer=renderer,
+        max_iterations=1,
+    )
+
+    # Must be converged or have fixed the overflow in the final output
+    assert res.iterations_run == 1
+    assert res.converged is True
+    assert len(res.history[0].patches_applied) == 1
+    # Check that final issues do NOT contain overflow
+    overflow_issues = [iss for iss in res.final_issues if iss.issue_type == IssueType.OVERFLOW]
+    assert len(overflow_issues) == 0
+
+
+def test_final_evaluation_crash_marks_failed(tmp_path: Path) -> None:
+    """Reviewer High Bug 2: Unhandled exception in final post-loop evaluation marks evaluation_failed=True, converged=False."""
+    from backend.evaluation.evaluator import VisualEvaluator
+    from backend.evaluation.schema import VisualEvaluationError
+
+    class CrashOnFinalEvaluator(VisualEvaluator):
+        def __init__(self):
+            self.eval_count = 0
+
+        def evaluate(self, slide_image, layout_spec):
+            self.eval_count += 1
+            if self.eval_count == 1:
+                return [
+                    VisualIssue(
+                        slide=layout_spec.slide_id,
+                        issue=IssueType.OVERFLOW,
+                        severity=IssueSeverity.ERROR,
+                        element="el_overflow",
+                        description="Error to trigger patch",
+                    )
+                ]
+            else:
+                # Crash during post-loop evaluation
+                raise VisualEvaluationError("VLM connection dropped during final verification")
+
+    deck = DeckLayoutSpec(
+        title="Final Crash Deck",
+        canvas=Canvas(width=1280, height=720),
+        slides=[
+            LayoutSpec(
+                slide_id="s1",
+                slide_index=1,
+                visual_intent=VisualIntent.TITLE_HERO,
+                elements=[
+                    LayoutElement(
+                        element_id="el_overflow",
+                        element_type=ElementType.TEXT,
+                        geometry=Rect(x=1200.0, y=100.0, width=200.0, height=50.0),
+                        content="Crash test",
+                    )
+                ],
+            )
+        ],
+    )
+
+    out_pptx = tmp_path / "final_crash.pptx"
+    renderer = ScreenshotRenderer(backend=FallbackScreenshotBackend())
+
+    res = evaluate_and_repair(
+        deck_layout=deck,
+        output_pptx_path=out_pptx,
+        evaluator=CrashOnFinalEvaluator(),
+        screenshot_renderer=renderer,
+        max_iterations=1,
+    )
+
+    assert res.converged is False
+    assert res.evaluation_failed is True
+    assert res.stop_reason == "evaluation_failed"
+    assert "dropped during final verification" in str(res.error)
+
+
+def test_overlap_repair_does_not_invert_direction_near_margin() -> None:
+    """Reviewer Medium Bug 5: Overlap repair heuristic when element is near or past margin must not invert direction."""
+    from backend.evaluation.repair import generate_patches_for_issues
+
+    slide = LayoutSpec(
+        slide_id="s1",
+        slide_index=1,
+        visual_intent=VisualIntent.TITLE_HERO,
+        canvas=Canvas(width=1280, height=720),
+        elements=[
+            # el_left is at x=10 (inside margin=20), el_right is at x=20
+            LayoutElement(
+                element_id="el_left",
+                element_type=ElementType.TEXT,
+                geometry=Rect(x=10.0, y=100.0, width=50.0, height=50.0),
+                content="Left",
+            ),
+            LayoutElement(
+                element_id="el_right",
+                element_type=ElementType.TEXT,
+                geometry=Rect(x=20.0, y=100.0, width=50.0, height=50.0),
+                content="Right",
+            ),
+        ],
+    )
+
+    issue = VisualIssue(
+        slide="s1",
+        issue=IssueType.OVERLAP,
+        severity=IssueSeverity.ERROR,
+        element="el_left",
+        description="Overlap between el_left and el_right",
+        evidence={
+            "element_a": "el_left",
+            "element_b": "el_right",
+            "intersection": {"width": 40.0, "height": 50.0},
+        },
+    )
+
+    patches = generate_patches_for_issues([issue], slide)
+    assert len(patches) == 1
+    # desired_dx was negative (move further left away from el_right).
+    # Clamping must ensure dx <= 0.0, never positive (which would move into el_right)!
+    dx = patches[0].parameters.get("dx", 0.0)
+    assert dx <= 0.0
+
 
 
 

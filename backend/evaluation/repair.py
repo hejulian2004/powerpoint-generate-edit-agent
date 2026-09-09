@@ -161,23 +161,25 @@ def generate_patches_for_issues(
                 # Minimal separation along horizontal axis
                 if other_el and element.geometry.center_x < other_el.geometry.center_x:
                     desired_dx = -(inter_w + 8.0)
-                    # Clamp so element doesn't go below left margin
-                    dx = max(desired_dx, margin - element.geometry.x)
+                    # Move left away from other_el without going into negative canvas coordinates
+                    dx = max(desired_dx, -max(0.0, element.geometry.x))
                 else:
                     desired_dx = (inter_w + 8.0)
-                    # Clamp so element doesn't exceed right canvas bound
-                    dx = min(desired_dx, (canvas_w - margin) - element.geometry.right)
+                    # Move right away from other_el without exceeding right canvas bound
+                    max_allowed_dx = max(0.0, canvas_w - element.geometry.right)
+                    dx = min(desired_dx, max_allowed_dx)
                 dy = 0.0
             else:
                 # Minimal separation along vertical axis
                 if other_el and element.geometry.center_y < other_el.geometry.center_y:
                     desired_dy = -(inter_h + 8.0)
-                    # Move upward clamped to top margin
-                    dy = max(desired_dy, margin - element.geometry.y)
+                    # Move upward away from other_el without going into negative canvas coordinates
+                    dy = max(desired_dy, -max(0.0, element.geometry.y))
                 else:
                     desired_dy = (inter_h + 8.0)
-                    # Clamp so element doesn't exceed bottom canvas bound
-                    dy = min(desired_dy, (canvas_h - margin) - element.geometry.bottom)
+                    # Move downward away from other_el without exceeding bottom canvas bound
+                    max_allowed_dy = max(0.0, canvas_h - element.geometry.bottom)
+                    dy = min(desired_dy, max_allowed_dy)
                 dx = 0.0
 
             patches.append(
@@ -445,22 +447,64 @@ def evaluate_and_repair(
 
         current_deck = patched_deck
 
-    # Final Guarantee: Always render the absolute best deck discovered across all iterations
-    current_deck = best_deck.model_copy(deep=True)
-    actual_render_fn(current_deck, out_pptx)
+    # Final Step: Evaluate and render the absolute best deck discovered across all iterations
     final_shots_dir = shots_dir / "final"
     final_shots_dir.mkdir(parents=True, exist_ok=True)
-    final_shot_result = shot_engine.render_detailed(out_pptx, final_shots_dir)
-    final_screenshots = final_shot_result.image_paths
-    try:
-        final_issues = eval_engine.evaluate_deck(final_screenshots, current_deck)
-    except Exception:
-        final_issues = []
+
+    eval_failed = False
+    eval_err = None
+
+    # If the last iteration produced an un-evaluated patched_deck (current_deck != best_deck)
+    if current_deck != best_deck:
+        actual_render_fn(current_deck, out_pptx)
+        candidate_shot_result = shot_engine.render_detailed(out_pptx, final_shots_dir)
+        try:
+            candidate_issues = eval_engine.evaluate_deck(candidate_shot_result.image_paths, current_deck)
+            candidate_score = compute_layout_score(candidate_issues)
+            if candidate_score <= best_score:
+                # The patched deck improved or preserved layout quality
+                best_deck = current_deck.model_copy(deep=True)
+                best_score = candidate_score
+                final_shot_result = candidate_shot_result
+                final_screenshots = candidate_shot_result.image_paths
+                final_issues = candidate_issues
+            else:
+                # The final candidate patch worsened layout; roll back to best known state
+                current_deck = best_deck.model_copy(deep=True)
+                actual_render_fn(current_deck, out_pptx)
+                final_shot_result = shot_engine.render_detailed(out_pptx, final_shots_dir)
+                final_screenshots = final_shot_result.image_paths
+                final_issues = eval_engine.evaluate_deck(final_screenshots, current_deck)
+        except Exception as exc:
+            eval_failed = True
+            eval_err = str(exc)
+            stop_reason = "evaluation_failed"
+            current_deck = best_deck.model_copy(deep=True)
+            actual_render_fn(current_deck, out_pptx)
+            final_shot_result = candidate_shot_result
+            final_screenshots = candidate_shot_result.image_paths
+            final_issues = []
+    else:
+        # current_deck is already best_deck
+        current_deck = best_deck.model_copy(deep=True)
+        actual_render_fn(current_deck, out_pptx)
+        final_shot_result = shot_engine.render_detailed(out_pptx, final_shots_dir)
+        final_screenshots = final_shot_result.image_paths
+        try:
+            final_issues = eval_engine.evaluate_deck(final_screenshots, current_deck)
+        except Exception as exc:
+            eval_failed = True
+            eval_err = str(exc)
+            stop_reason = "evaluation_failed"
+            final_issues = []
+
+    converged = (not eval_failed) and (not has_blocking_errors(final_issues))
 
     return SelfHealingResult(
-        converged=not has_blocking_errors(final_issues),
-        evaluation_failed=False,
+        converged=converged,
+        evaluation_failed=eval_failed,
         stop_reason=stop_reason,
+        error=eval_err,
         iterations_run=len(history),
         final_issues=final_issues,
         history=history,
