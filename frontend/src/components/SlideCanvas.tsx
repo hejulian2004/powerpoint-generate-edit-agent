@@ -191,7 +191,7 @@ export const SlideCanvas: React.FC = () => {
 
   if (!slide) {
     return (
-      <div className="flex-1 bg-[#14151C] flex items-center justify-center text-[#55586A] text-sm font-tabular">
+      <div className="flex-1 bg-canvas flex items-center justify-center text-muted text-sm font-tabular">
         暂无选中的幻灯片
       </div>
     )
@@ -199,7 +199,7 @@ export const SlideCanvas: React.FC = () => {
 
   return (
     <main
-      className="flex-1 bg-[#14151C] relative flex flex-col items-center justify-center p-8 overflow-hidden select-none"
+      className="flex-1 bg-canvas relative flex flex-col items-center justify-center p-8 overflow-hidden select-none"
       onClick={() => setSelectedElementId(null)}
     >
       {/* Floating Canvas Top Toolbar (Supports Drag to Canvas) */}
@@ -211,7 +211,7 @@ export const SlideCanvas: React.FC = () => {
           className="absolute inset-0 pointer-events-none opacity-40"
           style={{
             backgroundImage:
-              'linear-gradient(to right, #242735 1px, transparent 1px), linear-gradient(to bottom, #242735 1px, transparent 1px)',
+              'linear-gradient(to right, var(--border-strong) 1px, transparent 1px), linear-gradient(to bottom, var(--border-strong) 1px, transparent 1px)',
             backgroundSize: '32px 32px'
           }}
         />
@@ -219,10 +219,10 @@ export const SlideCanvas: React.FC = () => {
 
       {/* Subtle Studio Backdrop Dot Pattern */}
       <div
-        className="absolute inset-0 opacity-[0.06] pointer-events-none"
+        className="absolute inset-0 opacity-[0.12] pointer-events-none"
         style={{
-          backgroundImage: 'radial-gradient(#F1F2F6 1px, transparent 1px)',
-          backgroundSize: '28px 28px'
+          backgroundImage: 'radial-gradient(var(--border-focus) 1px, transparent 1px)',
+          backgroundSize: '24px 24px'
         }}
       />
 
@@ -231,7 +231,7 @@ export const SlideCanvas: React.FC = () => {
         ref={canvasRef}
         onDragOver={handleDragOver}
         onDrop={handleDrop}
-        className="relative w-full max-w-[1120px] aspect-video rounded-xl shadow-[0_24px_54px_-12px_rgba(0,0,0,0.5)] border border-[#2B2E3C] overflow-hidden bg-white transition-transform duration-150"
+        className="relative w-full max-w-[1120px] aspect-video rounded-xl shadow-[0_20px_50px_-12px_rgba(0,0,0,0.12),0_0_0_1px_rgba(0,0,0,0.05)] border border-line overflow-hidden bg-panel transition-transform duration-150"
         style={{
           transform: `scale(${zoom})`,
           cursor: dragState ? (dragState.mode === 'resize' ? 'crosshair' : 'grabbing') : 'default'
@@ -252,28 +252,28 @@ export const SlideCanvas: React.FC = () => {
 
       {/* Bottom Floating Control Bar: Zoom & Quick Info */}
       <div className="absolute bottom-6 flex items-center gap-3 z-10">
-        <div className="flex items-center gap-1 bg-[#12131B]/95 backdrop-blur-xl px-2.5 py-1.5 rounded-xl border border-[#242735] shadow-2xl shadow-black/60 text-[#C2C6D6]">
+        <div className="flex items-center gap-1 bg-panel/95 backdrop-blur-xl px-2.5 py-1.5 rounded-xl border border-line-strong shadow-xl shadow-slate-200/60 text-secondary">
           <button
             onClick={() => setZoom(Math.max(zoom - 0.1, 0.5))}
-            className="p-1 rounded-md hover:bg-[#1C1E2A] text-[#888C9E] hover:text-[#F1F2F6] transition-colors"
+            className="p-1 rounded-md hover:bg-elevated text-muted hover:text-main transition-colors"
             title="缩小视图"
           >
             <ZoomOut className="w-3.5 h-3.5" />
           </button>
-          <span className="text-[11px] font-tabular px-2 w-14 text-center text-[#C8CBD8]">
+          <span className="text-[11px] font-tabular font-medium px-2 w-14 text-center text-secondary">
             {Math.round(zoom * 100)}%
           </span>
           <button
             onClick={() => setZoom(Math.min(zoom + 0.1, 2.0))}
-            className="p-1 rounded-md hover:bg-[#1C1E2A] text-[#888C9E] hover:text-[#F1F2F6] transition-colors"
+            className="p-1 rounded-md hover:bg-elevated text-muted hover:text-main transition-colors"
             title="放大视图"
           >
             <ZoomIn className="w-3.5 h-3.5" />
           </button>
-          <div className="w-[1px] h-3.5 bg-[#242735] mx-1" />
+          <div className="w-[1px] h-3.5 bg-line mx-1" />
           <button
             onClick={() => setZoom(1.0)}
-            className="p-1 rounded-md hover:bg-[#1C1E2A] text-[#888C9E] hover:text-[#F1F2F6] transition-colors"
+            className="p-1 rounded-md hover:bg-elevated text-muted hover:text-main transition-colors"
             title="重置缩放 100%"
           >
             <Maximize2 className="w-3.5 h-3.5" />
@@ -282,17 +282,17 @@ export const SlideCanvas: React.FC = () => {
 
         {/* Selected Element Floating Info & Quick Transform */}
         {selectedElement && (
-          <div className="flex items-center gap-3 bg-[#12131B]/95 backdrop-blur-xl px-3 py-1.5 rounded-xl border border-[#383C4F] shadow-2xl shadow-black/60 text-xs text-[#E2E5F0] animate-in fade-in duration-150">
-            <span className="font-tabular text-[#F1F2F6] font-medium bg-[#1B1D27] px-2 py-0.5 rounded border border-[#2B2E3C] flex items-center gap-1">
-              <Move className="w-3 h-3 text-[#888C9E]" />
+          <div className="flex items-center gap-3 bg-panel/95 backdrop-blur-xl px-3 py-1.5 rounded-xl border border-line-strong shadow-xl shadow-slate-200/60 text-xs text-main animate-in fade-in duration-150">
+            <span className="font-tabular text-main font-semibold bg-elevated px-2 py-0.5 rounded border border-line flex items-center gap-1">
+              <Move className="w-3 h-3 text-muted" />
               <span>{selectedElement.type} #{selectedElement.id}</span>
             </span>
-            <span className="text-[#888C9E] font-tabular text-[11px]">
+            <span className="text-muted font-tabular text-[11px] font-medium">
               X: {Math.round(selectedElement.x)} Y: {Math.round(selectedElement.y)} · {Math.round(selectedElement.width)} × {Math.round(selectedElement.height)} px
             </span>
             <button
               onClick={handleDeleteSelected}
-              className="p-1 rounded hover:bg-[#252838] text-[#888C9E] hover:text-rose-300 transition-colors ml-0.5"
+              className="p-1 rounded hover:bg-rose-50 text-muted hover:text-rose-600 transition-colors ml-0.5"
               title="删除此图元"
             >
               <Trash2 className="w-3.5 h-3.5" />

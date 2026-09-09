@@ -114,51 +114,51 @@ export const PPTSpecImportModal: React.FC = () => {
   }
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 backdrop-blur-sm p-4">
-      <div className="w-full max-w-3xl max-h-[90vh] bg-[#10121A] border border-[#232635] rounded-2xl shadow-2xl flex flex-col overflow-hidden text-[#E2E5F0]">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 backdrop-blur-sm p-4">
+      <div className="w-full max-w-3xl max-h-[90vh] bg-panel border border-line-strong rounded-2xl shadow-2xl shadow-slate-400/30 flex flex-col overflow-hidden text-main">
         {/* Header */}
-        <div className="px-6 py-4 border-b border-[#1E2130] flex items-center justify-between bg-[#141622]">
+        <div className="px-6 py-4 border-b border-line flex items-center justify-between bg-panel">
           <div className="flex items-center gap-3">
-            <div className="w-8 h-8 rounded-xl bg-blue-500/10 border border-blue-500/20 flex items-center justify-center text-blue-400">
+            <div className="w-8 h-8 rounded-xl bg-blue-50 border border-blue-200 flex items-center justify-center text-blue-600 shadow-xs">
               <Sparkles className="w-4 h-4" />
             </div>
             <div>
-              <h2 className="text-sm font-semibold text-white tracking-tight">
+              <h2 className="text-sm font-semibold text-main tracking-tight">
                 AI 分析结果生成 PPT (PR13)
               </h2>
-              <p className="text-xs text-[#8A8F9E]">
+              <p className="text-xs text-muted">
                 使用外部 AI (ChatGPT/Claude/Gemini/Qwen) 分析论文后，将结果粘贴到此处。
               </p>
             </div>
           </div>
           <button
             onClick={() => setPptspecModalOpen(false)}
-            className="p-1.5 rounded-lg text-[#717688] hover:text-white hover:bg-[#1E2130] transition-colors"
+            className="p-1.5 rounded-lg text-muted hover:text-main hover:bg-elevated transition-colors"
           >
             <X className="w-4 h-4" />
           </button>
         </div>
 
         {/* Modal Body */}
-        <div className="flex-1 overflow-y-auto p-6 space-y-5 custom-scrollbar">
+        <div className="flex-1 overflow-y-auto p-6 space-y-5 bg-canvas custom-scrollbar">
           {/* Prompt Copy Buttons */}
           <div className="flex flex-wrap items-center gap-2.5">
             <button
               onClick={() => handleCopyPrompt('general')}
-              className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg bg-[#1B1E2B] hover:bg-[#25293A] border border-[#2D3145] text-[#D8DAE5] hover:text-white transition-all shadow-sm"
+              className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg bg-panel hover:bg-elevated border border-line-strong text-secondary hover:text-main transition-all shadow-xs"
             >
-              <Copy className="w-3.5 h-3.5 text-blue-400" />
+              <Copy className="w-3.5 h-3.5 text-blue-600" />
               <span>复制通用论文分析提示词</span>
             </button>
             <button
               onClick={() => handleCopyPrompt('strict')}
-              className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg bg-[#1B1E2B] hover:bg-[#25293A] border border-[#2D3145] text-[#D8DAE5] hover:text-white transition-all shadow-sm"
+              className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg bg-panel hover:bg-elevated border border-line-strong text-secondary hover:text-main transition-all shadow-xs"
             >
-              <Copy className="w-3.5 h-3.5 text-emerald-400" />
+              <Copy className="w-3.5 h-3.5 text-emerald-600" />
               <span>复制严格 JSON 提示词</span>
             </button>
             {copyFeedback && (
-              <span className="flex items-center gap-1 text-xs text-emerald-400 animate-fade-in">
+              <span className="flex items-center gap-1 text-xs text-emerald-600 font-medium animate-fade-in">
                 <Check className="w-3.5 h-3.5" />
                 {copyFeedback}
               </span>
@@ -167,13 +167,13 @@ export const PPTSpecImportModal: React.FC = () => {
 
           {/* Paste Textarea */}
           <div className="space-y-1.5">
-            <label className="text-xs font-medium text-[#9AA0B4]">外部 AI 输出内容：</label>
+            <label className="text-xs font-semibold text-secondary">外部 AI 输出内容：</label>
             <textarea
               rows={8}
               value={rawInput}
               onChange={(e) => setRawInput(e.target.value)}
               placeholder="在此粘贴外部 AI 输出的 Markdown 大纲、JSON、包含 ```json 代码块的内容或中文页面大纲..."
-              className="w-full bg-[#0C0D13] border border-[#222533] focus:border-blue-500 rounded-xl p-3 text-xs text-[#E1E4F0] placeholder-[#55596D] focus:outline-none transition-all font-mono leading-relaxed"
+              className="w-full bg-panel border border-line-strong focus:border-blue-500 rounded-xl p-3 text-xs text-main placeholder-line-focus focus:outline-none transition-all font-mono leading-relaxed shadow-xs"
             />
           </div>
 
@@ -182,7 +182,7 @@ export const PPTSpecImportModal: React.FC = () => {
             <button
               onClick={handleNormalize}
               disabled={!rawInput.trim() || isNormalizing}
-              className="flex items-center gap-2 px-4 py-2 text-xs font-medium rounded-lg bg-blue-600 hover:bg-blue-500 disabled:opacity-40 disabled:hover:bg-blue-600 text-white transition-all shadow-md"
+              className="flex items-center gap-2 px-4 py-2 text-xs font-semibold rounded-lg bg-inverted hover:bg-inverted-hover disabled:opacity-40 disabled:hover:bg-inverted text-inverted-text transition-all shadow-xs"
             >
               {isNormalizing ? (
                 <>
@@ -200,7 +200,7 @@ export const PPTSpecImportModal: React.FC = () => {
 
           {/* Error Banner */}
           {errorMessage && (
-            <div className="p-3 bg-red-500/10 border border-red-500/30 rounded-xl flex items-start gap-2.5 text-xs text-red-400">
+            <div className="p-3 bg-red-50 border border-red-200 rounded-xl flex items-start gap-2.5 text-xs text-red-600 font-medium">
               <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
               <div className="flex-1 whitespace-pre-line">{errorMessage}</div>
             </div>
@@ -208,14 +208,14 @@ export const PPTSpecImportModal: React.FC = () => {
 
           {/* Normalization Preview Result */}
           {normResult && (
-            <div className="space-y-4 pt-2 border-t border-[#1C1F2B]">
+            <div className="space-y-4 pt-2 border-t border-line">
               <div className="flex items-center justify-between">
-                <h3 className="text-xs font-semibold text-white uppercase tracking-wider flex items-center gap-1.5">
-                  <Check className="w-4 h-4 text-emerald-400" />
+                <h3 className="text-xs font-bold text-main uppercase tracking-wider flex items-center gap-1.5">
+                  <Check className="w-4 h-4 text-emerald-600" />
                   <span>解析完成预览</span>
                 </h3>
-                <span className={`text-[11px] px-2 py-0.5 rounded-full font-medium ${
-                  normResult.valid ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20' : 'bg-red-500/10 text-red-400 border border-red-500/20'
+                <span className={`text-[11px] px-2 py-0.5 rounded-full font-semibold ${
+                  normResult.valid ? 'bg-emerald-50 text-emerald-700 border border-emerald-200' : 'bg-red-50 text-red-700 border border-red-200'
                 }`}>
                   {normResult.valid ? '校验通过 (Ready)' : '校验未通过 (Invalid)'}
                 </span>
@@ -223,47 +223,47 @@ export const PPTSpecImportModal: React.FC = () => {
 
               {/* Summary Stats Badges */}
               <div className="grid grid-cols-3 sm:grid-cols-6 gap-2">
-                <div className="bg-[#141620] border border-[#232635] p-2.5 rounded-xl text-center">
-                  <div className="text-[11px] text-[#7A7F92]">Slides</div>
-                  <div className="text-base font-bold text-white mt-0.5">{normResult.summary.slides || 0}</div>
+                <div className="bg-panel border border-line p-2.5 rounded-xl text-center shadow-xs">
+                  <div className="text-[11px] text-muted font-medium">Slides</div>
+                  <div className="text-base font-bold text-main mt-0.5">{normResult.summary.slides || 0}</div>
                 </div>
-                <div className="bg-[#141620] border border-[#232635] p-2.5 rounded-xl text-center">
-                  <div className="text-[11px] text-[#7A7F92]">Claims</div>
-                  <div className="text-base font-bold text-white mt-0.5">{normResult.summary.claims || 0}</div>
+                <div className="bg-panel border border-line p-2.5 rounded-xl text-center shadow-xs">
+                  <div className="text-[11px] text-muted font-medium">Claims</div>
+                  <div className="text-base font-bold text-main mt-0.5">{normResult.summary.claims || 0}</div>
                 </div>
-                <div className="bg-[#141620] border border-[#232635] p-2.5 rounded-xl text-center">
-                  <div className="text-[11px] text-[#7A7F92]">Metrics</div>
-                  <div className="text-base font-bold text-blue-400 mt-0.5">{normResult.summary.metrics || 0}</div>
+                <div className="bg-panel border border-line p-2.5 rounded-xl text-center shadow-xs">
+                  <div className="text-[11px] text-muted font-medium">Metrics</div>
+                  <div className="text-base font-bold text-blue-600 mt-0.5">{normResult.summary.metrics || 0}</div>
                 </div>
-                <div className="bg-[#141620] border border-[#232635] p-2.5 rounded-xl text-center">
-                  <div className="text-[11px] text-[#7A7F92]">Figures</div>
-                  <div className="text-base font-bold text-purple-400 mt-0.5">{normResult.summary.figures || 0}</div>
+                <div className="bg-panel border border-line p-2.5 rounded-xl text-center shadow-xs">
+                  <div className="text-[11px] text-muted font-medium">Figures</div>
+                  <div className="text-base font-bold text-purple-600 mt-0.5">{normResult.summary.figures || 0}</div>
                 </div>
-                <div className="bg-[#141620] border border-[#232635] p-2.5 rounded-xl text-center">
-                  <div className="text-[11px] text-[#7A7F92]">Full Tables</div>
-                  <div className="text-base font-bold text-emerald-400 mt-0.5">{normResult.summary.complete_tables || 0}</div>
+                <div className="bg-panel border border-line p-2.5 rounded-xl text-center shadow-xs">
+                  <div className="text-[11px] text-muted font-medium">Full Tables</div>
+                  <div className="text-base font-bold text-emerald-600 mt-0.5">{normResult.summary.complete_tables || 0}</div>
                 </div>
-                <div className="bg-[#141620] border border-[#232635] p-2.5 rounded-xl text-center">
-                  <div className="text-[11px] text-[#7A7F92]">Table Placeh.</div>
-                  <div className="text-base font-bold text-amber-400 mt-0.5">{normResult.summary.table_placeholders || 0}</div>
+                <div className="bg-panel border border-line p-2.5 rounded-xl text-center shadow-xs">
+                  <div className="text-[11px] text-muted font-medium">Table Placeh.</div>
+                  <div className="text-base font-bold text-amber-600 mt-0.5">{normResult.summary.table_placeholders || 0}</div>
                 </div>
               </div>
 
               {/* Asset Requirements Checklist */}
               {normResult.asset_requirements.length > 0 && (
-                <div className="bg-[#141620] border border-[#232635] rounded-xl p-3.5 space-y-2">
-                  <div className="text-xs font-medium text-[#C0C4D5] flex items-center gap-1.5">
-                    <ImageIcon className="w-3.5 h-3.5 text-blue-400" />
+                <div className="bg-panel border border-line rounded-xl p-3.5 space-y-2 shadow-xs">
+                  <div className="text-xs font-semibold text-main flex items-center gap-1.5">
+                    <ImageIcon className="w-3.5 h-3.5 text-blue-600" />
                     <span>需要手动插入资源清单（生成后在 PPT 中粘贴）：</span>
                   </div>
                   <div className="space-y-1.5 max-h-36 overflow-y-auto custom-scrollbar">
                     {normResult.asset_requirements.map((asset, i) => (
-                      <div key={i} className="flex items-center gap-2 text-xs text-[#959AB0] bg-[#0E1017] px-2.5 py-1.5 rounded-lg border border-[#1E212E]">
-                        <span className="font-mono text-blue-400">{asset.slide_id}</span>
+                      <div key={i} className="flex items-center gap-2 text-xs text-secondary bg-subtle px-2.5 py-1.5 rounded-lg border border-line">
+                        <span className="font-mono text-blue-600 font-semibold">{asset.slide_id}</span>
                         <span>→</span>
-                        <span className="text-white font-medium">{asset.label}</span>
-                        {asset.page && <span className="text-[#656A7D]">(论文第 {asset.page} 页)</span>}
-                        {asset.caption && <span className="text-[#72778A] truncate max-w-[240px]">- {asset.caption}</span>}
+                        <span className="text-main font-semibold">{asset.label}</span>
+                        {asset.page && <span className="text-muted">(论文第 {asset.page} 页)</span>}
+                        {asset.caption && <span className="text-muted truncate max-w-[240px]">- {asset.caption}</span>}
                       </div>
                     ))}
                   </div>
@@ -272,12 +272,12 @@ export const PPTSpecImportModal: React.FC = () => {
 
               {/* Warnings */}
               {normResult.warnings.length > 0 && (
-                <div className="p-3 bg-amber-500/10 border border-amber-500/20 rounded-xl space-y-1 text-xs text-amber-300">
-                  <div className="font-medium flex items-center gap-1.5">
-                    <AlertTriangle className="w-3.5 h-3.5 text-amber-400" />
+                <div className="p-3 bg-amber-50 border border-amber-200 rounded-xl space-y-1 text-xs text-amber-800">
+                  <div className="font-semibold flex items-center gap-1.5">
+                    <AlertTriangle className="w-3.5 h-3.5 text-amber-600" />
                     <span>规范性提示 (Warnings):</span>
                   </div>
-                  <ul className="list-disc list-inside space-y-0.5 text-amber-200/80">
+                  <ul className="list-disc list-inside space-y-0.5 text-amber-700">
                     {normResult.warnings.map((w, i) => (
                       <li key={i}>{w}</li>
                     ))}
@@ -287,12 +287,12 @@ export const PPTSpecImportModal: React.FC = () => {
 
               {/* Errors */}
               {normResult.errors.length > 0 && (
-                <div className="p-3 bg-red-500/10 border border-red-500/30 rounded-xl space-y-1 text-xs text-red-300">
-                  <div className="font-medium flex items-center gap-1.5">
-                    <AlertCircle className="w-3.5 h-3.5 text-red-400" />
+                <div className="p-3 bg-red-50 border border-red-200 rounded-xl space-y-1 text-xs text-red-800 font-medium">
+                  <div className="font-semibold flex items-center gap-1.5">
+                    <AlertCircle className="w-3.5 h-3.5 text-red-600" />
                     <span>真实性/合法性错误 (Errors):</span>
                   </div>
-                  <ul className="list-disc list-inside space-y-0.5 text-red-200">
+                  <ul className="list-disc list-inside space-y-0.5 text-red-700">
                     {normResult.errors.map((e, i) => (
                       <li key={i}>{e}</li>
                     ))}
@@ -304,8 +304,8 @@ export const PPTSpecImportModal: React.FC = () => {
         </div>
 
         {/* Modal Footer */}
-        <div className="px-6 py-3.5 border-t border-[#1E2130] flex items-center justify-between bg-[#141622]">
-          <span className="text-xs text-[#6B7082]">
+        <div className="px-6 py-3.5 border-t border-line flex items-center justify-between bg-panel">
+          <span className="text-xs text-muted">
             {normResult?.valid
               ? '结构归一化已通过 Truthfulness Guard，可启动 LangGraph 生成。'
               : '请先解析内容并确保无阻止性错误。'}
@@ -313,14 +313,14 @@ export const PPTSpecImportModal: React.FC = () => {
           <div className="flex items-center gap-2">
             <button
               onClick={() => setPptspecModalOpen(false)}
-              className="px-3 py-1.5 text-xs font-medium rounded-lg text-[#9AA0B4] hover:text-white hover:bg-[#1C1F2D] transition-colors"
+              className="px-3 py-1.5 text-xs font-medium rounded-lg text-muted hover:text-main hover:bg-elevated transition-colors"
             >
               取消
             </button>
             <button
               onClick={handleGenerate}
               disabled={!normResult?.valid || !normResult?.normalization_id || isGenerating}
-              className="flex items-center gap-1.5 px-4 py-1.5 text-xs font-medium rounded-lg bg-emerald-600 hover:bg-emerald-500 disabled:opacity-30 disabled:hover:bg-emerald-600 text-white transition-all shadow-md font-semibold"
+              className="flex items-center gap-1.5 px-4 py-1.5 text-xs font-semibold rounded-lg bg-emerald-600 hover:bg-emerald-700 disabled:opacity-30 disabled:hover:bg-emerald-600 text-white transition-all shadow-xs"
             >
               {isGenerating ? (
                 <>
