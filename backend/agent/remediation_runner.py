@@ -18,7 +18,7 @@ from ..eval.remediation import (
 )
 from ..eval.layout_diff import LayoutDiffEngine, BoundingBox
 from ..eval.fidelity import FidelityEvaluator, FidelityRegressionGuard
-from .tools import tools
+from .mutation_gateway import MutationGateway
 
 logger = logging.getLogger(__name__)
 
@@ -123,7 +123,9 @@ class RemediationRunner:
                     "text": f"正在应用修复 ({action.action_type.value}): {action.reason}"
                 })
 
-                res = tools.execute(fn_name, args, pres, history)
+                res = MutationGateway.execute_one_sync(
+                    fn_name, args, pres, history, on_event=on_event, source="remediation"
+                )
                 applied_records.append({
                     "action_type": action.action_type.value,
                     "tool": fn_name,
@@ -380,7 +382,9 @@ class RemediationRunner:
                 tool_call = cls._action_to_tool_call(curr_slide.id, action)
                 if not tool_call:
                     continue
-                res = tools.execute(tool_call["tool"], tool_call["args"], pres, history)
+                res = MutationGateway.execute_one_sync(
+                    tool_call["tool"], tool_call["args"], pres, history, on_event=on_event, source="remediation"
+                )
                 applied_records.append({
                     "action_type": action.action_type.value,
                     "result": res,

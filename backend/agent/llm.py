@@ -7,6 +7,10 @@ from typing import List, Dict, Any, Optional, AsyncIterator, Tuple
 from ..config import settings
 
 
+class LLMConfigurationError(RuntimeError):
+    """Raised when the agent has no live LLM credentials outside test mode."""
+
+
 class LLMClient:
     """Async client for OpenAI-compatible completions & tool calling."""
 
@@ -19,6 +23,21 @@ class LLMClient:
         self.base_url = (base_url or settings.openai_base_url).rstrip("/")
         self.api_key = api_key if api_key is not None else settings.openai_api_key
         self.default_model = default_model or settings.default_model
+
+    def _is_unconfigured(self) -> bool:
+        return not self.api_key or str(self.api_key).startswith("mock_")
+
+    def _mock_allowed(self) -> bool:
+        """Silent mock fallback is a test-only affordance, never a production behavior."""
+        return settings.app_env in ("test", "dev") and settings.mock_llm
+
+    def _raise_if_unconfigured(self) -> None:
+        if not self._mock_allowed():
+            raise LLMConfigurationError(
+                "LLM API key is not configured. Set OPENAI_API_KEY / configure the model "
+                "endpoint before using the agent. Note: mock completions are only permitted "
+                "when APP_ENV=test/dev and MOCK_LLM=true."
+            )
 
     def _get_headers(self) -> Dict[str, str]:
         headers = {
@@ -63,9 +82,11 @@ class LLMClient:
             if tool_choice:
                 payload["tool_choice"] = tool_choice
 
-        # If API key is empty or dummy, check if test mock mode is needed
-        if not self.api_key or self.api_key.startswith("mock_"):
-            return self._mock_completion(messages, tools)
+        # If API key is empty or dummy, mock only in explicit test mode; fail fast otherwise.
+        if self._is_unconfigured():
+            if self._mock_allowed():
+                return self._mock_completion(messages, tools)
+            self._raise_if_unconfigured()
 
         async with httpx.AsyncClient(timeout=60.0) as client:
             try:
@@ -96,8 +117,10 @@ class LLMClient:
         if tools:
             payload["tools"] = tools
 
-        if not self.api_key or self.api_key.startswith("mock_"):
-            # Mock stream
+        if self._is_unconfigured():
+            # Mock stream only in explicit test mode; fail fast otherwise.
+            if not self._mock_allowed():
+                self._raise_if_unconfigured()
             mock_res = self._mock_completion(messages, tools)
             yield {
                 "type": "content",

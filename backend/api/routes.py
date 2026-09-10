@@ -305,15 +305,16 @@ async def chat_interaction(
         event["session_id"] = session.session_id
         await store.broadcast(event, session_id=session.session_id)
 
-    async with session.mutation_lock:
-        result = await store.agent_runtime.run_turn(
-            user_message=prompt,
-            pres=session.pres,
-            history=session.history,
-            session=session,
-            on_event=on_event,
-            confirmed_tool_ids=confirmed_tool_ids,
-        )
+    # The mutation lock is not held across the LLM turn; the MutationGateway
+    # serializes only the actual mutations so GUI actions stay responsive.
+    result = await store.agent_runtime.run_turn(
+        user_message=prompt,
+        pres=session.pres,
+        history=session.history,
+        session=session,
+        on_event=on_event,
+        confirmed_tool_ids=confirmed_tool_ids,
+    )
 
     # Broadcast updated presentation
     await store.broadcast({
@@ -354,26 +355,27 @@ async def confirm_pending_action(
         event["session_id"] = session.session_id
         await store.broadcast(event, session_id=session.session_id)
 
-    async with session.mutation_lock:
-        if decision == "cancel":
-            result = await store.agent_runtime.cancel_pending(
-                session, call_id, on_event=on_event
-            )
-        elif decision in ("confirm", "approve"):
-            result = await store.agent_runtime.confirm_pending(
-                session, call_id, on_event=on_event
-            )
-        else:
-            raise HTTPException(status_code=400, detail="decision must be 'confirm' or 'cancel'")
+    # confirm_pending commits through the MutationGateway, which owns the session
+    # lock; cancel is a simple dictionary pop.
+    if decision == "cancel":
+        result = await store.agent_runtime.cancel_pending(
+            session, call_id, on_event=on_event
+        )
+    elif decision in ("confirm", "approve"):
+        result = await store.agent_runtime.confirm_pending(
+            session, call_id, on_event=on_event
+        )
+    else:
+        raise HTTPException(status_code=400, detail="decision must be 'confirm' or 'cancel'")
 
-        await store.broadcast({
-            "type": "presentation_updated",
-            "session_id": session.session_id,
-            "presentation": session.pres.model_dump(),
-            "can_undo": session.history.can_undo(),
-            "can_redo": session.history.can_redo(),
-            "last_target_id": session.last_target_id,
-        }, session_id=session.session_id)
+    await store.broadcast({
+        "type": "presentation_updated",
+        "session_id": session.session_id,
+        "presentation": session.pres.model_dump(),
+        "can_undo": session.history.can_undo(),
+        "can_redo": session.history.can_redo(),
+        "last_target_id": session.last_target_id,
+    }, session_id=session.session_id)
 
     return result
 
@@ -500,17 +502,18 @@ async def api_generate_from_pptspec(payload: Dict[str, Any] = Body(...)):
     }
 
     try:
-        async with session.mutation_lock:
-            gen_result = await generation_graph.ainvoke(
-                initial_state,
-                config={
-                    "configurable": {
-                        "on_event": on_event,
-                        "pres": session.pres,
-                        "llm_client": getattr(store.agent_runtime, "llm", None),
-                    }
-                },
-            )
+        # Lock is not held across the generation pipeline; the final persist rotates
+        # the document epoch atomically.
+        gen_result = await generation_graph.ainvoke(
+            initial_state,
+            config={
+                "configurable": {
+                    "on_event": on_event,
+                    "pres": session.pres,
+                    "llm_client": getattr(store.agent_runtime, "llm", None),
+                }
+            },
+        )
     except Exception as e:
         logger.exception("LangGraph generation execution error")
         raise HTTPException(status_code=500, detail=f"Generation pipeline error: {e}")

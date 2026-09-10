@@ -276,12 +276,12 @@ class PresentationStore:
             ir_pres = import_pptx(tmp_path)
             ir_pres.title = filename.replace(".pptx", "")
 
-            target_session.pres = ir_pres
-            target_session.history.clear()
-            target_session.last_target_id = None
-            target_session.last_action_type = None
-            target_session.checkpoint_mgr.clear()
-            target_session.create_checkpoint(description=f"Imported from {filename}")
+            target_session.replace_presentation(
+                ir_pres,
+                clear_history=True,
+                clear_checkpoints=True,
+                checkpoint_description=f"Imported from {filename}",
+            )
             return target_session.pres
         finally:
             if os.path.exists(tmp_path):

@@ -35,6 +35,23 @@ class ToolRegistry:
             return func
         return decorator
 
+    def validate_arguments(self, name: str, args: Dict[str, Any]) -> Optional[str]:
+        """Fail-closed validation of a tool call before any mutation is attempted.
+
+        Returns an error string when the call must not execute, otherwise None.
+        """
+        if name not in self.handlers:
+            return f"Unknown tool: {name}"
+        if not isinstance(args, dict):
+            return f"Invalid arguments for {name}: expected an object"
+        schema = next((s for s in self.schemas if s["function"]["name"] == name), None)
+        if schema is not None:
+            required = schema["function"].get("parameters", {}).get("required", [])
+            missing = [key for key in required if key not in args]
+            if missing:
+                return f"Missing required arguments for {name}: {', '.join(missing)}"
+        return None
+
     def execute(
         self,
         name: str,

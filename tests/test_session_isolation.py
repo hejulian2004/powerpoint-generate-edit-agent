@@ -116,3 +116,45 @@ def test_action_resolver_safe_target_resolution_no_fallback():
     tool_call_global = ActionResolver.action_to_tool_call(act_global, pres)
     assert tool_call_global is not None
     assert tool_call_global["name"] == "optimize_layout"
+
+
+def test_agent_memory_is_session_scoped():
+    """Agent activity in one session must never leak into another session's context."""
+    s_a = session_manager.get_or_create(
+        "memory_sess_A", pres_factory=create_default_demo_presentation
+    )
+    s_b = session_manager.get_or_create(
+        "memory_sess_B", pres_factory=create_default_demo_presentation
+    )
+
+    assert s_a.agent_memory is not s_b.agent_memory
+
+    s_a.agent_memory.log_action("session A edited the title")
+
+    assert "session A edited the title" in s_a.agent_memory.build_system_context()
+    assert "session A edited the title" not in s_b.agent_memory.build_system_context()
+
+
+def test_run_turn_uses_session_scoped_memory():
+    """AgentRuntime must pass the session's memory to the graph, not a global one."""
+    import asyncio
+    from backend.agent.runtime import AgentRuntime
+
+    async def _run():
+        session = session_manager.get_or_create(
+            "memory_sess_C", pres_factory=create_default_demo_presentation
+        )
+        runtime = AgentRuntime()
+        captured = {}
+
+        class _SpyGraph:
+            async def ainvoke(self, state, config=None):
+                captured.update(config["configurable"])
+                return {"final_summary": "ok", "tool_results": []}
+
+        runtime.graph = _SpyGraph()
+        await runtime.run_turn("你好", session.pres, session.history, session=session)
+        assert captured["memory"] is session.agent_memory
+        assert captured["memory"] is not runtime.memory
+
+    asyncio.run(_run())

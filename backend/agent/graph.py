@@ -5,6 +5,7 @@ Router -> Planner -> Executor (Tool Calling) -> Tools Execution -> Vision Review
 """
 
 from __future__ import annotations
+import hashlib
 import json
 import logging
 import uuid
@@ -12,7 +13,6 @@ from typing import Dict, Any, List, Optional, Callable, TypedDict
 from langchain_core.runnables import RunnableConfig
 from langgraph.graph import StateGraph, START, END
 
-from .tools import tools
 from .memory import AgentMemory
 from .vision import VisionEngine
 from .llm import LLMClient
@@ -53,7 +53,9 @@ class PPTAgentState(TypedDict, total=False):
     plan_iteration: int
     content_review: Optional[Dict[str, Any]]
     content_iteration: int
+    rework_directive: Optional[Dict[str, Any]]
     tool_calls: List[Dict[str, Any]]
+    execution_plan: List[Dict[str, Any]]
     tool_results: List[Dict[str, Any]]
     vision_critique: Optional[str]
     visual_review: Optional[Dict[str, Any]]
@@ -67,6 +69,89 @@ class PPTAgentState(TypedDict, total=False):
     last_target_id: Optional[str]
     confirmed_tool_ids: List[str]
     subagent_memories: Dict[str, Any]
+    changed_slide_ids: List[str]
+
+
+# =====================================================================
+# 2. Change Tracking & Deck-Level Review Helpers
+# =====================================================================
+
+def _slide_signature(slide: SlideIR) -> str:
+    """Stable fingerprint of a slide's content for changed-slide detection."""
+    try:
+        payload = slide.model_dump_json()
+    except Exception:
+        payload = repr(slide)
+    return hashlib.sha1(payload.encode("utf-8")).hexdigest()
+
+
+def _slide_signatures(pres: Optional[PresentationIR]) -> Dict[str, str]:
+    if not pres:
+        return {}
+    return {slide.id: _slide_signature(slide) for slide in pres.slides}
+
+
+def _collect_changed_slide_ids(
+    pres: Optional[PresentationIR], before: Dict[str, str]
+) -> List[str]:
+    """Slide ids whose content changed since the `before` snapshot (deck order)."""
+    if not pres:
+        return []
+    changed = []
+    for slide in pres.slides:
+        if before.get(slide.id) != _slide_signature(slide):
+            changed.append(slide.id)
+    return changed
+
+
+def _resolve_review_slides(
+    pres: Optional[PresentationIR], changed_slide_ids: Optional[List[str]]
+) -> List[SlideIR]:
+    """Review targets: every changed non-empty slide, else the legacy fallback."""
+    targets: List[SlideIR] = []
+    if pres:
+        for slide_id in changed_slide_ids or []:
+            slide = pres.get_slide(slide_id)
+            if slide is not None and slide.elements:
+                targets.append(slide)
+    if targets:
+        return targets
+    if not pres:
+        return []
+    active = pres.get_active_slide()
+    if active and active.elements:
+        return [active]
+    for slide in pres.slides:
+        if slide.elements:
+            return [slide]
+    return []
+
+
+def _aggregate_deck_reviews(
+    deck_reviews: Dict[str, Dict[str, Any]],
+    approved_key: str = "approved",
+) -> Optional[Dict[str, Any]]:
+    """Merges per-slide critic results into a deck-level review.
+
+    Top-level fields come from the first failing review (or the first review) so
+    existing consumers keep working, with per-slide detail under `slides`.
+    """
+    if not deck_reviews:
+        return None
+    failed_ids = [
+        slide_id for slide_id, review in deck_reviews.items()
+        if not review.get(approved_key, True)
+    ]
+    primary = (
+        deck_reviews[failed_ids[0]] if failed_ids else next(iter(deck_reviews.values()))
+    )
+    return {
+        **primary,
+        approved_key: not failed_ids,
+        "slides": deck_reviews,
+        "reviewed_slide_ids": list(deck_reviews.keys()),
+        "failed_slide_ids": failed_ids,
+    }
 
 
 # =====================================================================
@@ -191,16 +276,16 @@ async def plan_critic_node(state: PPTAgentState, config: RunnableConfig) -> Dict
 
 
 async def executor_node(state: PPTAgentState, config: RunnableConfig) -> Dict[str, Any]:
-    """Delegates slide production and tool manipulation to independent ExecutorSubagent.
-    
-    The ExecutorSubagent executes operations in an isolated context and reports the execution
-    summary and results back to the main agent for centralized lifecycle orchestration.
+    """Delegates planning to the independent ExecutorSubagent.
+
+    The subagent is a pure planner: it returns an ExecutionPlan of tool calls and
+    has no authority to mutate the presentation. `mutation_node` commits the plan
+    through the MutationGateway, which is the only write path.
     """
     configurable = config.get("configurable", {})
     on_event: Optional[Callable] = configurable.get("on_event")
     pres: Optional[PresentationIR] = configurable.get("pres")
     memory: Optional[AgentMemory] = configurable.get("memory")
-    history: Optional[HistoryManager] = configurable.get("history")
     llm_client: Optional[LLMClient] = configurable.get("llm_client")
 
     user_query = state.get("user_query", "")
@@ -211,24 +296,20 @@ async def executor_node(state: PPTAgentState, config: RunnableConfig) -> Dict[st
     if not last_target_id:
         last_target_id = state.get("last_target_id")
 
-    # Delegate to decoupled ExecutorSubagent
     from .subagents.executor import ExecutorSubagent
-    report = await ExecutorSubagent.execute_task(
+    plan = await ExecutorSubagent.plan_task(
         intent=intent,
         user_query=user_query,
         plan_desc=plan_desc,
         pres=pres,
-        history=history,
         memory=memory,
         llm_client=llm_client,
         last_target_id=last_target_id,
         session=session,
-        on_event=on_event
+        on_event=on_event,
+        conversation_context=state.get("messages"),
+        rework_directive=state.get("rework_directive")
     )
-
-    current_target_id = report.last_target_id
-    if session and current_target_id:
-        session.last_target_id = current_target_id
 
     # Sync active slide id
     active_slide_id = state.get("active_slide_id")
@@ -238,9 +319,8 @@ async def executor_node(state: PPTAgentState, config: RunnableConfig) -> Dict[st
         active_slide_id = pres.active_slide_id
 
     return {
-        "tool_results": report.tool_results,
-        "presentation_version": report.presentation_version,
-        "last_target_id": current_target_id,
+        "execution_plan": plan.tool_calls,
+        "last_target_id": last_target_id,
         "active_slide_id": active_slide_id
     }
 
@@ -530,8 +610,13 @@ def _heuristic_tool_planner(
     return tool_calls
 
 
-async def tools_node(state: PPTAgentState, config: RunnableConfig) -> Dict[str, Any]:
-    """Safely executes all requested tools on PPT-IR and tracks changes."""
+async def mutation_node(state: PPTAgentState, config: RunnableConfig) -> Dict[str, Any]:
+    """Commits the Executor's execution plan through the MutationGateway.
+
+    This node is the ONLY path in the agent graph allowed to write to the
+    PresentationIR. It applies risk enrichment, the confirmation gate, schema
+    validation, and transaction rollback for every planned tool call.
+    """
     configurable = config.get("configurable", {})
     pres: Optional[PresentationIR] = configurable.get("pres")
     history: Optional[HistoryManager] = configurable.get("history")
@@ -539,115 +624,44 @@ async def tools_node(state: PPTAgentState, config: RunnableConfig) -> Dict[str, 
     on_event: Optional[Callable] = configurable.get("on_event")
     memory: Optional[AgentMemory] = configurable.get("memory")
 
-    tool_calls = state.get("tool_calls", [])
-    results: List[Dict[str, Any]] = []
-    current_target_id = state.get("last_target_id")
-
+    tool_calls = list(state.get("execution_plan") or state.get("tool_calls") or [])
     confirmed_ids = set(state.get("confirmed_tool_ids") or [])
-    extra_confirmed = configurable.get("confirmed_tool_ids") or []
-    confirmed_ids.update(extra_confirmed)
+    confirmed_ids.update(configurable.get("confirmed_tool_ids") or [])
 
-    from .risk_policy import ConfirmationGate, RiskEnricher
+    from .mutation_gateway import MutationGateway
+    from .subagents.executor import ExecutorSubagent
 
-    for tc in tool_calls:
-        fn_name = tc.get("name", "")
-        args = tc.get("arguments", {})
+    before_signatures = _slide_signatures(pres)
+    batch = await MutationGateway.execute_tool_calls(
+        tool_calls,
+        pres,
+        history,
+        session=session,
+        on_event=on_event,
+        memory=memory,
+        confirmed_ids=confirmed_ids,
+        source="agent",
+        subagent="ExecutorSubagent",
+    )
+    changed_slide_ids = _collect_changed_slide_ids(pres, before_signatures)
 
-        # Unified risk pipeline: raw live-LLM calls are enriched exactly like
-        # resolver-generated calls before the gate decides.
-        RiskEnricher.enrich_tool_call(tc, pres)
+    await ExecutorSubagent.emit_completed(
+        batch.executed_tools, on_event, error=batch.error
+    )
 
-        if ConfirmationGate.is_blocked(tc, confirmed_ids):
-            res = ConfirmationGate.blocked_result(tc)
-            call_id = tc.get("id")
-            pending_record = None
-            if session and call_id and hasattr(session, "register_pending_confirmation"):
-                pending_record = session.register_pending_confirmation(
-                    call_id=call_id,
-                    tool=fn_name,
-                    arguments=args,
-                    confidence=tc.get("_resolution_confidence"),
-                    presentation_version=pres.version if pres else 1,
-                    target_element_id=args.get("element_id"),
-                )
-            results.append({
-                "tool": fn_name,
-                "arguments": args,
-                "result": res,
-                "requires_confirmation": True
-            })
-            if on_event:
-                await _safe_emit(on_event, {
-                    "type": "confirmation_required",
-                    "tool": fn_name,
-                    "arguments": args,
-                    "resolution_confidence": tc.get("_resolution_confidence"),
-                    "call_id": call_id,
-                    "presentation_version": pending_record["presentation_version"] if pending_record else (pres.version if pres else 1),
-                    "message": res["message"]
-                })
-            if memory:
-                memory.log_action(f"RiskPolicy 拦截低置信度操作 '{fn_name}'，等待用户确认")
-            continue
-
-        if on_event:
-            await _safe_emit(on_event, {
-                "type": "tool_executing",
-                "tool": fn_name,
-                "arguments": args
-            })
-
-        # Special handling for undo / redo
-        if fn_name == "undo":
-            if session and hasattr(session, "undo"):
-                patch = session.undo()
-                res = {"success": True if patch else False, "message": "已成功撤销上一步操作" if patch else "当前无历史操作可撤销"}
-            elif history and hasattr(history, "undo"):
-                patch = history.undo(pres)
-                res = {"success": True if patch else False, "message": "已成功撤销上一步操作" if patch else "当前无历史操作可撤销"}
-            else:
-                res = {"success": False, "message": "未找到可撤销的历史记录"}
-        elif fn_name == "redo":
-            if session and hasattr(session, "redo"):
-                patch = session.redo()
-                res = {"success": True if patch else False, "message": "已成功重做操作" if patch else "当前无历史操作可重做"}
-            elif history and hasattr(history, "redo"):
-                patch = history.redo(pres)
-                res = {"success": True if patch else False, "message": "已成功重做操作" if patch else "当前无历史操作可重做"}
-            else:
-                res = {"success": False, "message": "未找到可重做的历史记录"}
-        else:
-            # Standard tool execution
-            res = tools.execute(fn_name, args, pres, history)
-
-        # Track last target element ID for multi-turn conversational memory
-        target_el_id = args.get("element_id") or (res.get("element_id") if isinstance(res, dict) else None)
-        if target_el_id:
-            current_target_id = target_el_id
-            if session and hasattr(session, "last_target_id"):
-                session.last_target_id = target_el_id
-
-        results.append({
-            "tool": fn_name,
-            "arguments": args,
-            "result": res
-        })
-
-        if on_event:
-            await _safe_emit(on_event, {
-                "type": "tool_completed",
-                "tool": fn_name,
-                "result": res,
-                "presentation_version": pres.version if pres else 1
-            })
-
-        if memory:
-            memory.log_action(f"执行工具 '{fn_name}': {res.get('message', 'ok') if isinstance(res, dict) else 'ok'}")
+    active_slide_id = state.get("active_slide_id")
+    if pres and pres.slides:
+        if not pres.active_slide_id:
+            pres.active_slide_id = pres.slides[0].id
+        active_slide_id = pres.active_slide_id
 
     return {
-        "tool_results": results,
-        "presentation_version": pres.version if pres else 1,
-        "last_target_id": current_target_id
+        "tool_results": batch.results,
+        "execution_plan": [],
+        "presentation_version": batch.version,
+        "last_target_id": batch.last_target_id,
+        "active_slide_id": active_slide_id,
+        "changed_slide_ids": changed_slide_ids,
     }
 
 
@@ -663,30 +677,52 @@ async def content_critic_node(state: PPTAgentState, config: RunnableConfig) -> D
     from .subagents.memory import SubagentSessionMemory
     content_mem = SubagentSessionMemory.from_dict(subagent_mems.get("ContentCriticSubagent", {})) if "ContentCriticSubagent" in subagent_mems else SubagentSessionMemory("ContentCriticSubagent")
 
-    active_slide = pres.get_active_slide() if pres else None
-    if pres and (not active_slide or len(active_slide.elements) == 0):
-        for s in pres.slides:
-            if len(s.elements) > 0:
-                active_slide = s
-                pres.active_slide_id = s.id
-                break
+    review_ids = list(state.get("changed_slide_ids") or [])
+    if not review_ids and state.get("rework_directive"):
+        # No mutation happened on the rework pass: re-audit the previously failed slides.
+        review_ids = list(state["rework_directive"].get("failed_slide_ids") or [])
+    review_targets = _resolve_review_slides(pres, review_ids)
+    if review_targets and pres:
+        pres.active_slide_id = review_targets[0].id
 
-    content_dict = None
-    if active_slide and len(active_slide.elements) > 0:
+    deck_reviews: Dict[str, Dict[str, Any]] = {}
+    if review_targets:
         from .subagents.content_critic import ContentCriticSubagent
-        c_res = await ContentCriticSubagent.audit_content(
-            slide=active_slide,
-            llm_client=llm_client,
-            session_memory=content_mem,
-            on_event=on_event
-        )
-        content_dict = c_res.to_dict()
+        for slide in review_targets:
+            c_res = await ContentCriticSubagent.audit_content(
+                slide=slide,
+                llm_client=llm_client,
+                session_memory=content_mem,
+                on_event=on_event
+            )
+            deck_reviews[slide.id] = c_res.to_dict()
+
+    content_dict = _aggregate_deck_reviews(deck_reviews, approved_key="approved")
+    rework_directive = None
+    if content_dict and not content_dict.get("approved", True):
+        failing_slide_id = content_dict["failed_slide_ids"][0]
+        failing_review = deck_reviews[failing_slide_id]
+        failing_slide = pres.get_slide(failing_slide_id) if pres else None
+        rework_directive = {
+            "source": "content_critic",
+            "slide_id": failing_slide_id,
+            "target_ids": [
+                el.id for el in (failing_slide.elements if failing_slide else [])
+                if getattr(el, "type", "") in ("text", "shape")
+            ],
+            "defects": list(failing_review.get("redundancy_issues") or []),
+            "recommendations": list(failing_review.get("recommendations") or []),
+            "summary": failing_review.get("summary", ""),
+            "round": content_iteration,
+            "failed_slide_ids": list(content_dict["failed_slide_ids"]),
+        }
 
     subagent_mems["ContentCriticSubagent"] = content_mem.to_dict()
 
     return {
         "content_review": content_dict,
         "content_iteration": content_iteration,
+        "rework_directive": rework_directive,
         "subagent_memories": subagent_mems
     }
 
@@ -704,29 +740,38 @@ async def vision_critic_node(state: PPTAgentState, config: RunnableConfig) -> Di
 
     critique = None
     review_dict = None
-    active_slide = pres.get_active_slide() if pres else None
+    review_targets = _resolve_review_slides(pres, state.get("changed_slide_ids"))
+    if review_targets and pres:
+        pres.active_slide_id = review_targets[0].id
 
-    # In zero-to-one deck generation or initial state, if active slide has no elements, inspect first non-empty slide
-    if pres and (not active_slide or len(active_slide.elements) == 0):
-        for s in pres.slides:
-            if len(s.elements) > 0:
-                active_slide = s
-                pres.active_slide_id = s.id
-                break
-
-    if active_slide and len(active_slide.elements) > 0:
-        if settings.enable_vision_loop:
-            # Delegate to decoupled, context-isolated VisualCriticSubagent
-            from .subagents.visual_critic import VisualCriticSubagent
+    deck_reviews: Dict[str, Dict[str, Any]] = {}
+    if review_targets and settings.enable_vision_loop:
+        # Delegate each changed slide to the decoupled, context-isolated VisualCriticSubagent
+        from .subagents.visual_critic import VisualCriticSubagent
+        for slide in review_targets:
             review_res = await VisualCriticSubagent.audit_slide(
-                slide=active_slide,
+                slide=slide,
                 llm_client=llm_client,
                 include_multimodal=bool(llm_client and getattr(llm_client, "api_key", None)),
                 session_memory=vision_mem,
                 on_event=on_event
             )
-            critique = review_res.critique_summary
-            review_dict = review_res.to_dict()
+            deck_reviews[slide.id] = review_res.to_dict()
+
+    if deck_reviews:
+        primary = next(
+            (r for r in deck_reviews.values() if r.get("needs_auto_correction") or r.get("has_critical_defects")),
+            next(iter(deck_reviews.values()))
+        )
+        review_dict = {
+            **primary,
+            "slides": deck_reviews,
+            "reviewed_slide_ids": list(deck_reviews.keys()),
+            "deck_average_score": round(
+                sum(float(r.get("score", 0.0)) for r in deck_reviews.values()) / len(deck_reviews), 1
+            ),
+        }
+        critique = primary.get("critique_summary")
 
     subagent_mems["VisualCriticSubagent"] = vision_mem.to_dict()
 
@@ -782,14 +827,30 @@ async def auto_correct_node(state: PPTAgentState, config: RunnableConfig) -> Dic
         summary=plan_dict.get("summary", "")
     )
 
-    runner_res = RemediationRunner.apply_plan(
-        pres=pres,
-        history=history,
-        plan=plan,
-        slide_id=state.get("active_slide_id"),
-        only_critical=True,
-        on_event=on_event
-    )
+    session = configurable.get("session")
+    # Deck-level reviews aggregate per-slide plans; remediation must target the
+    # slide the aggregated plan actually came from.
+    target_slide_id = visual_review.get("slide_id") or state.get("active_slide_id")
+    lock = getattr(session, "mutation_lock", None) if session else None
+    if lock is not None and not lock.locked():
+        async with lock:
+            runner_res = RemediationRunner.apply_plan(
+                pres=pres,
+                history=history,
+                plan=plan,
+                slide_id=target_slide_id,
+                only_critical=True,
+                on_event=on_event
+            )
+    else:
+        runner_res = RemediationRunner.apply_plan(
+            pres=pres,
+            history=history,
+            plan=plan,
+            slide_id=target_slide_id,
+            only_critical=True,
+            on_event=on_event
+        )
 
     for rec in runner_res.get("applied_records", []):
         tool_results.append({
@@ -855,6 +916,14 @@ async def summary_node(state: PPTAgentState, config: RunnableConfig) -> Dict[str
         executed_names = [r["tool"] for r in tool_results if not r.get("auto_correct")]
         tool_desc = ', '.join(executed_names) if executed_names else '编辑工具'
         final_text = f"已完成针对当前幻灯片的调整。成功调用了 {tool_desc}，图元属性已实时同步更新。"
+
+    blocked_results = [r for r in tool_results if r.get("requires_confirmation")]
+    if blocked_results:
+        blocked_names = ', '.join(r.get("tool", "?") for r in blocked_results)
+        final_text += (
+            f"\n\n[安全拦截] 操作 {blocked_names} 的语义解析置信度不足，"
+            "已被 RiskPolicy 挂起，等待您确认后执行。"
+        )
 
     if correction_count > 0 and visual_review:
         score_val = visual_review.get("score", 95.0)
@@ -1022,7 +1091,8 @@ def should_auto_correct(state: PPTAgentState) -> str:
 def build_ppt_agent_graph() -> StateGraph:
     """Builds and compiles the complete LangGraph closed-loop workflow:
     START -> router_node -> planner_node -> plan_critic_node (loop if rejected)
-          -> executor_node -> content_critic_node (loop if rejected)
+          -> executor_node (plans) -> mutation_node (gateway commits)
+          -> content_critic_node (loop if rejected)
           -> vision_critic_node -> auto_correct_node (loop if geometric defects)
           -> summary_node -> END
     """
@@ -1033,6 +1103,7 @@ def build_ppt_agent_graph() -> StateGraph:
     workflow.add_node("planner_node", planner_node)
     workflow.add_node("plan_critic_node", plan_critic_node)
     workflow.add_node("executor_node", executor_node)
+    workflow.add_node("mutation_node", mutation_node)
     workflow.add_node("content_critic_node", content_critic_node)
     workflow.add_node("vision_critic_node", vision_critic_node)
     workflow.add_node("auto_correct_node", auto_correct_node)
@@ -1049,7 +1120,8 @@ def build_ppt_agent_graph() -> StateGraph:
         "planner_node": "planner_node",
         "executor_node": "executor_node"
     })
-    workflow.add_edge("executor_node", "content_critic_node")
+    workflow.add_edge("executor_node", "mutation_node")
+    workflow.add_edge("mutation_node", "content_critic_node")
     workflow.add_conditional_edges("content_critic_node", should_route_content_critic, {
         "executor_node": "executor_node",
         "vision_critic_node": "vision_critic_node"

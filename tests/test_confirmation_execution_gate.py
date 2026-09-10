@@ -2,20 +2,20 @@
 
 PR6.1 surfaced `_needs_confirmation` on resolver-generated tool calls, but the
 runtime executed them unconditionally and raw live-LLM calls bypassed risk policy
-entirely. These tests pin the full contract:
+entirely. This round centralizes execution in `MutationGateway`:
 
 - Every call (LLM or heuristic) is risk-enriched before the gate.
-- `tools_node` must NOT execute a flagged/unassessed risky mutation.
+- The gateway must NOT execute a flagged/unassessed risky mutation.
 - The blocked call must surface `confirmation_required` and register a pending
-  confirmation in the session (original arguments + presentation version).
-- An explicitly confirmed call id (state or configurable) must execute.
+  confirmation in the session (original arguments + document epoch + revision).
+- An explicitly confirmed call id must execute.
 - `AgentRuntime.confirm_pending` executes the ORIGINAL pending call and invalidates
   it when the presentation changed since it was blocked.
 """
 
 import asyncio
 
-from backend.agent.graph import tools_node
+from backend.agent.mutation_gateway import MutationGateway
 from backend.agent.risk_policy import ConfirmationGate, RiskEnricher
 from backend.agent.runtime import AgentRuntime
 from backend.ir.models import PresentationIR, SlideIR, TextElementIR, TextContentIR
@@ -43,6 +43,19 @@ def _flagged_move_call(call_id="call_low_conf"):
         "_resolution_confidence": 0.6,
         "_needs_confirmation": True,
     }
+
+
+async def _gateway_execute(tool_calls, pres, history, *, session=None, on_event=None, confirmed_ids=None, bypass_confirmation=False):
+    return await MutationGateway.execute_tool_calls(
+        tool_calls,
+        pres,
+        history,
+        session=session,
+        on_event=on_event,
+        confirmed_ids=confirmed_ids,
+        source="agent",
+        bypass_confirmation=bypass_confirmation,
+    )
 
 
 # =====================================================================
@@ -116,10 +129,10 @@ def test_risk_enricher_ignores_non_risk_tools():
 
 
 # =====================================================================
-# tools_node execution gate
+# MutationGateway execution gate
 # =====================================================================
 
-def test_tools_node_blocks_unconfirmed_mutation():
+def test_gateway_blocks_unconfirmed_mutation():
     async def _run():
         pres = _pres_with_title()
         history = HistoryManager()
@@ -128,68 +141,40 @@ def test_tools_node_blocks_unconfirmed_mutation():
         async def on_event(payload):
             events.append(payload)
 
-        state = {"tool_calls": [_flagged_move_call()]}
-        config = {
-            "configurable": {
-                "pres": pres,
-                "history": history,
-                "on_event": on_event,
-            }
-        }
-        out = await tools_node(state, config)
+        batch = await _gateway_execute(
+            [_flagged_move_call()], pres, history, on_event=on_event
+        )
 
         elem = pres.slides[0].get_element("elem_title")
         assert elem.y == 50.0  # mutation did NOT happen
-        res = out["tool_results"][0]["result"]
+        res = batch.results[0]["result"]
         assert res["blocked"] is True
-        assert out["tool_results"][0]["requires_confirmation"] is True
+        assert batch.results[0]["requires_confirmation"] is True
         # No target tracking for a blocked call
-        assert out["last_target_id"] is None
+        assert batch.last_target_id is None
         # Telemetry surfaced
         assert any(e["type"] == "confirmation_required" for e in events)
 
     asyncio.run(_run())
 
 
-def test_tools_node_executes_confirmed_mutation():
+def test_gateway_executes_confirmed_mutation():
     async def _run():
         pres = _pres_with_title()
         history = HistoryManager()
-        state = {"tool_calls": [_flagged_move_call()]}
-        config = {
-            "configurable": {
-                "pres": pres,
-                "history": history,
-                "confirmed_tool_ids": ["call_low_conf"],
-            }
-        }
-        out = await tools_node(state, config)
+        batch = await _gateway_execute(
+            [_flagged_move_call()], pres, history, confirmed_ids=["call_low_conf"]
+        )
 
         elem = pres.slides[0].get_element("elem_title")
         assert elem.y == 260.0  # mutation applied after confirmation
-        assert out["tool_results"][0]["result"].get("blocked") is None
-        assert out["last_target_id"] == "elem_title"
+        assert batch.results[0]["result"].get("blocked") is None
+        assert batch.last_target_id == "elem_title"
 
     asyncio.run(_run())
 
 
-def test_tools_node_confirmation_via_state():
-    async def _run():
-        pres = _pres_with_title()
-        history = HistoryManager()
-        state = {
-            "tool_calls": [_flagged_move_call("call_from_state")],
-            "confirmed_tool_ids": ["call_from_state"],
-        }
-        config = {"configurable": {"pres": pres, "history": history}}
-        out = await tools_node(state, config)
-        assert pres.slides[0].get_element("elem_title").y == 260.0
-        assert out["tool_results"][0]["result"].get("blocked") is None
-
-    asyncio.run(_run())
-
-
-def test_tools_node_blocks_raw_llm_call_with_unresolved_target():
+def test_gateway_blocks_raw_llm_call_with_unresolved_target():
     async def _run():
         pres = _pres_with_title()
         history = HistoryManager()
@@ -199,23 +184,20 @@ def test_tools_node_blocks_raw_llm_call_with_unresolved_target():
         async def on_event(payload):
             events.append(payload)
 
-        state = {"tool_calls": [{
-            "name": "delete_element",
-            "arguments": {"element_id": "ghost_element", "slide_id": "slide_1"},
-            "id": "call_llm_ghost",
-        }]}
-        config = {
-            "configurable": {
-                "pres": pres,
-                "history": history,
-                "session": session,
-                "on_event": on_event,
-            }
-        }
-        out = await tools_node(state, config)
+        batch = await _gateway_execute(
+            [{
+                "name": "delete_element",
+                "arguments": {"element_id": "ghost_element", "slide_id": "slide_1"},
+                "id": "call_llm_ghost",
+            }],
+            pres,
+            history,
+            session=session,
+            on_event=on_event,
+        )
 
         assert pres.slides[0].get_element("elem_title") is not None  # not deleted
-        assert out["tool_results"][0]["result"]["blocked"] is True
+        assert batch.results[0]["result"]["blocked"] is True
         assert any(
             e["type"] == "confirmation_required" and e.get("call_id") == "call_llm_ghost"
             for e in events
@@ -223,25 +205,45 @@ def test_tools_node_blocks_raw_llm_call_with_unresolved_target():
         pending = session.get_pending_confirmation("call_llm_ghost")
         assert pending is not None
         assert pending["presentation_version"] == pres.version
+        assert pending["expected_revision"] == pres.version
+        assert pending["document_epoch"] == session.document_epoch
         assert pending["arguments"] == {"element_id": "ghost_element", "slide_id": "slide_1"}
 
     asyncio.run(_run())
 
 
-def test_tools_node_executes_raw_llm_call_with_resolved_target():
+def test_gateway_executes_raw_llm_call_with_resolved_target():
     async def _run():
         pres = _pres_with_title()
         history = HistoryManager()
-        state = {"tool_calls": [{
-            "name": "delete_element",
-            "arguments": {"element_id": "elem_title", "slide_id": "slide_1"},
-            "id": "call_llm_ok",
-        }]}
-        config = {"configurable": {"pres": pres, "history": history}}
-        out = await tools_node(state, config)
+        batch = await _gateway_execute(
+            [{
+                "name": "delete_element",
+                "arguments": {"element_id": "elem_title", "slide_id": "slide_1"},
+                "id": "call_llm_ok",
+            }],
+            pres,
+            history,
+        )
 
         assert pres.slides[0].get_element("elem_title") is None  # deleted
-        assert out["tool_results"][0]["result"].get("blocked") is None
+        assert batch.results[0]["result"].get("blocked") is None
+
+    asyncio.run(_run())
+
+
+def test_gateway_fails_closed_for_unknown_tool():
+    async def _run():
+        pres = _pres_with_title()
+        history = HistoryManager()
+        batch = await _gateway_execute(
+            [{"name": "not_a_tool", "arguments": {}, "id": "c_unknown"}],
+            pres,
+            history,
+        )
+        res = batch.results[0]["result"]
+        assert res["success"] is False
+        assert "Unknown tool" in res["error"]
 
     asyncio.run(_run())
 
@@ -261,15 +263,9 @@ def test_confirm_pending_executes_original_call_and_clears():
         async def on_event(payload):
             events.append(payload)
 
-        config = {
-            "configurable": {
-                "pres": pres,
-                "history": history,
-                "session": session,
-                "on_event": on_event,
-            }
-        }
-        await tools_node({"tool_calls": [_flagged_move_call()]}, config)
+        await _gateway_execute(
+            [_flagged_move_call()], pres, history, session=session, on_event=on_event
+        )
         assert session.get_pending_confirmation("call_low_conf") is not None
         assert pres.slides[0].get_element("elem_title").y == 50.0
 
@@ -308,15 +304,9 @@ def test_stale_pending_confirmation_is_invalidated():
         async def on_event(payload):
             events.append(payload)
 
-        config = {
-            "configurable": {
-                "pres": pres,
-                "history": history,
-                "session": session,
-                "on_event": on_event,
-            }
-        }
-        await tools_node({"tool_calls": [_flagged_move_call()]}, config)
+        await _gateway_execute(
+            [_flagged_move_call()], pres, history, session=session, on_event=on_event
+        )
         assert session.get_pending_confirmation("call_low_conf") is not None
 
         # The presentation changes while the call waits for confirmation
@@ -339,14 +329,9 @@ def test_cancel_pending_discards_call():
         history = HistoryManager()
         session = PPTSession(session_id="sess_cancel", pres=pres)
         runtime = AgentRuntime()
-        config = {
-            "configurable": {
-                "pres": pres,
-                "history": history,
-                "session": session,
-            }
-        }
-        await tools_node({"tool_calls": [_flagged_move_call()]}, config)
+        await _gateway_execute(
+            [_flagged_move_call()], pres, history, session=session
+        )
 
         result = await runtime.cancel_pending(session, "call_low_conf")
 
@@ -382,4 +367,3 @@ def test_run_turn_forwards_confirmed_tool_ids():
         assert config["configurable"]["confirmed_tool_ids"] == ["call_x", "call_y"]
 
     asyncio.run(_run())
-

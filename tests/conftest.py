@@ -11,6 +11,8 @@ empty values here keeps the `.env` out of every test that imports backend.
 
 import os
 
+os.environ["APP_ENV"] = "test"
+os.environ["MOCK_LLM"] = "true"
 os.environ["OPENAI_API_KEY"] = ""
 os.environ["OPENAI_BASE_URL"] = ""
 os.environ["DEFAULT_MODEL"] = "gemini-3.8-flash-high"
