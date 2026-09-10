@@ -2,7 +2,11 @@ import React, { useState, useEffect, useRef } from 'react'
 import {
   Trash2, Sliders, Type, Square,
   Palette, CornerUpRight, Move, Bold, Italic,
-  AlignLeft, AlignCenter, AlignRight, Copy, Image as ImageIcon
+  AlignLeft, AlignCenter, AlignRight, Copy, Image as ImageIcon,
+  AlignStartVertical, AlignCenterVertical, AlignEndVertical,
+  AlignStartHorizontal, AlignCenterHorizontal, AlignEndHorizontal,
+  AlignHorizontalDistributeCenter, AlignVerticalDistributeCenter,
+  Layers, Ungroup
 } from 'lucide-react'
 import { usePPTStore } from '../store/usePPTStore'
 import type { ShapeElementIR, TextElementIR, ConnectorElementIR, GroupElementIR, ImageElementIR } from '../types/ppt'
@@ -57,10 +61,16 @@ export const PropertyPanel: React.FC = () => {
   const {
     getActiveSlide,
     getSelectedElement,
+    selectedElementIds,
     setSlideBackgroundDirect,
     applyThemeDirect,
     duplicateSelectedElement,
+    duplicateSelectedElements,
     deleteSelectedElement,
+    deleteSelectedElements,
+    groupSelectedElements,
+    ungroupSelectedElement,
+    alignSelectedElements,
     updateElementDirect,
     setEditingElementId
   } = usePPTStore()
@@ -91,6 +101,114 @@ export const PropertyPanel: React.FC = () => {
       setLocalText(plainText)
     }
   }, [elem?.id, plainText])
+
+  // Multi-selection: alignment, distribution and grouping controls
+  if (selectedElementIds.length > 1) {
+    const alignActions = [
+      { mode: 'left' as const, label: '左对齐', icon: <AlignStartVertical className="w-3.5 h-3.5" /> },
+      { mode: 'center' as const, label: '水平居中', icon: <AlignCenterVertical className="w-3.5 h-3.5" /> },
+      { mode: 'right' as const, label: '右对齐', icon: <AlignEndVertical className="w-3.5 h-3.5" /> },
+      { mode: 'top' as const, label: '顶部对齐', icon: <AlignStartHorizontal className="w-3.5 h-3.5" /> },
+      { mode: 'middle' as const, label: '垂直居中', icon: <AlignCenterHorizontal className="w-3.5 h-3.5" /> },
+      { mode: 'bottom' as const, label: '底部对齐', icon: <AlignEndHorizontal className="w-3.5 h-3.5" /> }
+    ]
+    const distributeActions = [
+      { mode: 'distribute_h' as const, label: '水平等距分布', icon: <AlignHorizontalDistributeCenter className="w-3.5 h-3.5" /> },
+      { mode: 'distribute_v' as const, label: '垂直等距分布', icon: <AlignVerticalDistributeCenter className="w-3.5 h-3.5" /> }
+    ]
+
+    return (
+      <div className="flex-1 overflow-y-auto p-4 space-y-5 text-secondary bg-panel custom-scrollbar">
+        <div className="flex items-center justify-between border-b border-line pb-3">
+          <div className="flex items-center gap-2">
+            <div className="w-6 h-6 rounded-md bg-blue-50 border border-blue-200 flex items-center justify-center text-blue-600">
+              <Layers className="w-3.5 h-3.5" />
+            </div>
+            <div>
+              <span className="text-xs font-semibold text-main">多选编排</span>
+              <span className="font-tabular text-[11px] text-muted ml-2 font-medium">
+                已选中 {selectedElementIds.length} 个图元
+              </span>
+            </div>
+          </div>
+        </div>
+
+        {/* Alignment */}
+        <div className="space-y-2">
+          <div className="flex items-center gap-1.5 text-xs font-semibold text-secondary">
+            <AlignCenterHorizontal className="w-3.5 h-3.5 text-muted" />
+            <span>对齐方式</span>
+          </div>
+          <div className="grid grid-cols-3 gap-1.5">
+            {alignActions.map((a) => (
+              <button
+                key={a.mode}
+                onClick={() => alignSelectedElements(a.mode)}
+                className="flex flex-col items-center justify-center gap-1 py-2 bg-subtle hover:bg-elevated text-secondary hover:text-main rounded-lg border border-line hover:border-line-strong text-[10px] font-medium transition-all"
+                title={a.label}
+              >
+                <span className="text-muted">{a.icon}</span>
+                <span>{a.label}</span>
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {/* Distribution */}
+        <div className="space-y-2 pt-2 border-t border-line">
+          <div className="flex items-center gap-1.5 text-xs font-semibold text-secondary">
+            <AlignHorizontalDistributeCenter className="w-3.5 h-3.5 text-muted" />
+            <span>等距分布</span>
+          </div>
+          <div className="grid grid-cols-2 gap-1.5">
+            {distributeActions.map((a) => (
+              <button
+                key={a.mode}
+                onClick={() => alignSelectedElements(a.mode)}
+                className="flex items-center justify-center gap-1.5 py-2 bg-subtle hover:bg-elevated text-secondary hover:text-main rounded-lg border border-line hover:border-line-strong text-[10px] font-medium transition-all"
+                title={a.label}
+              >
+                <span className="text-muted">{a.icon}</span>
+                <span>{a.label}</span>
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {/* Grouping & Actions */}
+        <div className="space-y-2 pt-2 border-t border-line">
+          <div className="flex items-center gap-1.5 text-xs font-semibold text-secondary">
+            <Layers className="w-3.5 h-3.5 text-muted" />
+            <span>组合与批量操作</span>
+          </div>
+          <button
+            onClick={() => groupSelectedElements()}
+            className="w-full flex items-center justify-center gap-1.5 py-2 rounded-lg bg-inverted hover:bg-inverted-hover text-inverted-text text-xs font-medium transition-all shadow-xs"
+            title="组合选中图元 (Ctrl+G)"
+          >
+            <Layers className="w-3.5 h-3.5" />
+            <span>组合 (Ctrl+G)</span>
+          </button>
+          <button
+            onClick={() => duplicateSelectedElements()}
+            className="w-full flex items-center justify-center gap-1.5 py-1.5 rounded-lg bg-subtle hover:bg-elevated text-secondary hover:text-main border border-line-strong text-xs font-medium transition-all"
+            title="复制选中图元 (Ctrl+D)"
+          >
+            <Copy className="w-3.5 h-3.5" />
+            <span>复制图元</span>
+          </button>
+          <button
+            onClick={deleteSelectedElements}
+            className="w-full flex items-center justify-center gap-1.5 py-1.5 rounded-lg bg-subtle hover:bg-rose-50 text-muted hover:text-rose-600 border border-line-strong hover:border-rose-200 text-xs font-medium transition-all"
+            title="删除选中图元 (Delete)"
+          >
+            <Trash2 className="w-3.5 h-3.5" />
+            <span>删除图元</span>
+          </button>
+        </div>
+      </div>
+    )
+  }
 
   // 1. If no element is selected, show Slide Level Properties & Archetypes
   if (!elem) {
@@ -255,6 +373,27 @@ export const PropertyPanel: React.FC = () => {
           </button>
         </div>
       </div>
+
+      {/* Group Specific Actions */}
+      {isGroup && (
+        <div className="space-y-2">
+          <div className="flex items-center gap-1.5 text-xs font-semibold text-secondary">
+            <Layers className="w-3.5 h-3.5 text-muted" />
+            <span>组合容器</span>
+            <span className="font-tabular text-[11px] text-muted font-medium">
+              {groupElem.children?.length || 0} 个成员图元
+            </span>
+          </div>
+          <button
+            onClick={ungroupSelectedElement}
+            className="w-full flex items-center justify-center gap-1.5 py-2 rounded-lg bg-amber-50 hover:bg-amber-100 text-amber-700 border border-amber-200 text-xs font-medium transition-all shadow-xs"
+            title="解散当前组合，恢复成员图元 (Ctrl+Shift+G)"
+          >
+            <Ungroup className="w-3.5 h-3.5" />
+            <span>解散组合 (Ctrl+Shift+G)</span>
+          </button>
+        </div>
+      )}
 
       {/* Geometry: X, Y, Width, Height */}
       <div className="space-y-2">

@@ -14,7 +14,9 @@ interface Props {
   onElementMouseDown?: (elemId: string, e: React.MouseEvent) => void
   onElementDoubleClick?: (elemId: string, e: React.MouseEvent) => void
   onResizeHandleMouseDown?: (handle: 'nw' | 'n' | 'ne' | 'e' | 'se' | 's' | 'sw' | 'w', e: React.MouseEvent) => void
+  onBackgroundMouseDown?: (e: React.MouseEvent) => void
   alignmentGuides?: SnapGuide[]
+  selectionBox?: { x: number; y: number; width: number; height: number } | null
   editingElementId?: string | null
   onCommitInlineEdit?: (elemId: string, text: string) => void
   onCancelInlineEdit?: () => void
@@ -139,12 +141,14 @@ export const SVGRendererComponent: React.FC<Props> = ({
   onElementMouseDown,
   onElementDoubleClick,
   onResizeHandleMouseDown,
+  onBackgroundMouseDown,
   alignmentGuides = [],
+  selectionBox = null,
   editingElementId = null,
   onCommitInlineEdit,
   onCancelInlineEdit
 }) => {
-  const { selectedElementId, setSelectedElementId } = usePPTStore()
+  const { selectedElementIds, setSelectedElementId, toggleElementSelection } = usePPTStore()
 
   // Generate unique gradient IDs for this slide
   const renderDefs = () => {
@@ -417,7 +421,8 @@ export const SVGRendererComponent: React.FC<Props> = ({
   }
 
   const renderElementNode = (elem: ElementIR) => {
-    const isSelected = !isThumbnail && selectedElementId === elem.id
+    const isSelected = !isThumbnail && selectedElementIds.includes(elem.id)
+    const isPrimary = !isThumbnail && selectedElementIds.length === 1 && selectedElementIds[0] === elem.id
     const isEditing = !isThumbnail && editingElementId === elem.id
     const transform = elem.rotation ? `rotate(${elem.rotation} ${elem.x + elem.width / 2} ${elem.y + elem.height / 2})` : undefined
 
@@ -435,6 +440,10 @@ export const SVGRendererComponent: React.FC<Props> = ({
               return
             }
             e.stopPropagation()
+            if (e.shiftKey) {
+              toggleElementSelection(elem.id)
+              return
+            }
             setSelectedElementId(elem.id)
             onElementMouseDown?.(elem.id, e)
           }
@@ -442,7 +451,8 @@ export const SVGRendererComponent: React.FC<Props> = ({
         onClick={(e) => {
           if (!isThumbnail) {
             e.stopPropagation()
-            if (isSelected && (elem.type === 'text' || elem.type === 'shape')) {
+            if (e.shiftKey) return
+            if (isPrimary && (elem.type === 'text' || elem.type === 'shape')) {
               onElementDoubleClick?.(elem.id, e)
             } else {
               setSelectedElementId(elem.id)
@@ -600,84 +610,93 @@ export const SVGRendererComponent: React.FC<Props> = ({
               width={elem.width + 3}
               height={elem.height + 3}
               fill="none"
-              stroke={themeColors.content.primary}
+              stroke={isPrimary ? themeColors.content.primary : '#2563EB'}
               strokeWidth="1.2"
               strokeDasharray="4,2"
               pointerEvents="none"
             />
 
-            {/* 8 Interactive Resize Handles */}
-            {[
-              { id: 'nw', cx: elem.x, cy: elem.y, cursor: 'nwse-resize' },
-              { id: 'n', cx: elem.x + elem.width / 2, cy: elem.y, cursor: 'ns-resize' },
-              { id: 'ne', cx: elem.x + elem.width, cy: elem.y, cursor: 'nesw-resize' },
-              { id: 'e', cx: elem.x + elem.width, cy: elem.y + elem.height / 2, cursor: 'ew-resize' },
-              { id: 'se', cx: elem.x + elem.width, cy: elem.y + elem.height, cursor: 'nwse-resize' },
-              { id: 's', cx: elem.x + elem.width / 2, cy: elem.y + elem.height, cursor: 'ns-resize' },
-              { id: 'sw', cx: elem.x, cy: elem.y + elem.height, cursor: 'nesw-resize' },
-              { id: 'w', cx: elem.x, cy: elem.y + elem.height / 2, cursor: 'ew-resize' },
-            ].map((h) => (
-              <rect
-                key={h.id}
-                x={h.cx - 4.5}
-                y={h.cy - 4.5}
-                width={9}
-                height={9}
-                rx={2}
-                fill={themeColors.surface.panel}
-                stroke={themeColors.content.primary}
-                strokeWidth={1.5}
-                style={{ cursor: h.cursor }}
-                onMouseDown={(e) => {
-                  e.stopPropagation()
-                  onResizeHandleMouseDown?.(h.id as any, e)
-                }}
-                onClick={(e) => {
-                  e.stopPropagation()
-                }}
-              />
-            ))}
+            {/* 8 Interactive Resize Handles (single selection only) */}
+            {isPrimary &&
+              [
+                { id: 'nw', cx: elem.x, cy: elem.y, cursor: 'nwse-resize' },
+                { id: 'n', cx: elem.x + elem.width / 2, cy: elem.y, cursor: 'ns-resize' },
+                { id: 'ne', cx: elem.x + elem.width, cy: elem.y, cursor: 'nesw-resize' },
+                { id: 'e', cx: elem.x + elem.width, cy: elem.y + elem.height / 2, cursor: 'ew-resize' },
+                { id: 'se', cx: elem.x + elem.width, cy: elem.y + elem.height, cursor: 'nwse-resize' },
+                { id: 's', cx: elem.x + elem.width / 2, cy: elem.y + elem.height, cursor: 'ns-resize' },
+                { id: 'sw', cx: elem.x, cy: elem.y + elem.height, cursor: 'nesw-resize' },
+                { id: 'w', cx: elem.x, cy: elem.y + elem.height / 2, cursor: 'ew-resize' },
+              ].map((h) => (
+                <rect
+                  key={h.id}
+                  x={h.cx - 4.5}
+                  y={h.cy - 4.5}
+                  width={9}
+                  height={9}
+                  rx={2}
+                  fill={themeColors.surface.panel}
+                  stroke={themeColors.content.primary}
+                  strokeWidth={1.5}
+                  style={{ cursor: h.cursor }}
+                  onMouseDown={(e) => {
+                    e.stopPropagation()
+                    onResizeHandleMouseDown?.(h.id as any, e)
+                  }}
+                  onClick={(e) => {
+                    e.stopPropagation()
+                  }}
+                />
+              ))}
 
             {/* Dimension & Coordinates Tooltip Pill */}
-            <g pointerEvents="none">
-              <rect
-                x={elem.x}
-                y={elem.y - 24}
-                width={112}
-                height={18}
-                rx={4}
-                fill={themeColors.surface.inverted}
-                stroke={themeColors.surface.invertedHover}
-                strokeWidth={1}
-              />
-              <text
-                x={elem.x + 56}
-                y={elem.y - 11}
-                textAnchor="middle"
-                fill={themeColors.content.inverted}
-                fontSize="10px"
-                fontFamily="'JetBrains Mono', 'SF Mono', Consolas, monospace"
-                fontWeight="500"
-              >
-                {Math.round(elem.width)} × {Math.round(elem.height)} px
-              </text>
-            </g>
+            {isPrimary && (
+              <g pointerEvents="none">
+                <rect
+                  x={elem.x}
+                  y={elem.y - 24}
+                  width={112}
+                  height={18}
+                  rx={4}
+                  fill={themeColors.surface.inverted}
+                  stroke={themeColors.surface.invertedHover}
+                  strokeWidth={1}
+                />
+                <text
+                  x={elem.x + 56}
+                  y={elem.y - 11}
+                  textAnchor="middle"
+                  fill={themeColors.content.inverted}
+                  fontSize="10px"
+                  fontFamily="'JetBrains Mono', 'SF Mono', Consolas, monospace"
+                  fontWeight="500"
+                >
+                  {Math.round(elem.width)} × {Math.round(elem.height)} px
+                </text>
+              </g>
+            )}
           </g>
         )}
       </g>
     )
   }
 
+  const multiBounds = (() => {
+    if (isThumbnail || selectedElementIds.length < 2) return null
+    const selected = slide.elements.filter((e) => selectedElementIds.includes(e.id))
+    if (selected.length < 2) return null
+    const minX = Math.min(...selected.map((e) => e.x))
+    const minY = Math.min(...selected.map((e) => e.y))
+    const maxX = Math.max(...selected.map((e) => e.x + e.width))
+    const maxY = Math.max(...selected.map((e) => e.y + e.height))
+    return { x: minX, y: minY, width: maxX - minX, height: maxY - minY }
+  })()
+
   return (
     <svg
       viewBox={`0 0 ${slide.width} ${slide.height}`}
       className="w-full h-full block"
       xmlns="http://www.w3.org/2000/svg"
-      onClick={(e) => {
-        if (!isThumbnail && e.target === e.currentTarget) {
-          setSelectedElementId(null)
-        }
-      }}
     >
       {renderDefs()}
 
@@ -686,16 +705,51 @@ export const SVGRendererComponent: React.FC<Props> = ({
         width={slide.width}
         height={slide.height}
         fill={getFillValue(slide.background)}
-        onClick={(e) => {
+        onMouseDown={(e) => {
           if (!isThumbnail) {
             e.stopPropagation()
-            setSelectedElementId(null)
+            if (onBackgroundMouseDown) {
+              onBackgroundMouseDown(e)
+            } else {
+              setSelectedElementId(null)
+            }
           }
         }}
       />
 
       {/* Elements in z-index order */}
       {slide.elements.map((elem) => renderElementNode(elem))}
+
+      {/* Multi-selection union bounding frame (pointer-events none) */}
+      {!isThumbnail && multiBounds && (
+        <g pointerEvents="none">
+          <rect
+            x={multiBounds.x}
+            y={multiBounds.y}
+            width={multiBounds.width}
+            height={multiBounds.height}
+            fill="none"
+            stroke="#2563EB"
+            strokeWidth="1.2"
+            strokeDasharray="6,3"
+          />
+        </g>
+      )}
+
+      {/* Drag box-selection marquee (pointer-events none) */}
+      {!isThumbnail && selectionBox && (
+        <rect
+          x={selectionBox.x}
+          y={selectionBox.y}
+          width={selectionBox.width}
+          height={selectionBox.height}
+          fill="rgba(59,130,246,0.10)"
+          stroke="#3B82F6"
+          strokeWidth="1"
+          strokeDasharray="4,3"
+          pointerEvents="none"
+        />
+      )}
 
       {/* Active snapping smart guides (slide-coordinate overlay, pointer-events none) */}
       {!isThumbnail && <AlignmentGuides guides={alignmentGuides} />}

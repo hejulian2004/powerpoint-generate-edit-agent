@@ -12,11 +12,17 @@ import type {
   ContextUsageData
 } from '../types/ppt'
 
+export type AlignMode =
+  | 'left' | 'center' | 'right'
+  | 'top' | 'middle' | 'bottom'
+  | 'distribute_h' | 'distribute_v'
+
 interface PPTState {
   sessionId: string
   presentation: PresentationIR | null
   activeSlideId: string | null
   selectedElementId: string | null
+  selectedElementIds: string[]
   activeRightTab: 'copilot' | 'inspector'
   editingElementId: string | null
   messages: ChatMessage[]
@@ -45,6 +51,10 @@ interface PPTState {
   setPresentation: (pres: PresentationIR) => void
   setActiveSlideId: (id: string) => void
   setSelectedElementId: (id: string | null) => void
+  setSelectedElementIds: (ids: string[]) => void
+  toggleElementSelection: (id: string) => void
+  selectAllElements: () => void
+  clearSelection: () => void
   setEditingElementId: (id: string | null) => void
   setActiveRightTab: (tab: 'copilot' | 'inspector') => void
   setSettingsOpen: (open: boolean) => void
@@ -67,8 +77,15 @@ interface PPTState {
   executeDirectAction: (action: string, payload?: Record<string, any>) => void
   addNewSlide: (backgroundColor?: string) => void
   deleteSlide: (slideIdOrNum: string | number) => void
+  duplicateSlide: (slideId: string) => void
+  clearSlideElements: (slideId?: string, keepTitle?: boolean) => void
   deleteSelectedElement: () => void
+  deleteSelectedElements: () => void
   duplicateSelectedElement: () => void
+  duplicateSelectedElements: () => void
+  groupSelectedElements: (groupName?: string) => void
+  ungroupSelectedElement: () => void
+  alignSelectedElements: (alignment: AlignMode) => void
   setSlideBackgroundDirect: (color: string) => void
   optimizeLayoutDirect: () => void
   applyThemeDirect: (themePreset: string) => void
@@ -90,6 +107,7 @@ export const usePPTStore = create<PPTState>((set, get) => ({
   presentation: null,
   activeSlideId: null,
   selectedElementId: null,
+  selectedElementIds: [],
   editingElementId: null,
   activeRightTab: 'copilot',
   messages: [
@@ -139,7 +157,7 @@ export const usePPTStore = create<PPTState>((set, get) => ({
   }),
 
   setActiveSlideId: (id) => {
-    set({ activeSlideId: id, selectedElementId: null, editingElementId: null })
+    set({ activeSlideId: id, selectedElementId: null, selectedElementIds: [], editingElementId: null })
     const { ws, sessionId } = get()
     if (ws && ws.readyState === WebSocket.OPEN) {
       ws.send(JSON.stringify({ type: 'select_slide', slide_id: id, session_id: sessionId }))
@@ -149,9 +167,44 @@ export const usePPTStore = create<PPTState>((set, get) => ({
   setSelectedElementId: (id) => {
     set((state) => ({
       selectedElementId: id,
+      selectedElementIds: id ? [id] : [],
       editingElementId: id === null ? null : state.editingElementId,
       activeRightTab: id ? 'inspector' : state.activeRightTab
     }))
+  },
+
+  setSelectedElementIds: (ids) => {
+    set((state) => ({
+      selectedElementIds: ids,
+      selectedElementId: ids.length ? ids[ids.length - 1] : null,
+      editingElementId: null,
+      activeRightTab: ids.length ? 'inspector' : state.activeRightTab
+    }))
+  },
+
+  toggleElementSelection: (id) => {
+    set((state) => {
+      const exists = state.selectedElementIds.includes(id)
+      const ids = exists
+        ? state.selectedElementIds.filter((x) => x !== id)
+        : [...state.selectedElementIds, id]
+      return {
+        selectedElementIds: ids,
+        selectedElementId: ids.length ? ids[ids.length - 1] : null,
+        editingElementId: null,
+        activeRightTab: ids.length ? 'inspector' : state.activeRightTab
+      }
+    })
+  },
+
+  selectAllElements: () => {
+    const slide = get().getActiveSlide()
+    if (!slide) return
+    get().setSelectedElementIds(slide.elements.map((e) => e.id))
+  },
+
+  clearSelection: () => {
+    set({ selectedElementId: null, selectedElementIds: [], editingElementId: null })
   },
 
   setEditingElementId: (id) => {
@@ -211,6 +264,17 @@ export const usePPTStore = create<PPTState>((set, get) => ({
     })
   },
 
+  duplicateSlide: (slideId: string) => {
+    get().executeDirectAction('duplicate_slide', { slide_id: slideId })
+  },
+
+  clearSlideElements: (slideId?: string, keepTitle = true) => {
+    get().executeDirectAction('clear_slide_elements', {
+      slide_id: slideId ?? get().activeSlideId,
+      keep_title: keepTitle
+    })
+  },
+
   deleteSelectedElement: () => {
     const { selectedElementId, activeSlideId } = get()
     if (!selectedElementId) return
@@ -218,7 +282,16 @@ export const usePPTStore = create<PPTState>((set, get) => ({
       element_id: selectedElementId,
       slide_id: activeSlideId
     })
-    set({ selectedElementId: null })
+    set({ selectedElementId: null, selectedElementIds: [], editingElementId: null })
+  },
+
+  deleteSelectedElements: () => {
+    const { selectedElementIds } = get()
+    if (selectedElementIds.length === 0) return
+    selectedElementIds.forEach((id) => {
+      get().executeDirectAction('delete_element', { element_id: id })
+    })
+    set({ selectedElementId: null, selectedElementIds: [], editingElementId: null })
   },
 
   duplicateSelectedElement: () => {
@@ -227,6 +300,39 @@ export const usePPTStore = create<PPTState>((set, get) => ({
     get().executeDirectAction('duplicate_element', {
       element_id: selectedElementId,
       slide_id: activeSlideId
+    })
+  },
+
+  duplicateSelectedElements: () => {
+    const { selectedElementIds } = get()
+    if (selectedElementIds.length === 0) return
+    selectedElementIds.forEach((id) => {
+      get().executeDirectAction('duplicate_element', { element_id: id })
+    })
+  },
+
+  groupSelectedElements: (groupName = '组合') => {
+    const { selectedElementIds } = get()
+    if (selectedElementIds.length < 2) return
+    get().executeDirectAction('group_elements', {
+      element_ids: selectedElementIds,
+      group_name: groupName
+    })
+    set({ selectedElementId: null, selectedElementIds: [], editingElementId: null })
+  },
+
+  ungroupSelectedElement: () => {
+    const elem = get().getSelectedElement()
+    if (!elem || elem.type !== 'group') return
+    get().executeDirectAction('ungroup_elements', { group_id: elem.id })
+  },
+
+  alignSelectedElements: (alignment: AlignMode) => {
+    const { selectedElementIds } = get()
+    if (selectedElementIds.length < 2) return
+    get().executeDirectAction('align_elements', {
+      alignment,
+      element_ids: selectedElementIds
     })
   },
 
@@ -332,7 +438,10 @@ export const usePPTStore = create<PPTState>((set, get) => ({
             presentation: data.presentation,
             activeSlideId: data.active_slide_id || data.presentation.slides[0]?.id,
             canUndo: data.can_undo ?? false,
-            canRedo: data.can_redo ?? false
+            canRedo: data.can_redo ?? false,
+            selectedElementId: null,
+            selectedElementIds: [],
+            editingElementId: null
           })
         } else if (type === 'preview_update') {
           set({
@@ -344,22 +453,24 @@ export const usePPTStore = create<PPTState>((set, get) => ({
         } else if (type === 'presentation_updated') {
           const activeSid = data.active_slide_id || get().activeSlideId || data.presentation?.slides?.[0]?.id
           const currentSlide = data.presentation?.slides?.find((s: any) => s.id === activeSid)
-          let newSelectedId = get().selectedElementId
+          const existsInSlide = (id: string | null | undefined) =>
+            !!id && (currentSlide?.elements?.some((e: any) => e.id === id) ?? false)
+
+          let newSelectedIds = get().selectedElementIds.filter((id) => existsInSlide(id))
+          let newSelectedId: string | null =
+            newSelectedIds.length > 0 ? newSelectedIds[newSelectedIds.length - 1] : get().selectedElementId
           let newEditingId = get().editingElementId
 
-          if (data.last_target_id) {
+          if (data.last_target_id && existsInSlide(data.last_target_id)) {
             const matched = currentSlide?.elements?.find((e: any) => e.id === data.last_target_id)
-            if (matched) {
-              newSelectedId = data.last_target_id
-              if (matched.type === 'text' && !get().editingElementId) {
-                newEditingId = data.last_target_id
-              }
+            newSelectedId = data.last_target_id
+            newSelectedIds = [data.last_target_id]
+            if (matched?.type === 'text' && !get().editingElementId) {
+              newEditingId = data.last_target_id
             }
-          }
-
-          if (newSelectedId && !currentSlide?.elements?.some((e: any) => e.id === newSelectedId)) {
-            newSelectedId = null
-            newEditingId = null
+          } else if (!existsInSlide(newSelectedId)) {
+            newSelectedId = newSelectedIds.length > 0 ? newSelectedIds[newSelectedIds.length - 1] : null
+            newEditingId = newSelectedId ? newEditingId : null
           }
 
           set((state) => ({
@@ -370,6 +481,7 @@ export const usePPTStore = create<PPTState>((set, get) => ({
             canRedo: data.can_redo ?? state.canRedo,
             mutationStatus: 'committed',
             selectedElementId: newSelectedId,
+            selectedElementIds: newSelectedIds,
             editingElementId: newEditingId,
             activeRightTab: newSelectedId ? 'inspector' : state.activeRightTab
           }))
