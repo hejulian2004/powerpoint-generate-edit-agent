@@ -1,19 +1,26 @@
-"""Execution-level tests for the RiskPolicy confirmation gate (PR6-hardening P1).
+"""Execution-level tests for the RiskPolicy confirmation gate (PR6-hardening).
 
 PR6.1 surfaced `_needs_confirmation` on resolver-generated tool calls, but the
-runtime executed them unconditionally. These tests pin the enforcement contract:
+runtime executed them unconditionally and raw live-LLM calls bypassed risk policy
+entirely. These tests pin the full contract:
 
-- `tools_node` must NOT execute a flagged low-confidence mutation.
-- The blocked call must surface a `confirmation_required` telemetry event.
-- An explicitly user-confirmed call id (state or configurable) must execute.
+- Every call (LLM or heuristic) is risk-enriched before the gate.
+- `tools_node` must NOT execute a flagged/unassessed risky mutation.
+- The blocked call must surface `confirmation_required` and register a pending
+  confirmation in the session (original arguments + presentation version).
+- An explicitly confirmed call id (state or configurable) must execute.
+- `AgentRuntime.confirm_pending` executes the ORIGINAL pending call and invalidates
+  it when the presentation changed since it was blocked.
 """
 
 import asyncio
 
 from backend.agent.graph import tools_node
-from backend.agent.risk_policy import ConfirmationGate
+from backend.agent.risk_policy import ConfirmationGate, RiskEnricher
+from backend.agent.runtime import AgentRuntime
 from backend.ir.models import PresentationIR, SlideIR, TextElementIR, TextContentIR
 from backend.ir.patch import HistoryManager
+from backend.session.session import PPTSession
 
 
 def _pres_with_title():
@@ -44,9 +51,21 @@ def _flagged_move_call(call_id="call_low_conf"):
 
 def test_gate_blocks_flagged_call_only():
     assert ConfirmationGate.is_blocked(_flagged_move_call()) is True
-    assert ConfirmationGate.is_blocked({"name": "update_element", "arguments": {}}) is False
     unflagged = {**_flagged_move_call(), "_needs_confirmation": False}
     assert ConfirmationGate.is_blocked(unflagged) is False
+    # Non-risk tools are never gated, even without enrichment metadata
+    assert ConfirmationGate.is_blocked({"name": "create_slide", "arguments": {}}) is False
+    assert ConfirmationGate.is_blocked(
+        {"name": "generate_presentation", "arguments": {}}
+    ) is False
+
+
+def test_gate_fails_closed_for_unassessed_risky_calls():
+    """A risk-mapped action with no risk assessment must NOT slip through."""
+    assert ConfirmationGate.is_blocked({"name": "update_element", "arguments": {}}) is True
+    assert ConfirmationGate.is_blocked(
+        {"name": "delete_element", "arguments": {"element_id": "ghost"}}
+    ) is True
 
 
 def test_gate_allows_explicitly_confirmed_call_id():
@@ -61,6 +80,39 @@ def test_blocked_result_contract():
     assert res["blocked"] is True
     assert res["requires_confirmation"] is True
     assert res["error"] == "requires_user_confirmation"
+    assert res["call_id"] == "call_low_conf"
+
+
+# =====================================================================
+# RiskEnricher: raw live-LLM calls must be assessed
+# =====================================================================
+
+def test_risk_enricher_marks_raw_llm_calls():
+    pres = _pres_with_title()
+
+    exact = {"name": "delete_element", "arguments": {"element_id": "elem_title"}, "id": "c1"}
+    RiskEnricher.enrich_tool_call(exact, pres)
+    assert exact["_needs_confirmation"] is False
+    assert exact["_resolution_confidence"] == 1.0
+
+    ghost = {"name": "update_element", "arguments": {"element_id": "ghost", "y": 10}, "id": "c2"}
+    RiskEnricher.enrich_tool_call(ghost, pres)
+    assert ghost["_needs_confirmation"] is True
+    assert ghost["_resolution_confidence"] is None
+    assert ghost["_risk_action_type"] == "move_element"
+
+    # Existing ActionResolver metadata is preserved (more precise semantic intent)
+    flagged = _flagged_move_call()
+    RiskEnricher.enrich_tool_call(flagged, pres)
+    assert flagged["_needs_confirmation"] is True
+    assert flagged["_resolution_confidence"] == 0.6
+
+
+def test_risk_enricher_ignores_non_risk_tools():
+    pres = _pres_with_title()
+    tc = {"name": "generate_slide_layout", "arguments": {"layout_type": "card_grid"}, "id": "c3"}
+    RiskEnricher.enrich_tool_call(tc, pres)
+    assert "_needs_confirmation" not in tc
 
 
 # =====================================================================
@@ -133,6 +185,201 @@ def test_tools_node_confirmation_via_state():
         out = await tools_node(state, config)
         assert pres.slides[0].get_element("elem_title").y == 260.0
         assert out["tool_results"][0]["result"].get("blocked") is None
+
+    asyncio.run(_run())
+
+
+def test_tools_node_blocks_raw_llm_call_with_unresolved_target():
+    async def _run():
+        pres = _pres_with_title()
+        history = HistoryManager()
+        session = PPTSession(session_id="sess_gate", pres=pres)
+        events = []
+
+        async def on_event(payload):
+            events.append(payload)
+
+        state = {"tool_calls": [{
+            "name": "delete_element",
+            "arguments": {"element_id": "ghost_element", "slide_id": "slide_1"},
+            "id": "call_llm_ghost",
+        }]}
+        config = {
+            "configurable": {
+                "pres": pres,
+                "history": history,
+                "session": session,
+                "on_event": on_event,
+            }
+        }
+        out = await tools_node(state, config)
+
+        assert pres.slides[0].get_element("elem_title") is not None  # not deleted
+        assert out["tool_results"][0]["result"]["blocked"] is True
+        assert any(
+            e["type"] == "confirmation_required" and e.get("call_id") == "call_llm_ghost"
+            for e in events
+        )
+        pending = session.get_pending_confirmation("call_llm_ghost")
+        assert pending is not None
+        assert pending["presentation_version"] == pres.version
+        assert pending["arguments"] == {"element_id": "ghost_element", "slide_id": "slide_1"}
+
+    asyncio.run(_run())
+
+
+def test_tools_node_executes_raw_llm_call_with_resolved_target():
+    async def _run():
+        pres = _pres_with_title()
+        history = HistoryManager()
+        state = {"tool_calls": [{
+            "name": "delete_element",
+            "arguments": {"element_id": "elem_title", "slide_id": "slide_1"},
+            "id": "call_llm_ok",
+        }]}
+        config = {"configurable": {"pres": pres, "history": history}}
+        out = await tools_node(state, config)
+
+        assert pres.slides[0].get_element("elem_title") is None  # deleted
+        assert out["tool_results"][0]["result"].get("blocked") is None
+
+    asyncio.run(_run())
+
+
+# =====================================================================
+# Pending confirmation lifecycle
+# =====================================================================
+
+def test_confirm_pending_executes_original_call_and_clears():
+    async def _run():
+        pres = _pres_with_title()
+        history = HistoryManager()
+        session = PPTSession(session_id="sess_pending", pres=pres)
+        runtime = AgentRuntime()
+        events = []
+
+        async def on_event(payload):
+            events.append(payload)
+
+        config = {
+            "configurable": {
+                "pres": pres,
+                "history": history,
+                "session": session,
+                "on_event": on_event,
+            }
+        }
+        await tools_node({"tool_calls": [_flagged_move_call()]}, config)
+        assert session.get_pending_confirmation("call_low_conf") is not None
+        assert pres.slides[0].get_element("elem_title").y == 50.0
+
+        result = await runtime.confirm_pending(session, "call_low_conf", on_event=on_event)
+
+        assert result["success"] is True
+        assert result["tool"] == "update_element"
+        assert pres.slides[0].get_element("elem_title").y == 260.0
+        assert session.get_pending_confirmation("call_low_conf") is None
+        assert any(e["type"] == "confirmation_approved" for e in events)
+        assert any(e["type"] == "confirmation_resolved" for e in events)
+
+    asyncio.run(_run())
+
+
+def test_confirm_pending_unknown_call_id():
+    async def _run():
+        pres = _pres_with_title()
+        session = PPTSession(session_id="sess_unknown", pres=pres)
+        runtime = AgentRuntime()
+        result = await runtime.confirm_pending(session, "does_not_exist")
+        assert result["success"] is False
+        assert result["error"] == "unknown_confirmation"
+
+    asyncio.run(_run())
+
+
+def test_stale_pending_confirmation_is_invalidated():
+    async def _run():
+        pres = _pres_with_title()
+        history = HistoryManager()
+        session = PPTSession(session_id="sess_stale", pres=pres)
+        runtime = AgentRuntime()
+        events = []
+
+        async def on_event(payload):
+            events.append(payload)
+
+        config = {
+            "configurable": {
+                "pres": pres,
+                "history": history,
+                "session": session,
+                "on_event": on_event,
+            }
+        }
+        await tools_node({"tool_calls": [_flagged_move_call()]}, config)
+        assert session.get_pending_confirmation("call_low_conf") is not None
+
+        # The presentation changes while the call waits for confirmation
+        pres.version += 1
+
+        result = await runtime.confirm_pending(session, "call_low_conf", on_event=on_event)
+
+        assert result["success"] is False
+        assert result["error"] == "confirmation_invalidated"
+        assert pres.slides[0].get_element("elem_title").y == 50.0  # unchanged
+        assert session.get_pending_confirmation("call_low_conf") is None
+        assert any(e["type"] == "confirmation_invalidated" for e in events)
+
+    asyncio.run(_run())
+
+
+def test_cancel_pending_discards_call():
+    async def _run():
+        pres = _pres_with_title()
+        history = HistoryManager()
+        session = PPTSession(session_id="sess_cancel", pres=pres)
+        runtime = AgentRuntime()
+        config = {
+            "configurable": {
+                "pres": pres,
+                "history": history,
+                "session": session,
+            }
+        }
+        await tools_node({"tool_calls": [_flagged_move_call()]}, config)
+
+        result = await runtime.cancel_pending(session, "call_low_conf")
+
+        assert result["success"] is True
+        assert result["cancelled"] is True
+        assert session.get_pending_confirmation("call_low_conf") is None
+        assert pres.slides[0].get_element("elem_title").y == 50.0
+
+    asyncio.run(_run())
+
+
+def test_run_turn_forwards_confirmed_tool_ids():
+    async def _run():
+        pres = _pres_with_title()
+        history = HistoryManager()
+        runtime = AgentRuntime()
+
+        class _SpyGraph:
+            def __init__(self):
+                self.captured = None
+
+            async def ainvoke(self, state, config=None):
+                self.captured = (state, config)
+                return {"final_summary": "ok", "tool_results": []}
+
+        runtime.graph = _SpyGraph()
+        await runtime.run_turn(
+            "你好", pres, history, confirmed_tool_ids=["call_x", "call_y"]
+        )
+
+        state, config = runtime.graph.captured
+        assert state["confirmed_tool_ids"] == ["call_x", "call_y"]
+        assert config["configurable"]["confirmed_tool_ids"] == ["call_x", "call_y"]
 
     asyncio.run(_run())
 

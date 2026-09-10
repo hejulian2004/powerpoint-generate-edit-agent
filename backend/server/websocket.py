@@ -105,7 +105,8 @@ async def websocket_endpoint(websocket: WebSocket):
                             pres=session.pres,
                             history=session.history,
                             session=session,
-                            on_event=on_event
+                            on_event=on_event,
+                            confirmed_tool_ids=data.get("confirmed_tool_ids") or []
                         )
 
                         reply_text = result.get("reply", "处理完成。")
@@ -138,6 +139,47 @@ async def websocket_endpoint(websocket: WebSocket):
                             "session_id": session.session_id,
                             "error": str(e)
                         })
+
+            # User explicitly confirms (or cancels) a pending low-confidence call
+            elif msg_type in ("confirm_tool_call", "cancel_tool_call"):
+                call_id = data.get("call_id")
+                if not call_id:
+                    await websocket.send_json({
+                        "type": "confirmation_failed",
+                        "session_id": session.session_id,
+                        "error": "call_id is required",
+                    })
+                    continue
+
+                async with session.mutation_lock:
+                    async def on_event(ev: dict):
+                        if "session_id" not in ev:
+                            ev["session_id"] = session.session_id
+                        await store.broadcast(ev, session_id=session.session_id)
+
+                    if msg_type == "confirm_tool_call":
+                        result = await store.agent_runtime.confirm_pending(
+                            session, call_id, on_event=on_event
+                        )
+                    else:
+                        result = await store.agent_runtime.cancel_pending(
+                            session, call_id, on_event=on_event
+                        )
+
+                    await store.broadcast({
+                        "type": "presentation_updated",
+                        "session_id": session.session_id,
+                        "presentation": session.pres.model_dump(),
+                        "can_undo": session.history.can_undo(),
+                        "can_redo": session.history.can_redo(),
+                        "active_slide_id": session.active_slide_id,
+                        "last_target_id": session.last_target_id,
+                        "pending_confirmations_count": len(session.pending_confirmations),
+                    }, session_id=session.session_id)
+
+                    new_preview = build_preview_update(session)
+                    if new_preview:
+                        await store.broadcast(new_preview, session_id=session.session_id)
 
             # User selected a slide thumbnail
             elif msg_type == "select_slide":

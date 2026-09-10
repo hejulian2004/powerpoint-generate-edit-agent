@@ -496,13 +496,29 @@ async def tools_node(state: PPTAgentState, config: RunnableConfig) -> Dict[str, 
     extra_confirmed = configurable.get("confirmed_tool_ids") or []
     confirmed_ids.update(extra_confirmed)
 
+    from .risk_policy import ConfirmationGate, RiskEnricher
+
     for tc in tool_calls:
         fn_name = tc.get("name", "")
         args = tc.get("arguments", {})
 
-        from .risk_policy import ConfirmationGate
+        # Unified risk pipeline: raw live-LLM calls are enriched exactly like
+        # resolver-generated calls before the gate decides.
+        RiskEnricher.enrich_tool_call(tc, pres)
+
         if ConfirmationGate.is_blocked(tc, confirmed_ids):
             res = ConfirmationGate.blocked_result(tc)
+            call_id = tc.get("id")
+            pending_record = None
+            if session and call_id and hasattr(session, "register_pending_confirmation"):
+                pending_record = session.register_pending_confirmation(
+                    call_id=call_id,
+                    tool=fn_name,
+                    arguments=args,
+                    confidence=tc.get("_resolution_confidence"),
+                    presentation_version=pres.version if pres else 1,
+                    target_element_id=args.get("element_id"),
+                )
             results.append({
                 "tool": fn_name,
                 "arguments": args,
@@ -515,7 +531,8 @@ async def tools_node(state: PPTAgentState, config: RunnableConfig) -> Dict[str, 
                     "tool": fn_name,
                     "arguments": args,
                     "resolution_confidence": tc.get("_resolution_confidence"),
-                    "call_id": tc.get("id"),
+                    "call_id": call_id,
+                    "presentation_version": pending_record["presentation_version"] if pending_record else (pres.version if pres else 1),
                     "message": res["message"]
                 })
             if memory:
