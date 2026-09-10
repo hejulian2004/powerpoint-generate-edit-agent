@@ -12,8 +12,30 @@ from .command import (
     DeleteElementCommand,
     AddSlideCommand,
     DeleteSlideCommand,
-    BatchMutationCommand
+    BatchMutationCommand,
+    SnapshotSlideCommand,
+    SnapshotCommand
 )
+
+# Composite slide tools whose exact inverse-op chain is brittle; they record a
+# full before/after slide snapshot instead.
+SLIDE_SNAPSHOT_ACTIONS = frozenset({
+    "set_slide_background",
+    "optimize_layout",
+    "group_elements",
+    "ungroup_elements",
+    "align_elements",
+    "batch_add_cards",
+    "generate_slide_layout",
+    "clear_slide_elements",
+})
+
+# Whole-deck tools record a full presentation snapshot.
+PRES_SNAPSHOT_ACTIONS = frozenset({
+    "apply_theme",
+    "generate_presentation",
+    "replace_presentation",
+})
 
 
 class UndoRedoStack:
@@ -46,7 +68,24 @@ class UndoRedoStack:
     ) -> MutationCommand:
         """Constructs and pushes a MutationCommand matching legacy HistoryManager.record()."""
         cmd: MutationCommand
-        if action in ["create_slide", "duplicate_slide"]:
+        if action in SLIDE_SNAPSHOT_ACTIONS:
+            cmd = SnapshotSlideCommand(
+                slide_id=slide_id or "",
+                before_dump=before or {},
+                after_dump=after or {},
+                action=action,
+                description=description,
+                source=source
+            )
+        elif action in PRES_SNAPSHOT_ACTIONS:
+            cmd = SnapshotCommand(
+                before_dump=before or {},
+                after_dump=after or {},
+                action=action,
+                description=description,
+                source=source
+            )
+        elif action in ["create_slide", "duplicate_slide"]:
             cmd = AddSlideCommand(
                 slide_id=slide_id or "",
                 slide_data=copy.deepcopy(after or {}),

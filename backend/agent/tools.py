@@ -501,14 +501,7 @@ def update_element(
         if dx != 0.0 or dy != 0.0:
             elem.translate(dx, dy)
     else:
-        if x is not None:
-            elem.x = x
-        if y is not None:
-            elem.y = y
-        if width is not None:
-            elem.width = width
-        if height is not None:
-            elem.height = height
+        elem.set_geometry(x=x, y=y, width=width, height=height)
 
     if fill_color is not None:
         elem.style.fill = FillStyle(type="solid", color=fill_color) if fill_color else FillStyle(type="none")
@@ -726,6 +719,7 @@ def set_slide_background(
     if not slide:
         return {"success": False, "error": "Slide not found"}
 
+    before_dump = slide.model_dump()
     old_color = getattr(slide.background, "color", "#FFFFFF")
     slide.background.color = color
     slide.background.type = "solid"
@@ -735,8 +729,8 @@ def set_slide_background(
         action="set_slide_background",
         description=f"修改背景色: {color}",
         slide_id=slide.id,
-        before={"color": old_color},
-        after={"color": color}
+        before=before_dump,
+        after=slide.model_dump()
     )
     return {"success": True, "color": color, "slide_id": slide.id}
 
@@ -772,6 +766,7 @@ def group_elements(
     if not slide:
         return {"success": False, "error": "Slide not found"}
 
+    before_dump = slide.model_dump()
     grp = slide.group_elements(element_ids, group_name=group_name)
     if not grp:
         return {"success": False, "error": "Could not group specified elements (need at least 2 valid top-level elements)"}
@@ -782,7 +777,8 @@ def group_elements(
         description=f"组合 {len(element_ids)} 个图元为组: {group_name}",
         slide_id=slide.id,
         element_id=grp.id,
-        after=grp.model_dump()
+        before=before_dump,
+        after=slide.model_dump()
     )
     return {
         "success": True,
@@ -821,6 +817,7 @@ def ungroup_elements(
     if not slide:
         return {"success": False, "error": "Slide not found"}
 
+    before_dump = slide.model_dump()
     children = slide.ungroup_elements(group_id)
     if not children:
         return {"success": False, "error": f"Group '{group_id}' not found or has no children"}
@@ -831,7 +828,8 @@ def ungroup_elements(
         description=f"解散组: {group_id}",
         slide_id=slide.id,
         element_id=group_id,
-        after={"restored_elements": [c.model_dump() for c in children]}
+        before=before_dump,
+        after=slide.model_dump()
     )
     return {
         "success": True,
@@ -879,6 +877,7 @@ def optimize_layout(
     if not cards:
         return {"success": False, "error": "No cards/shapes found on slide to optimize"}
 
+    before_dump = slide.model_dump()
     n = len(cards)
     canvas_w = slide.width  # 1280
     margin = 80.0
@@ -890,10 +889,12 @@ def optimize_layout(
         card_h = 320.0
 
         for idx, c in enumerate(cards):
-            c.x = margin + idx * (card_w + gap)
-            c.y = start_y
-            c.width = card_w
-            c.height = card_h
+            c.set_geometry(
+                x=margin + idx * (card_w + gap),
+                y=start_y,
+                width=card_w,
+                height=card_h,
+            )
 
     elif layout_mode == "grid_2x2" or n >= 4:
         cols = 2
@@ -902,16 +903,20 @@ def optimize_layout(
         for idx, c in enumerate(cards[:4]):
             col = idx % cols
             row = idx // cols
-            c.x = margin + col * (card_w + gap)
-            c.y = start_y + row * (card_h + gap)
-            c.width = card_w
-            c.height = card_h
+            c.set_geometry(
+                x=margin + col * (card_w + gap),
+                y=start_y + row * (card_h + gap),
+                width=card_w,
+                height=card_h,
+            )
 
     pres.version += 1
     history.record(
         action="optimize_layout",
         description=f"自适应规整排版: {layout_mode}",
-        slide_id=slide.id
+        slide_id=slide.id,
+        before=before_dump,
+        after=slide.model_dump()
     )
 
     return {"success": True, "message": f"已按 {layout_mode} 规整排列 {len(cards)} 个模块"}
@@ -999,13 +1004,22 @@ def _theme_tokens(pres: PresentationIR) -> Dict[str, str]:
 })
 
 
-def apply_theme(pres: PresentationIR, history: HistoryManager, theme_preset: str = "tech_blue") -> Dict[str, Any]:
+def apply_theme(
+    pres: PresentationIR,
+    history: HistoryManager,
+    theme_preset: str = "tech_blue",
+    record_history: bool = True
+) -> Dict[str, Any]:
     """Applies a semantic design palette. Recolors the existing deck so that
     surface/in̶k/muted/hairline/accent roles are remapped — not flattened to one color.
+
+    `record_history=False` is used by composite callers (e.g. generate_presentation)
+    that record a single whole-deck snapshot instead.
     """
     if theme_preset not in DESIGN_TOKENS:
         theme_preset = "editorial_technical"
     t = DESIGN_TOKENS[theme_preset]
+    before_dump = pres.model_dump() if record_history else None
 
     pres.theme["name"] = theme_preset
     pres.theme["primary_color"] = t["accent"]
@@ -1043,10 +1057,13 @@ def apply_theme(pres: PresentationIR, history: HistoryManager, theme_preset: str
 
     pres.theme["_prev_tokens"] = dict(t)
     pres.version += 1
-    history.record(
-        action="apply_theme",
-        description=f"应用主题风格: {theme_preset}"
-    )
+    if record_history:
+        history.record(
+            action="apply_theme",
+            description=f"应用主题风格: {theme_preset}",
+            before=before_dump,
+            after=pres.model_dump()
+        )
 
     return {"success": True, "message": f"已应用 {theme_preset} 全局主题规范"}
 
@@ -1109,6 +1126,7 @@ def generate_presentation(
     theme: str = "editorial_technical",
     replace: bool = True
 ) -> Dict[str, Any]:
+    before_dump = pres.model_dump()
     pres.title = topic
 
     if replace:
@@ -1138,13 +1156,15 @@ def generate_presentation(
     if pres.slides:
         pres.active_slide_id = pres.slides[0].id
 
-    # Apply chosen theme
-    apply_theme(pres, history, theme_preset=theme)
+    # Apply chosen theme (history is recorded once for the whole generation below)
+    apply_theme(pres, history, theme_preset=theme, record_history=False)
 
     pres.version += 1
     history.record(
         action="generate_presentation",
-        description=f"生成完整演示文稿: {topic} (共 {len(new_slides)} 页)"
+        description=f"生成完整演示文稿: {topic} (共 {len(new_slides)} 页)",
+        before=before_dump,
+        after=pres.model_dump()
     )
 
     return {
@@ -1426,6 +1446,7 @@ def generate_slide_layout(
     if not slide:
         return {"success": False, "error": "Slide not found"}
 
+    before_dump = slide.model_dump()
     if clear_existing:
         slide.elements.clear()
 
@@ -1436,7 +1457,9 @@ def generate_slide_layout(
     history.record(
         action="generate_slide_layout",
         description=f"排版生成页面: {layout_type} - {title}",
-        slide_id=slide.id
+        slide_id=slide.id,
+        before=before_dump,
+        after=slide.model_dump()
     )
 
     return {
@@ -1488,6 +1511,7 @@ def batch_add_cards(
     if not slide:
         return {"success": False, "error": "Slide not found"}
 
+    before_dump = slide.model_dump()
     n = len(cards)
     if n == 0:
         return {"success": False, "error": "Cards list cannot be empty"}
@@ -1548,7 +1572,9 @@ def batch_add_cards(
     history.record(
         action="batch_add_cards",
         description=f"批量添加 {n} 张卡片",
-        slide_id=slide.id
+        slide_id=slide.id,
+        before=before_dump,
+        after=slide.model_dump()
     )
 
     return {"success": True, "added_count": n, "element_ids": added_ids, "message": f"成功批量添加 {n} 个卡片"}
@@ -1597,6 +1623,7 @@ def format_text(
     if not elem or not hasattr(elem, "text_content") or not elem.text_content:
         return {"success": False, "error": f"Element {element_id} has no text content to format"}
 
+    before_state = elem.model_dump()
     for p in elem.text_content.paragraphs:
         if align and align in ["left", "center", "right"]:
             p.align = align
@@ -1617,7 +1644,9 @@ def format_text(
         action="format_text",
         description=f"格式化文本: {element_id}",
         slide_id=slide.id,
-        element_id=element_id
+        element_id=element_id,
+        before=before_state,
+        after=elem.model_dump()
     )
 
     return {"success": True, "element_id": element_id, "message": "文本排版格式已更新"}
@@ -1669,30 +1698,31 @@ def align_elements(
     if not targets:
         return {"success": False, "error": "No elements found to align"}
 
+    before_dump = slide.model_dump()
     if alignment == "left":
         min_x = min(e.x for e in targets)
         for e in targets:
-            e.x = min_x
+            e.set_geometry(x=min_x)
     elif alignment == "right":
         max_r = max(e.x + e.width for e in targets)
         for e in targets:
-            e.x = max_r - e.width
+            e.set_geometry(x=max_r - e.width)
     elif alignment == "top":
         min_y = min(e.y for e in targets)
         for e in targets:
-            e.y = min_y
+            e.set_geometry(y=min_y)
     elif alignment == "bottom":
         max_b = max(e.y + e.height for e in targets)
         for e in targets:
-            e.y = max_b - e.height
+            e.set_geometry(y=max_b - e.height)
     elif alignment == "center":
         avg_cx = sum(e.x + e.width / 2.0 for e in targets) / len(targets)
         for e in targets:
-            e.x = avg_cx - e.width / 2.0
+            e.set_geometry(x=avg_cx - e.width / 2.0)
     elif alignment == "middle":
         avg_cy = sum(e.y + e.height / 2.0 for e in targets) / len(targets)
         for e in targets:
-            e.y = avg_cy - e.height / 2.0
+            e.set_geometry(y=avg_cy - e.height / 2.0)
     elif alignment == "distribute_h":
         targets.sort(key=lambda e: e.x)
         min_x = targets[0].x
@@ -1702,14 +1732,16 @@ def align_elements(
             gap = (max_x - min_x - total_elems_w) / (len(targets) - 1)
             curr_x = min_x
             for e in targets:
-                e.x = curr_x
+                e.set_geometry(x=curr_x)
                 curr_x += e.width + gap
 
     pres.version += 1
     history.record(
         action="align_elements",
         description=f"对齐图元: {alignment}",
-        slide_id=slide.id
+        slide_id=slide.id,
+        before=before_dump,
+        after=slide.model_dump()
     )
 
     return {"success": True, "alignment": alignment, "count": len(targets), "message": f"已对 {len(targets)} 个图元执行 {alignment} 对齐"}
@@ -1740,6 +1772,7 @@ def clear_slide_elements(
     if not slide:
         return {"success": False, "error": "Slide not found"}
 
+    before_dump = slide.model_dump()
     if keep_title:
         # Keep title elements (y < 150 and is TextElementIR)
         slide.elements = [e for e in slide.elements if isinstance(e, TextElementIR) and e.y < 150]
@@ -1750,7 +1783,9 @@ def clear_slide_elements(
     history.record(
         action="clear_slide_elements",
         description=f"清理页面元素 (keep_title={keep_title})",
-        slide_id=slide.id
+        slide_id=slide.id,
+        before=before_dump,
+        after=slide.model_dump()
     )
 
     return {"success": True, "remaining": len(slide.elements), "message": f"已清空第 {slide.slide_num} 页内容"}
@@ -1877,7 +1912,9 @@ def auto_fix_layout(
     health_report = QualityService.evaluate_slide(slide)
     plan = QualityService.plan_remediation(slide, health_report)
 
-    # Execute plan safely with rollback protection
+    # Execute plan safely with rollback protection. RemediationRunner commits each
+    # action through the gateway, which records its own precise undo commands; do
+    # not push an extra empty command here (it would be impossible to undo).
     res = RemediationRunner.apply_plan(
         pres=pres,
         history=history,
@@ -1885,13 +1922,6 @@ def auto_fix_layout(
         slide_id=slide.id,
         only_critical=only_critical
     )
-
-    if res.get("applied_count", 0) > 0 and not res.get("rolled_back"):
-        history.record(
-            action="auto_fix_layout",
-            description=f"视觉自动修复: 修复 {res['applied_count']} 项排版缺陷 (得分: {res.get('score_before', 0):.1f} -> {res.get('score_after', 0):.1f})",
-            slide_id=slide.id
-        )
 
     return res
 

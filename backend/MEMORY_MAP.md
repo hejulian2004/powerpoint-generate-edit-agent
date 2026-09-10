@@ -135,6 +135,11 @@ router_node ──> planner_node ──> plan_critic_node
    - 商业风格卡片圆角严格控制在 `0.0 <= radius <= 3.0px`，严禁药丸形大圆角。
 3. **图元修改必须通过原子派发**：
    - 运行时写操作必须经由 `backend/agent/mutation_gateway.py`（唯一写入口），其内部调用 `backend/agent/tools.py:execute(tool_name, args, pres, history)`。
+4. **几何同步**：修改图元坐标必须使用 `BaseElementIR.set_geometry(...)`（或 `translate`/`scale`）；直接赋值 `elem.x/width` 会使 `transform` 镜像对象过期，序列化回转时静默丢失改动。
+5. **撤销/重做精确性**：
+   - 简单图元操作使用 inverse-op 命令（`UpdateElementCommand`/`AddElementCommand`/`DeleteElementCommand`/slide 增删命令）。
+   - 复合工具（`optimize_layout`/`align_elements`/`group_elements`/`ungroup_elements`/`batch_add_cards`/`clear_slide_elements`/`generate_slide_layout`/`set_slide_background`）记录 `SnapshotSlideCommand`；整稿级操作（`apply_theme`/`generate_presentation`）记录 `SnapshotCommand`。
+   - 禁止 push 无 `before/after` 的空命令，否则 undo 永远失败形成“毒命令”；`tests/test_tool_undo_precision.py` 对所有复合工具做 undo→redo 深比较回归。
 
 ---
 
@@ -155,6 +160,9 @@ router_node ──> planner_node ──> plan_critic_node
 
 # 运行统一质量门面与 CORS 白名单测试
 .venv\Scripts\python.exe -m pytest tests/test_quality_service.py tests/test_cors_config.py -q
+
+# 运行复合工具撤销/重做精确性测试
+.venv\Scripts\python.exe -m pytest tests/test_tool_undo_precision.py -q
 
 # 运行上下文核算与 90% 自动压缩测试
 .venv\Scripts\python.exe -m pytest tests/test_context_compressor.py -q
