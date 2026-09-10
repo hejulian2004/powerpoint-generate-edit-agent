@@ -77,7 +77,12 @@ class SVGRenderer:
             return cls._render_connector(elem)
 
         elif isinstance(elem, ImageElementIR):
-            return f'<image href="{elem.src}" x="{elem.x}" y="{elem.y}" width="{elem.width}" height="{elem.height}"{transform}{opacity_attr} preserveAspectRatio="xMidYMid meet" />'
+            clip_attr = ""
+            if elem.style and elem.style.radius > 0:
+                clip_id = f"clip_{elem.id}"
+                defs.append(f'<clipPath id="{clip_id}"><rect x="{elem.x}" y="{elem.y}" width="{elem.width}" height="{elem.height}" rx="{elem.style.radius}" ry="{elem.style.radius}" /></clipPath>')
+                clip_attr = f' clip-path="url(#{clip_id})"'
+            return f'<image href="{elem.src}" x="{elem.x}" y="{elem.y}" width="{elem.width}" height="{elem.height}"{transform}{opacity_attr}{clip_attr} preserveAspectRatio="xMidYMid meet" />'
 
         elif isinstance(elem, TextElementIR):
             fill_val = cls._render_fill_attribute(elem.style.fill, f"fill_{elem.id}", defs)

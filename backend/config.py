@@ -36,5 +36,8 @@ class AppSettings(BaseModel):
     # Visual Self-Healing Auto-Fix Loop
     max_visual_iterations: int = int(os.getenv("MAX_VISUAL_ITERATIONS", "3"))
 
+    # Context Window Limit & Auto-Compression Setting
+    context_limit: str = os.getenv("CONTEXT_LIMIT", "256k")  # "128k" | "256k" | "512k" | "1m" | "2m"
+
 
 settings = AppSettings()

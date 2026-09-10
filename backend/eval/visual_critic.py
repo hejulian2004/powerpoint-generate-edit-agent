@@ -5,6 +5,7 @@ and produces tool-decoupled remediation plans.
 """
 
 from __future__ import annotations
+import re
 import logging
 from dataclasses import dataclass, field
 from typing import Dict, Any, List, Optional
@@ -72,88 +73,26 @@ class VisualCritic:
         cls,
         slide: SlideIR,
         llm_client: Optional[Any] = None,
-        include_multimodal: bool = True
+        include_multimodal: bool = True,
+        on_event: Optional[Callable] = None
     ) -> VisualReviewResult:
-        """Conducts full diagnostic inspection on the slide."""
-        # 1. Geometric & contrast rule-based analysis
-        health_report = LayoutDiffEngine.evaluate_slide(slide)
-
-        # 2. Formulate tool-agnostic remediation plan
-        remediation_plan = cls.plan_remediations(slide, health_report)
-
-        # 3. Policy: ONLY critical defects with confidence >= 0.9 (viewport clipping, severe collisions, text overflows)
-        # trigger auto-correction in the background loop. Aesthetic / structural styling is never forced.
-        needs_correction = len(remediation_plan.auto_executable_actions) > 0
-
-        # 4. Multimodal Vision Model critique with clear fallback state reporting
-        from .renderer_snapshot import SlideSnapshotRenderer, RendererMode
-        meta = SlideSnapshotRenderer.get_render_metadata(slide, mode=RendererMode.DETERMINISTIC)
-
-        multimodal_feedback = None
-        vision_status: Dict[str, Any] = {
-            "vision_available": False,
-            "mode": meta.quality,
-            "renderer": meta.renderer,
-            "capability": meta.capability.to_dict(),
-            "fallback": None,
-            "message": "未配置或未启用 Vision 模型客户端，采用纯几何与对比度定量评测"
-        }
-
-        has_vision_api = bool(llm_client and getattr(llm_client, "api_key", None))
-        if include_multimodal and has_vision_api:
-            try:
-                from ..agent.vision import VisionEngine
-                prompt = (
-                    f"请分析当前 PPT 幻灯片的构图、层级与设计质感。"
-                    f"几何检测发现健康得分: {health_report.score:.1f}/100。"
-                )
-                if health_report.defects:
-                    prompt += f" 检测到缺陷: {'; '.join(d.description for d in health_report.defects[:3])}。"
-                if meta.renderer == "pillow" or meta.quality == "geometry_only":
-                    prompt += " 当前截图可能缺少字体和特效信息。请优先依据element manifest判断结构。"
-                prompt += " 请提供一到两句专业排版优化指导。"
-
-                multimodal_feedback = await VisionEngine.review_slide_visually(
-                    slide=slide,
-                    client=llm_client,
-                    prompt=prompt
-                )
-                vision_status = {
-                    "vision_available": True,
-                    "mode": "multimodal",
-                    "renderer": meta.renderer,
-                    "capability": meta.capability.to_dict(),
-                    "fallback": None,
-                    "message": "Vision 多模态模型评审完成"
-                }
-            except Exception as e:
-                logger.warning(f"Multimodal vision critique failed, falling back: {e}")
-                multimodal_feedback = None
-                vision_status = {
-                    "vision_available": False,
-                    "mode": "geometry_only",
-                    "renderer": meta.renderer,
-                    "capability": meta.capability.to_dict(),
-                    "fallback": "geometry_only",
-                    "message": f"Vision 模型调用异常 ({str(e)})，自动回退到几何与对比度规则评测"
-                }
-
-        # 5. Generate high-precision raster snapshot URI
-        from .renderer_snapshot import SlideSnapshotRenderer
-        try:
-            snapshot_uri = SlideSnapshotRenderer.render_data_uri(slide)
-        except Exception as e:
-            logger.debug(f"Snapshot URI generation failed: {e}")
-            snapshot_uri = None
+        """Conducts full diagnostic inspection on the slide via independent VisualCriticSubagent."""
+        from ..agent.subagents.visual_critic import VisualCriticSubagent
+        sub_res = await VisualCriticSubagent.audit_slide(
+            slide=slide,
+            llm_client=llm_client,
+            include_multimodal=include_multimodal,
+            on_event=on_event
+        )
 
         return VisualReviewResult(
-            slide_id=slide.id,
-            health_report=health_report,
-            remediation_plan=remediation_plan,
-            multimodal_feedback=multimodal_feedback,
-            vision_status=vision_status,
-            needs_auto_correction=needs_correction,
-            snapshot_uri=snapshot_uri
+            slide_id=sub_res.slide_id,
+            health_report=sub_res.health_report,
+            remediation_plan=sub_res.remediation_plan,
+            multimodal_feedback=sub_res.multimodal_feedback,
+            vision_status=sub_res.vision_status,
+            needs_auto_correction=sub_res.needs_auto_correction,
+            snapshot_uri=sub_res.snapshot_uri
         )
 
     @classmethod

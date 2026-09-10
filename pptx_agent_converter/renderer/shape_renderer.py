@@ -37,7 +37,7 @@ class ShapeRenderer:
         })
         
         c_nv_sp_pr_attrs = {}
-        if shape.type == "textbox":
+        if shape.type == "textbox" or shape.shape_type == "textbox":
             c_nv_sp_pr_attrs["txBox"] = "1"
         ET.SubElement(nv_sp_pr, f"{{{NS['p']}}}cNvSpPr", c_nv_sp_pr_attrs)
         ET.SubElement(nv_sp_pr, f"{{{NS['p']}}}nvPr")
@@ -65,13 +65,29 @@ class ShapeRenderer:
         })
 
         # Geometry <a:prstGeom>
+        # Note: OOXML has no "textbox" preset geometry. Textboxes use prst="rect"
+        # combined with txBox="1" on <p:cNvSpPr> (set above). Emitting prst="textbox"
+        # produces a package PowerPoint refuses to open.
         raw_geom = REVERSE_GEOM_MAP.get(shape.shape_type, shape.shape_type)
+        if raw_geom == "textbox":
+            raw_geom = "rect"
         prst_geom = ET.SubElement(sp_pr, f"{{{NS['a']}}}prstGeom", {"prst": raw_geom})
         av_lst = ET.SubElement(prst_geom, f"{{{NS['a']}}}avLst")
 
-        # Handle roundRect corner radius adjustment if specified
+        # Handle roundRect corner radius adjustment if specified.
+        # shape.radius is expressed in pixels at 96 DPI. OOXML "adj" is a ratio
+        # of half the smaller side (0..50000, where 50000 == fully rounded pill):
+        #   radius_px = adj / 100000 * min(w, h)_px
+        # so writing a pixel value directly as adj produced oversized (>50000)
+        # corners that PowerPoint clamps to full pills.
         if shape.shape_type in ("roundRect", "round_rect") and shape.radius is not None:
-            adj_val = str(int(round(shape.radius * 100000)))
+            min_side_in = min(shape.position.width, shape.position.height)
+            if min_side_in > 0:
+                min_side_px = min_side_in * 96.0
+                adj_val = int(round(max(0.0, min(shape.radius / min_side_px, 0.5)) * 100000))
+                adj_val = max(0, min(adj_val, 50000))
+            else:
+                adj_val = 0
             ET.SubElement(av_lst, f"{{{NS['a']}}}gd", {"name": "adj", "fmla": f"val {adj_val}"})
 
         # Fill
@@ -84,7 +100,7 @@ class ShapeRenderer:
             line_elem = StyleRenderer.build_line(shape.line)
             if line_elem is not None:
                 sp_pr.append(line_elem)
-        elif shape.type == "textbox":
+        elif shape.type == "textbox" or shape.shape_type == "textbox":
             # Default textboxes have no border
             sp_pr.append(ET.Element(f"{{{NS['a']}}}ln"))
             sp_pr[-1].append(ET.Element(f"{{{NS['a']}}}noFill"))

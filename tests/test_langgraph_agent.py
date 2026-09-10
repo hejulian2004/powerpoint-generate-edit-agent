@@ -140,7 +140,9 @@ def test_generate_slide_layout_archetypes():
     )
     assert res2["success"] is True
     assert slide.title == "季度增长分析"
-    assert len(slide.elements) == 3  # title + 2 kpi cards
+    # Editorial header (kicker/title/rule) + per-metric value/label/sub/rule
+    kpi_vals = [e for e in slide.elements if e.name and e.name.startswith("Metric Value")]
+    assert len(kpi_vals) == 2
 
 
 def test_batch_add_cards_and_align_elements():
@@ -168,9 +170,11 @@ def test_batch_add_cards_and_align_elements():
     )
     assert res["success"] is True
     assert res["added_count"] == 3
-    assert len(slide.elements) == 3
+    # 3 card panels + 3 accent edge bars
+    assert len(slide.elements) == 6
 
-    card1, card2, card3 = slide.elements[0], slide.elements[1], slide.elements[2]
+    cards = [e for e in slide.elements if not (e.name and e.name.startswith("Card Edge"))]
+    card1, card2, card3 = cards[0], cards[1], cards[2]
     assert card1.x < card2.x < card3.x
     assert card1.y == card2.y == card3.y == 200
 

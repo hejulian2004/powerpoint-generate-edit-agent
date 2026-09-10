@@ -8,7 +8,8 @@ import type {
   VisualQualityScore,
   PPTEditorState,
   PatchRecord,
-  MutationStatus
+  MutationStatus,
+  ContextUsageData
 } from '../types/ppt'
 
 interface PPTState {
@@ -17,6 +18,7 @@ interface PPTState {
   activeSlideId: string | null
   selectedElementId: string | null
   activeRightTab: 'copilot' | 'inspector'
+  editingElementId: string | null
   messages: ChatMessage[]
   wsConnected: boolean
   isAgentThinking: boolean
@@ -35,12 +37,15 @@ interface PPTState {
   qualityScore: VisualQualityScore | null
   history: PatchRecord[]
   mutationStatus: MutationStatus
+  contextUsage: ContextUsageData | null
+  setContextUsage: (usage: ContextUsageData | null) => void
 
   // Actions
   setSessionId: (id: string) => void
   setPresentation: (pres: PresentationIR) => void
   setActiveSlideId: (id: string) => void
   setSelectedElementId: (id: string | null) => void
+  setEditingElementId: (id: string | null) => void
   setActiveRightTab: (tab: 'copilot' | 'inspector') => void
   setSettingsOpen: (open: boolean) => void
   setPptspecModalOpen: (open: boolean) => void
@@ -85,6 +90,7 @@ export const usePPTStore = create<PPTState>((set, get) => ({
   presentation: null,
   activeSlideId: null,
   selectedElementId: null,
+  editingElementId: null,
   activeRightTab: 'copilot',
   messages: [
     {
@@ -111,6 +117,17 @@ export const usePPTStore = create<PPTState>((set, get) => ({
   qualityScore: null,
   history: [],
   mutationStatus: 'idle',
+  contextUsage: {
+    current_tokens: 1200,
+    max_tokens: 256 * 1024,
+    usage_percent: 0.46,
+    is_compressed: false,
+    compression_ratio: 1.0,
+    tokens_saved: 0,
+    context_limit_key: '256k',
+    threshold_reached: false
+  },
+  setContextUsage: (usage) => set({ contextUsage: usage }),
   ws: null,
 
   setSessionId: (id: string) => set({ sessionId: id }),
@@ -122,7 +139,7 @@ export const usePPTStore = create<PPTState>((set, get) => ({
   }),
 
   setActiveSlideId: (id) => {
-    set({ activeSlideId: id, selectedElementId: null })
+    set({ activeSlideId: id, selectedElementId: null, editingElementId: null })
     const { ws, sessionId } = get()
     if (ws && ws.readyState === WebSocket.OPEN) {
       ws.send(JSON.stringify({ type: 'select_slide', slide_id: id, session_id: sessionId }))
@@ -130,8 +147,17 @@ export const usePPTStore = create<PPTState>((set, get) => ({
   },
 
   setSelectedElementId: (id) => {
-    set({
+    set((state) => ({
       selectedElementId: id,
+      editingElementId: id === null ? null : state.editingElementId,
+      activeRightTab: id ? 'inspector' : state.activeRightTab
+    }))
+  },
+
+  setEditingElementId: (id) => {
+    set({
+      editingElementId: id,
+      selectedElementId: id ?? get().selectedElementId,
       activeRightTab: id ? 'inspector' : get().activeRightTab
     })
   },
@@ -316,18 +342,49 @@ export const usePPTStore = create<PPTState>((set, get) => ({
             mutationStatus: 'committed'
           })
         } else if (type === 'presentation_updated') {
+          const activeSid = data.active_slide_id || get().activeSlideId || data.presentation?.slides?.[0]?.id
+          const currentSlide = data.presentation?.slides?.find((s: any) => s.id === activeSid)
+          let newSelectedId = get().selectedElementId
+          let newEditingId = get().editingElementId
+
+          if (data.last_target_id) {
+            const matched = currentSlide?.elements?.find((e: any) => e.id === data.last_target_id)
+            if (matched) {
+              newSelectedId = data.last_target_id
+              if (matched.type === 'text' && !get().editingElementId) {
+                newEditingId = data.last_target_id
+              }
+            }
+          }
+
+          if (newSelectedId && !currentSlide?.elements?.some((e: any) => e.id === newSelectedId)) {
+            newSelectedId = null
+            newEditingId = null
+          }
+
           set((state) => ({
             sessionId: data.session_id || state.sessionId,
             presentation: data.presentation,
-            activeSlideId: data.active_slide_id || state.activeSlideId || data.presentation.slides[0]?.id,
+            activeSlideId: activeSid,
             canUndo: data.can_undo ?? state.canUndo,
             canRedo: data.can_redo ?? state.canRedo,
-            mutationStatus: 'committed'
+            mutationStatus: 'committed',
+            selectedElementId: newSelectedId,
+            editingElementId: newEditingId,
+            activeRightTab: newSelectedId ? 'inspector' : state.activeRightTab
           }))
         } else if (type === 'active_slide_changed') {
           set({ activeSlideId: data.active_slide_id })
+        } else if (type === 'context_usage') {
+          if (data.usage) {
+            set({ contextUsage: data.usage })
+          }
         } else if (type === 'agent_thinking') {
           set({ isAgentThinking: true, thinkingStatus: data.text || 'Agent 正在规划方案...' })
+        } else if (type === 'subagent_lifecycle') {
+          set({ isAgentThinking: true, thinkingStatus: data.text || '独立 Subagent 盲审中...' })
+        } else if (type === 'plan_critique') {
+          set({ isAgentThinking: true, thinkingStatus: data.text || '方案结构盲审中...' })
         } else if (type === 'tool_executing') {
           set({ isAgentThinking: true, thinkingStatus: `执行工具: ${data.tool}...` })
         } else if (type === 'tool_completed') {
@@ -493,8 +550,46 @@ export const usePPTStore = create<PPTState>((set, get) => ({
             }
 
             // Typography adjustments on text_content
-            if (updatedEl.text_content) {
-              const tc = JSON.parse(JSON.stringify(updatedEl.text_content))
+            const hasTextContent = 'text_content' in updatedEl
+            const typographyRequested =
+              updates.text !== undefined ||
+              updates.font_family !== undefined ||
+              updates.font_size !== undefined ||
+              updates.font_color !== undefined ||
+              updates.bold !== undefined ||
+              updates.italic !== undefined ||
+              updates.align !== undefined
+            if (hasTextContent && typographyRequested) {
+              let tc = updatedEl.text_content
+                ? JSON.parse(JSON.stringify(updatedEl.text_content))
+                : null
+
+              // Seed a placeholder text structure when a text/card element has
+              // no content yet but the user is styling it via the panel.
+              if (!tc || !tc.paragraphs || tc.paragraphs.length === 0) {
+                tc = {
+                  plain_text: updates.text ?? '点击输入文本',
+                  paragraphs: [
+                    {
+                      align: updates.align || 'left',
+                      line_spacing: 1.25,
+                      runs: [
+                        {
+                          text: updates.text ?? '点击输入文本',
+                          font: {
+                            name: updates.font_family ?? 'Segoe UI',
+                            size: updates.font_size ?? 18,
+                            color: updates.font_color ?? '#1E293B',
+                            bold: updates.bold ?? false,
+                            italic: updates.italic ?? false
+                          }
+                        }
+                      ]
+                    }
+                  ]
+                }
+              }
+
               if (updates.text !== undefined) {
                 tc.plain_text = updates.text
                 if (tc.paragraphs && tc.paragraphs[0] && tc.paragraphs[0].runs && tc.paragraphs[0].runs[0]) {

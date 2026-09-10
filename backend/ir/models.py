@@ -19,7 +19,7 @@ import copy
 from dataclasses import dataclass, field as dc_field
 from contextlib import contextmanager
 from typing import List, Dict, Any, Optional, Union, Literal, Generator
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, model_validator, computed_field
 import uuid
 
 
@@ -93,6 +93,7 @@ class ParagraphIR(BaseModel):
     margin_left: float = Field(0.0, description="Left indentation margin in px")
     runs: List[RunIR] = Field(default_factory=list)
 
+    @computed_field
     @property
     def plain_text(self) -> str:
         return "".join(r.text for r in self.runs)
@@ -101,6 +102,7 @@ class ParagraphIR(BaseModel):
 class TextContentIR(BaseModel):
     paragraphs: List[ParagraphIR] = Field(default_factory=list)
 
+    @computed_field
     @property
     def plain_text(self) -> str:
         return "\n".join(p.plain_text for p in self.paragraphs)
