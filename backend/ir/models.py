@@ -188,6 +188,42 @@ class BaseElementIR(BaseModel):
             self.rotation = self.transform.rotation
         return self
 
+    def set_geometry(
+        self,
+        *,
+        x: Optional[float] = None,
+        y: Optional[float] = None,
+        width: Optional[float] = None,
+        height: Optional[float] = None,
+        rotation: Optional[float] = None,
+    ) -> None:
+        """Mutate geometry while keeping flat coords and `transform` in sync.
+
+        Direct `elem.x = ...` writes leave `transform` stale; a later
+        `model_validate(model_dump())` would then silently revert the change.
+        """
+        if x is not None:
+            self.x = x
+        if y is not None:
+            self.y = y
+        if width is not None:
+            self.width = width
+        if height is not None:
+            self.height = height
+        if rotation is not None:
+            self.rotation = rotation
+        if self.transform is None:
+            self.transform = TransformIR(
+                x=self.x, y=self.y, width=self.width, height=self.height,
+                rotation=self.rotation,
+            )
+        else:
+            self.transform.x = self.x
+            self.transform.y = self.y
+            self.transform.width = self.width
+            self.transform.height = self.height
+            self.transform.rotation = self.rotation
+
 
 class ShapeElementIR(BaseElementIR):
     type: Literal["shape"] = "shape"

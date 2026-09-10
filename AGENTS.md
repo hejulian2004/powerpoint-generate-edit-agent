@@ -117,6 +117,7 @@ plan_critic_node (PlanCriticSubagent blind audit)
 
 ### 1. Canvas Dimensions & OOXML Coordinates
 - **Canvas Size**: Canonical resolution is **1280x720** (16:9).
+- **Geometry Sync**: Mutate element geometry via `BaseElementIR.set_geometry(...)` (or `Translate`/`Scale` methods); never assign `elem.x/width` directly, or the mirrored `transform` object goes stale and a serialization round-trip silently reverts the change.
 - **OOXML Adj Clamping**: `adj` values in `pptx_agent_converter/renderer/shape_renderer.py` must be normalized to `[0, 50000]`:
   `adj = int(clamp(radius_px / min_side_px, 0.0, 0.5) * 100000)`. Never pass raw pixels > 50000 to OOXML `adj`.
 

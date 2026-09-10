@@ -515,3 +515,134 @@ class BatchMutationCommand(MutationCommand):
         d = super().to_dict()
         d["sub_commands"] = [c.to_dict() for c in self.commands]
         return d
+
+
+def _apply_slide_dump(slide: SlideIR, dump: Dict[str, Any]) -> bool:
+    """In-place restore of a slide's fields from a serialized dump."""
+    if not dump:
+        return False
+    rebuilt = SlideIR.model_validate(dump)
+    for field_name in SlideIR.model_fields.keys():
+        setattr(slide, field_name, copy.deepcopy(getattr(rebuilt, field_name)))
+    return True
+
+
+def _apply_pres_dump(pres: PresentationIR, dump: Dict[str, Any]) -> bool:
+    """In-place restore of a presentation's content from a serialized dump.
+
+    `version` is intentionally preserved: the undo/redo stack owns versioning.
+    """
+    if not dump:
+        return False
+    rebuilt = PresentationIR.model_validate(dump)
+    pres.id = rebuilt.id
+    pres.title = rebuilt.title
+    pres.width = rebuilt.width
+    pres.height = rebuilt.height
+    pres.theme = copy.deepcopy(rebuilt.theme)
+    pres.master = copy.deepcopy(rebuilt.master)
+    pres.slides = [copy.deepcopy(s) for s in rebuilt.slides]
+    pres.active_slide_id = rebuilt.active_slide_id
+    pres.assets = copy.deepcopy(rebuilt.assets)
+    pres.asset_metadata = copy.deepcopy(rebuilt.asset_metadata)
+    pres.metadata = copy.deepcopy(rebuilt.metadata)
+    pres.capabilities = copy.deepcopy(rebuilt.capabilities)
+    return True
+
+
+class SnapshotSlideCommand(MutationCommand):
+    """State-based reversible command for multi-field single-slide mutations.
+
+    Used by composite slide tools (group/ungroup/align/optimize/clear/batch add/
+    generate layout/background) where a precise inverse-op chain would be fragile.
+    """
+
+    def __init__(
+        self,
+        slide_id: str,
+        before_dump: Dict[str, Any],
+        after_dump: Dict[str, Any],
+        action: str = "update_slide",
+        description: str = "",
+        source: str = "agent_tool",
+        command_id: Optional[str] = None,
+        timestamp: Optional[float] = None
+    ):
+        super().__init__(
+            command_id=command_id,
+            action=action,
+            description=description,
+            timestamp=timestamp,
+            source=source,
+            slide_id=slide_id
+        )
+        self.before = copy.deepcopy(before_dump) if before_dump else {}
+        self.after = copy.deepcopy(after_dump) if after_dump else {}
+
+    def _apply(self, pres: PresentationIR, dump: Dict[str, Any]) -> bool:
+        slide = pres.get_slide(self.slide_id) if self.slide_id else None
+        if not slide:
+            return False
+        return _apply_slide_dump(slide, dump)
+
+    def execute(self, pres: PresentationIR) -> bool:
+        return self._apply(pres, self.after)
+
+    def undo(self, pres: PresentationIR) -> bool:
+        return self._apply(pres, self.before)
+
+    def redo(self, pres: PresentationIR) -> bool:
+        return self._apply(pres, self.after)
+
+    def to_event(self) -> MutationEvent:
+        return MutationEvent(
+            action=self.action,
+            element_id=self.slide_id or "",
+            before=self.before,
+            after=self.after,
+            timestamp=str(self.timestamp),
+            source=self.source
+        )
+
+
+class SnapshotCommand(MutationCommand):
+    """State-based reversible command for whole-presentation mutations (theme/generation)."""
+
+    def __init__(
+        self,
+        before_dump: Dict[str, Any],
+        after_dump: Dict[str, Any],
+        action: str = "replace_presentation",
+        description: str = "",
+        source: str = "agent_tool",
+        command_id: Optional[str] = None,
+        timestamp: Optional[float] = None
+    ):
+        super().__init__(
+            command_id=command_id,
+            action=action,
+            description=description,
+            timestamp=timestamp,
+            source=source
+        )
+        self.before = copy.deepcopy(before_dump) if before_dump else {}
+        self.after = copy.deepcopy(after_dump) if after_dump else {}
+
+    def execute(self, pres: PresentationIR) -> bool:
+        return _apply_pres_dump(pres, self.after)
+
+    def undo(self, pres: PresentationIR) -> bool:
+        return _apply_pres_dump(pres, self.before)
+
+    def redo(self, pres: PresentationIR) -> bool:
+        return _apply_pres_dump(pres, self.after)
+
+    def to_event(self) -> MutationEvent:
+        return MutationEvent(
+            action=self.action,
+            element_id="",
+            before={"slides": len(self.before.get("slides", []))},
+            after={"slides": len(self.after.get("slides", []))},
+            timestamp=str(self.timestamp),
+            source=self.source
+        )

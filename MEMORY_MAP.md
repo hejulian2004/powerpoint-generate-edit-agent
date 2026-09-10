@@ -32,6 +32,7 @@
 1. **PPT-IR 是系统唯一状态真理 (Source of Truth)**：任何组件与模型不得直接破坏或绕过 PPT-IR。
 2. **画布基准物理尺寸**：全局坐标系严格为 **1280 × 720** (16:9)。
 3. **图元修改统一派发**：后端所有运行时图元写操作必须经由 `backend/agent/mutation_gateway.py`（唯一写入口），由网关统一完成 Schema 校验、风险门控、确认拦截与事务回滚，并内部调用 `backend/agent/tools.py:execute(tool_name, args, pres, history)`，确保 Undo/Redo 快照完整。
+   - 几何修改必须走 `BaseElementIR.set_geometry`，避免 `transform` 镜像过期；复合工具使用状态快照命令，禁止空命令污染撤销栈。
 
 ### 一键启动入口
 - **全栈一体化运行**：根目录执行 `python main.py`（自动检查产物、拉起 FastAPI 托管 API/WebSocket/SPA 并唤起浏览器）。
