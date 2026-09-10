@@ -56,11 +56,15 @@ plan_critic_node (PlanCriticSubagent blind audit)
     └── Approved
           │
           ▼
-    executor_node (ExecutorSubagent calls tools.execute)
+    executor_node (ExecutorSubagent plans tool calls only)
           │
           ▼
-    content_critic_node (ContentCriticSubagent text/structure audit)
-          ├── Rejected ──> Loop back to executor_node (re-executes text refining)
+    mutation_node (MutationGateway: risk gate + confirmation + transaction)
+          │
+          ▼
+    content_critic_node (ContentCriticSubagent deck-level text/structure audit)
+          ├── Rejected ──> Loop back to executor_node with `rework_directive`
+          │                 (targeted text edits only; no deck regeneration)
           └── Approved
                 │
                 ▼
@@ -94,6 +98,18 @@ plan_critic_node (PlanCriticSubagent blind audit)
    - Configurable context window (128k, 256k, 512k, 1m).
    - Token accounting with automatic sliding-window semantic compression triggered at **>= 90%** of the context limit.
    - Frontend renders a circular progress gauge in `ChatPanel` reflecting real-time token capacity.
+   - `AgentRuntime.run_turn()` is the single owner of the raw transcript; compression is model-facing only and never rewrites `session.messages`.
+   - The compressed context is actually fed to the Executor planning LLM (bounded tail window + compressed anchor); critics remain blind.
+6. **Mutation Gateway is the Only Writer**:
+   - `ExecutorSubagent` is a pure planner returning `ExecutorPlan`; it has no tool execution authority.
+   - `mutation_node` commits plans through `backend/agent/mutation_gateway.py`, the single choke point for schema validation, risk enrichment, confirmation gating, and transaction rollback.
+   - User confirmations, direct GUI actions, and automated remediation also dispatch through the gateway.
+   - The gateway acquires `session.mutation_lock` only around actual mutations: LLM planning/critique never blocks GUI edits.
+   - Pending confirmations are bound to the session's `document_epoch` + revision; deck replacement (import / PPTSpec generation / checkpoint restore) rotates the epoch and clears them.
+   - `AgentMemory` is session-scoped (`PPTSession.agent_memory`), never global.
+7. **Deck-Level Review & Rework Directives**:
+   - `mutation_node` reports `changed_slide_ids` (content fingerprints); critics audit every changed non-empty slide, aggregating a deck review with per-slide results.
+   - A Content Critic rejection emits `rework_directive` (slide_id, target_ids, defects, recommendations); the Executor must perform precise text edits and must never regenerate the whole deck.
 
 ---
 
@@ -112,5 +128,6 @@ plan_critic_node (PlanCriticSubagent blind audit)
   `Geometry (30%) + Readability (20%) + Contrast (15%) + Balance (15%) + Aesthetics (20%)`.
 
 ### 3. Tool Calling & Patch History
-- Tool calls must dispatch through `backend/agent/tools.py:execute(tool_name, args, pres, history)`.
+- Runtime mutations must dispatch through `backend/agent/mutation_gateway.py` (the single writer); the gateway validates, risk-gates, and transactionally calls `backend/agent/tools.py:execute(tool_name, args, pres, history)`.
 - Reversible mutations are tracked in `HistoryManager` (`backend/ir/patch.py`).
+- Mock LLM fallback is test-only: set `APP_ENV=test` and `MOCK_LLM=true`; production without an API key fails fast.
