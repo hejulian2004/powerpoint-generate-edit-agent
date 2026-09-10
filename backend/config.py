@@ -44,5 +44,17 @@ class AppSettings(BaseModel):
     # Context Window Limit & Auto-Compression Setting
     context_limit: str = os.getenv("CONTEXT_LIMIT", "256k")  # "128k" | "256k" | "512k" | "1m" | "2m"
 
+    # CORS allowlist (comma-separated origins). "*" explicitly allows all origins,
+    # but then credentialed requests are disabled per the CORS spec.
+    cors_origins: str = os.getenv(
+        "CORS_ORIGINS",
+        "http://localhost:5173,http://127.0.0.1:5173,"
+        "http://localhost:8000,http://127.0.0.1:8000,tauri://localhost",
+    )
+
+    @property
+    def cors_origin_list(self) -> list[str]:
+        return [origin.strip() for origin in self.cors_origins.split(",") if origin.strip()]
+
 
 settings = AppSettings()

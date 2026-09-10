@@ -30,10 +30,14 @@ backend/
 │   ├── patch.py          # HistoryManager, PatchRecord (撤销/重做)
 │   ├── converter.py      # PPTX <-> PPT-IR 互转适配器
 │   └── svg_renderer.py   # 后端确定性 SVG 矢量生成器
-├── eval/                 # 视觉质量评价与自愈分析
+├── eval/                 # 视觉质量评价与自愈分析 (SlideIR 引擎)
 │   ├── layout_diff.py    # 几何碰撞、文本溢出与五维质量打分
 │   ├── visual_critic.py  # 视觉审查与自动修复建议生成
 │   └── renderer_snapshot.py # 确定性栅格快照渲染
+├── evaluation/           # LayoutSpec 规则评估/补丁/自愈引擎 (生成图使用)
+├── quality/              # 统一质量门面 (QualityService + 规范化契约)
+│   ├── contracts.py      # QualityIssue/QualityReport、severity 归一化与适配器
+│   └── service.py        # 唯一入口：委托 eval / evaluation，不做算法合并
 ├── layout/               # 自动排版引擎与模板
 │   ├── engine.py         # 布局计算引擎
 │   ├── constraints.py   # 布局约束求解器
@@ -98,6 +102,11 @@ router_node ──> planner_node ──> plan_critic_node
 - **返工指令 (`rework_directive`)**：`content_critic_node` 在评审未通过时输出缺陷、建议与 `target_ids`；`executor_node` 将其注入执行提示词并强制返工模式，禁止再次调用 `generate_presentation`，只做精准文本修改。
 - **Deck 级评审**：`mutation_node` 通过幻灯片指纹计算 `changed_slide_ids`；Content/Visual Critic 逐页审查所有变更页，聚合为 `content_review.slides` / `visual_review.slides`（含 `reviewed_slide_ids`、`failed_slide_ids`、`deck_average_score`），不再只审当前一页。
 
+### 2.5 统一质量门面 (`quality/`) 与 CORS 白名单
+- **QualityService 是唯一质量入口**：交互式 Agent/WS/工具/管线统一调用 `QualityService.evaluate_slide / plan_remediation / review_slide / render_* / score_fidelity`；生成图统一调用 `QualityService.evaluate_layout / patches_for_issues / apply_layout_patches`。底层 `eval/`（SlideIR）与 `evaluation/`（LayoutSpec）保持原实现，不做算法合并；LayoutSpec 分支为惰性导入，避免把 PIL/python-pptx 带进交互热路径。
+- **规范化契约**：`QualityIssue`/`QualityReport` 统一 severity 词表（critical/error/warning/info，`high|medium|low` 归一化），IR 缺陷码映射（如 `viewport_clipping -> overflow`）；`merge_reports` 保留最差分数与全部问题，不跨引擎平均分。
+- **CORS 白名单**：`backend/main.py` 使用 `CORS_ORIGINS`（默认仅本地 Vite/Tauri origins），`"*"` 仅在显式配置时启用且自动关闭 credentials。
+
 ---
 
 ## 3. 上下文核算与 90% 自动压缩 (`agent/context_compressor.py`)
@@ -143,6 +152,9 @@ router_node ──> planner_node ──> plan_critic_node
 
 # 运行第二阶段：上下文注入、返工指令、Deck 级评审与锁粒度测试
 .venv\Scripts\python.exe -m pytest tests/test_context_injection.py tests/test_rework_directive.py tests/test_deck_level_review.py tests/test_lock_scope.py -q
+
+# 运行统一质量门面与 CORS 白名单测试
+.venv\Scripts\python.exe -m pytest tests/test_quality_service.py tests/test_cors_config.py -q
 
 # 运行上下文核算与 90% 自动压缩测试
 .venv\Scripts\python.exe -m pytest tests/test_context_compressor.py -q
