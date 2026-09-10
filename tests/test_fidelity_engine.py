@@ -53,20 +53,22 @@ def test_font_engine_discovery_and_cascade():
     idx = FontEngine.get_index()
     assert len(idx) > 0, "FontEngine should index at least some system fonts"
 
-    # Arial / Calibri resolution
-    arial_path = FontEngine.resolve_font_path("Arial")
-    assert arial_path is not None
-    assert "arial" in arial_path.lower()
+    # Arial ships on Windows/macOS; minimal Linux images may only have
+    # DejaVu/Liberation, so assert Arial specifics only when indexed.
+    if "arial" in idx:
+        arial_path = FontEngine.resolve_font_path("Arial")
+        assert arial_path is not None
+        assert "arial" in arial_path.lower()
 
-    # Bold variant
-    bold_path = FontEngine.resolve_font_path("Arial", bold=True)
-    assert bold_path is not None
+        # Bold variant
+        bold_path = FontEngine.resolve_font_path("Arial", bold=True)
+        assert bold_path is not None
 
-    # Fallback for unknown font
+    # Fallback for unknown font must cascade to a valid system font
     fallback_path = FontEngine.resolve_font_path("CompletelyNonExistentFontFamily123")
     assert fallback_path is not None, "FontEngine should cascade to a valid system font"
 
-    # Pillow font object
+    # Pillow font object (unknown family cascades; default bitmap as last resort)
     pil_font = FontEngine.get_pil_font("Segoe UI", size=24.0, bold=True)
     assert pil_font is not None
 
