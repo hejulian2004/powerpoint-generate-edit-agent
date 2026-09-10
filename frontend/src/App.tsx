@@ -33,7 +33,7 @@ export const App: React.FC = () => {
   }, [])
 
   return (
-    <div className="flex flex-col w-screen h-screen bg-canvas text-main antialiased overflow-hidden select-none">
+    <div className="flex flex-col w-screen h-screen bg-canvas text-main antialiased overflow-hidden">
       <Header />
       <div className="flex flex-1 overflow-hidden">
         <Sidebar />

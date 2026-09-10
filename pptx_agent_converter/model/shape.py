@@ -56,7 +56,7 @@ class ShapeElement(BaseElement):
     fill: Fill = field(default_factory=Fill)
     line: Optional[Line] = None
     shadow: Optional[Shadow] = None
-    radius: Optional[float] = None  # corner radius for roundRect or adjustment value
+    radius: Optional[float] = None  # roundRect corner radius in px at 96 DPI (converted to OOXML adj on write)
     adjust_values: Dict[str, float] = field(default_factory=dict)
     text: Optional[TextBlock] = None
 

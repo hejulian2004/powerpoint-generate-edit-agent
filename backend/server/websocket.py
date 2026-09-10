@@ -299,7 +299,9 @@ async def websocket_endpoint(websocket: WebSocket):
                             "slide_id": args.get("slide_id")
                         }, session.pres, session.history)
                     elif action in ("add_shape", "add_text", "add_connector", "optimize_layout", "apply_theme"):
-                        tools.execute(action, args, session.pres, session.history)
+                        res = tools.execute(action, args, session.pres, session.history)
+                        if res.get("element_id"):
+                            session.last_target_id = res.get("element_id")
 
                     await store.broadcast({
                         "type": "presentation_updated",

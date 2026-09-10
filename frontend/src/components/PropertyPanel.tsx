@@ -1,12 +1,36 @@
-import React from 'react'
+import React, { useState, useEffect, useRef } from 'react'
 import {
   Trash2, Sliders, Type, Square,
   Palette, CornerUpRight, Move, Bold, Italic,
-  AlignLeft, AlignCenter, AlignRight, Copy
+  AlignLeft, AlignCenter, AlignRight, Copy, Image as ImageIcon
 } from 'lucide-react'
 import { usePPTStore } from '../store/usePPTStore'
-import type { ShapeElementIR, TextElementIR, ConnectorElementIR, GroupElementIR } from '../types/ppt'
+import type { ShapeElementIR, TextElementIR, ConnectorElementIR, GroupElementIR, ImageElementIR } from '../types/ppt'
 import { themeColors, DEFAULT_COLOR_SWATCHES, SLIDE_THEME_PRESETS } from '../theme/tokens'
+
+const safeHexColor = (col?: string, fallback = '#0F172A') => {
+  if (!col) return fallback
+  if (/^#[0-9A-Fa-f]{6}$/.test(col)) return col
+  if (/^#[0-9A-Fa-f]{3}$/.test(col)) {
+    return `#${col[1]}${col[1]}${col[2]}${col[2]}${col[3]}${col[3]}`
+  }
+  return fallback
+}
+
+export const getPlainText = (tc: any): string => {
+  if (!tc) return ''
+  if (typeof tc.plain_text === 'string' && tc.plain_text) return tc.plain_text
+  if (Array.isArray(tc.paragraphs)) {
+    return tc.paragraphs
+      .map((p: any) =>
+        Array.isArray(p.runs)
+          ? p.runs.map((r: any) => (r && typeof r.text === 'string' ? r.text : '')).join('')
+          : ''
+      )
+      .join('\n')
+  }
+  return ''
+}
 
 const FONT_FAMILIES = [
   { label: '现代无衬线 (Inter / Segoe UI)', value: 'Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif' },
@@ -37,16 +61,41 @@ export const PropertyPanel: React.FC = () => {
     applyThemeDirect,
     duplicateSelectedElement,
     deleteSelectedElement,
-    updateElementDirect
+    updateElementDirect,
+    setEditingElementId
   } = usePPTStore()
 
   const slide = getActiveSlide()
   const elem = getSelectedElement()
 
+  const isShape = elem?.type === 'shape'
+  const isText = elem?.type === 'text'
+  const isConn = elem?.type === 'connector'
+  const isGroup = elem?.type === 'group'
+  const isImage = elem?.type === 'image'
+
+  const shapeElem = elem as ShapeElementIR
+  const textElem = elem as TextElementIR
+  const connElem = elem as ConnectorElementIR
+  const groupElem = elem as GroupElementIR
+  const imageElem = elem as ImageElementIR
+
+  const textContent = isText ? textElem.text_content : isShape ? shapeElem.text_content : null
+  const plainText = getPlainText(textContent)
+
+  // Top-level unconditional React hooks (preserves hook call order on every render)
+  const panelTextareaRef = useRef<HTMLTextAreaElement>(null)
+  const [localText, setLocalText] = useState(plainText)
+  useEffect(() => {
+    if (document.activeElement !== panelTextareaRef.current) {
+      setLocalText(plainText)
+    }
+  }, [elem?.id, plainText])
+
   // 1. If no element is selected, show Slide Level Properties & Archetypes
   if (!elem) {
     return (
-      <div className="flex-1 overflow-y-auto p-4 space-y-6 select-none text-secondary bg-panel custom-scrollbar">
+      <div className="flex-1 overflow-y-auto p-4 space-y-6 text-secondary bg-panel custom-scrollbar">
         <div>
           <div className="flex items-center gap-2 mb-1">
             <Sliders className="w-3.5 h-3.5 text-muted" />
@@ -115,20 +164,6 @@ export const PropertyPanel: React.FC = () => {
     )
   }
 
-  // 2. Element Selected -> Full Property Controls
-  const isShape = elem.type === 'shape'
-  const isText = elem.type === 'text'
-  const isConn = elem.type === 'connector'
-  const isGroup = elem.type === 'group'
-
-  const shapeElem = elem as ShapeElementIR
-  const textElem = elem as TextElementIR
-  const connElem = elem as ConnectorElementIR
-  const groupElem = elem as GroupElementIR
-
-  const textContent = isText ? textElem.text_content : isShape ? shapeElem.text_content : null
-  const plainText = textContent?.plain_text ?? ''
-
   // Typography state extraction
   const firstPara = textContent?.paragraphs?.[0]
   const firstRun = firstPara?.runs?.[0]
@@ -138,7 +173,7 @@ export const PropertyPanel: React.FC = () => {
   const isBold = firstRun?.font?.bold ?? false
   const isItalic = firstRun?.font?.italic ?? false
   const currentAlign = firstPara?.align || 'left'
-  const currentRadius = elem.style?.radius ?? 12
+  const currentRadius = elem.style?.radius ?? 0
   const currentOpacity = Math.round((elem.style?.opacity ?? 1.0) * 100)
 
   const handleUpdate = (updates: Record<string, any>) => {
@@ -172,16 +207,32 @@ export const PropertyPanel: React.FC = () => {
   }
 
   return (
-    <div className="flex-1 overflow-y-auto p-4 space-y-5 select-none text-secondary bg-panel custom-scrollbar">
+    <div className="flex-1 overflow-y-auto p-4 space-y-5 text-secondary bg-panel custom-scrollbar">
       {/* Element Header & Quick Actions */}
       <div className="flex items-center justify-between border-b border-line pb-3">
         <div className="flex items-center gap-2">
           <div className="w-6 h-6 rounded-md bg-elevated border border-line-strong flex items-center justify-center text-main">
-            {isText ? <Type className="w-3 h-3" /> : isGroup ? <Sliders className="w-3 h-3" /> : <Square className="w-3 h-3" />}
+            {isText ? (
+              <Type className="w-3 h-3" />
+            ) : isImage ? (
+              <ImageIcon className="w-3.5 h-3.5 text-blue-600" />
+            ) : isGroup ? (
+              <Sliders className="w-3 h-3" />
+            ) : (
+              <Square className="w-3 h-3" />
+            )}
           </div>
           <div>
             <span className="text-xs font-semibold text-main">
-              {elem.type === 'shape' ? '几何卡片' : elem.type === 'text' ? '文本段落' : elem.type === 'group' ? `组合容器 (${groupElem.children?.length || 0}项)` : '连接导线'}
+              {elem.type === 'shape'
+                ? '几何卡片'
+                : elem.type === 'text'
+                ? '文本段落'
+                : elem.type === 'image'
+                ? '图像素材'
+                : elem.type === 'group'
+                ? `组合容器 (${groupElem.children?.length || 0}项)`
+                : '连接导线'}
             </span>
             <span className="font-tabular text-[11px] text-muted ml-2 font-medium">#{elem.id}</span>
           </div>
@@ -317,7 +368,7 @@ export const PropertyPanel: React.FC = () => {
       </div>
 
       {/* Typography: Font Family, Size, Styling, Alignment */}
-      {(isText || (isShape && textContent !== null)) && (
+      {(isText || isShape) && (
         <div className="space-y-3 pt-3 border-t border-line">
           <div className="flex items-center gap-1.5 text-xs font-semibold text-secondary">
             <Type className="w-3.5 h-3.5 text-muted" />
@@ -451,7 +502,7 @@ export const PropertyPanel: React.FC = () => {
               <div className="relative w-8 h-8 rounded-lg overflow-hidden border border-line-strong shrink-0 shadow-xs">
                 <input
                   type="color"
-                  value={currentFontColor}
+                  value={safeHexColor(currentFontColor, '#0F172A')}
                   onChange={(e) => handleUpdate({ font_color: e.target.value })}
                   className="absolute -inset-2 w-12 h-12 cursor-pointer bg-transparent border-0"
                 />
@@ -478,14 +529,27 @@ export const PropertyPanel: React.FC = () => {
           </div>
 
           {/* 5. Text Content Editor */}
-          <div className="space-y-1">
-            <span className="text-[11px] text-muted font-medium">文本内容编辑</span>
+          <div className="space-y-1.5">
+            <div className="flex items-center justify-between">
+              <span className="text-[11px] text-muted font-medium">文本内容编辑</span>
+              <button
+                type="button"
+                onClick={() => setEditingElementId(elem.id)}
+                className="text-[10px] text-blue-600 hover:text-blue-700 font-medium hover:underline flex items-center gap-1 cursor-pointer"
+              >
+                <span>在画布就地打字 ✏️</span>
+              </button>
+            </div>
             <textarea
-              value={plainText}
-              onChange={(e) => handleUpdate({ text: e.target.value })}
+              ref={panelTextareaRef}
+              value={localText}
+              onChange={(e) => {
+                setLocalText(e.target.value)
+                handleUpdate({ text: e.target.value })
+              }}
               rows={3}
-              placeholder="输入图元文本内容..."
-              className="w-full bg-subtle border border-line-strong rounded-lg p-2.5 text-xs text-main placeholder-line-focus focus:outline-none focus:border-blue-500 resize-none leading-relaxed"
+              placeholder="输入卡片或段落文本内容..."
+              className="w-full bg-subtle border border-line-strong rounded-lg p-2.5 text-xs text-main placeholder-line-focus focus:outline-none focus:border-blue-500 resize-none leading-relaxed select-text"
             />
           </div>
         </div>
@@ -499,26 +563,28 @@ export const PropertyPanel: React.FC = () => {
             <span>填充、边框与圆角</span>
           </div>
 
-          {/* Fill Color */}
-          <div className="space-y-1.5">
-            <span className="text-[11px] text-muted block font-medium">图元填充色</span>
-            <div className="flex items-center gap-2">
-              <div className="relative w-8 h-8 rounded-lg overflow-hidden border border-line-strong shrink-0 shadow-xs">
+          {/* Fill Color (Shapes and Textboxes only) */}
+          {!isImage && (
+            <div className="space-y-1.5">
+              <span className="text-[11px] text-muted block font-medium">图元填充色</span>
+              <div className="flex items-center gap-2">
+                <div className="relative w-8 h-8 rounded-lg overflow-hidden border border-line-strong shrink-0 shadow-xs">
+                  <input
+                    type="color"
+                    value={safeHexColor(elem.style?.fill?.color, '#F8FAFC')}
+                    onChange={(e) => handleUpdate({ fill_color: e.target.value })}
+                    className="absolute -inset-2 w-12 h-12 cursor-pointer bg-transparent border-0"
+                  />
+                </div>
                 <input
-                  type="color"
+                  type="text"
                   value={elem.style?.fill?.color || themeColors.surface.subtle}
                   onChange={(e) => handleUpdate({ fill_color: e.target.value })}
-                  className="absolute -inset-2 w-12 h-12 cursor-pointer bg-transparent border-0"
+                  className="flex-1 bg-subtle border border-line-strong rounded-lg px-2.5 py-1.5 text-xs text-main font-tabular font-medium focus:outline-none focus:border-blue-500"
                 />
               </div>
-              <input
-                type="text"
-                value={elem.style?.fill?.color || themeColors.surface.subtle}
-                onChange={(e) => handleUpdate({ fill_color: e.target.value })}
-                className="flex-1 bg-subtle border border-line-strong rounded-lg px-2.5 py-1.5 text-xs text-main font-tabular font-medium focus:outline-none focus:border-blue-500"
-              />
             </div>
-          </div>
+          )}
 
           {/* Border Stroke */}
           <div className="space-y-1.5">
@@ -527,7 +593,7 @@ export const PropertyPanel: React.FC = () => {
               <div className="relative w-8 h-8 rounded-lg overflow-hidden border border-line-strong shrink-0 shadow-xs">
                 <input
                   type="color"
-                  value={elem.style?.border?.color || themeColors.border.strong}
+                  value={safeHexColor(elem.style?.border?.color, '#CBD5E1')}
                   onChange={(e) => handleUpdate({ border_color: e.target.value })}
                   className="absolute -inset-2 w-12 h-12 cursor-pointer bg-transparent border-0"
                 />
@@ -550,8 +616,8 @@ export const PropertyPanel: React.FC = () => {
             </div>
           </div>
 
-          {/* Corner Radius (for shapes) */}
-          {isShape && (
+          {/* Corner Radius (for shapes and images) */}
+          {(isShape || isImage) && (
             <div className="space-y-1.5">
               <div className="flex justify-between items-center text-[11px] text-muted font-medium">
                 <span>圆角弧度 (Corner Radius)</span>
@@ -594,6 +660,26 @@ export const PropertyPanel: React.FC = () => {
                 className="w-full accent-inverted bg-line h-1.5 rounded-lg cursor-pointer"
               />
               <span className="text-xs font-tabular text-muted font-semibold w-12 text-right">{currentOpacity}%</span>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Image Specific Details */}
+      {isImage && (
+        <div className="space-y-2 pt-3 border-t border-line">
+          <span className="text-xs font-semibold text-secondary flex items-center gap-1.5">
+            <ImageIcon className="w-3.5 h-3.5 text-blue-600" />
+            <span>图像素材参数</span>
+          </span>
+          <div className="bg-subtle p-2.5 rounded-lg border border-line-strong space-y-1.5 text-xs font-tabular">
+            <div className="flex justify-between text-muted">
+              <span>原始尺寸</span>
+              <span>{Math.round(imageElem.width)} × {Math.round(imageElem.height)} px</span>
+            </div>
+            <div className="flex justify-between text-muted">
+              <span>圆角裁剪</span>
+              <span className="text-main font-medium">{imageElem.style?.radius || 0} px</span>
             </div>
           </div>
         </div>

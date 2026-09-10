@@ -216,6 +216,7 @@ export interface VisualQualityScore {
   readability: number
   contrast: number
   balance: number
+  aesthetics: number
   total: number
 }
 
@@ -238,6 +239,17 @@ export interface VisualRemediationEvent {
   score_before?: number
   score_after?: number
   delta?: number
+}
+
+export interface ContextUsageData {
+  current_tokens: number
+  max_tokens: number
+  usage_percent: number
+  is_compressed: boolean
+  compression_ratio: number
+  tokens_saved: number
+  context_limit_key: string
+  threshold_reached: boolean
 }
 
 export interface ChatMessage {

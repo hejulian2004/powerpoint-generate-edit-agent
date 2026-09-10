@@ -80,9 +80,44 @@ class AgentRuntime:
         the original pending call through the graph).
         """
         confirmed_ids = list(confirmed_tool_ids or [])
+        from .context_compressor import ContextCompressor, CONTEXT_LIMIT_PRESETS
+
+        # 1. Evaluate context tokens & execute auto-compression at >= 90% threshold
+        ctx_limit_key = getattr(settings, "context_limit", "256k").lower()
+        max_tokens_budget = CONTEXT_LIMIT_PRESETS.get(ctx_limit_key, 256 * 1024)
+
+        session_messages = list(session.messages) if session and hasattr(session, "messages") else []
+        session_messages.append({"role": "user", "content": user_message})
+
+        compressed_messages, usage_report = ContextCompressor.evaluate_and_compress(
+            messages=session_messages,
+            max_tokens=max_tokens_budget,
+            context_key=ctx_limit_key
+        )
+
+        if usage_report.is_compressed and session and hasattr(session, "messages"):
+            session.messages = compressed_messages
+
+        # Emit real-time context usage report for frontend circular progress indicator
+        if on_event:
+            try:
+                ev_data = {
+                    "type": "context_usage",
+                    "usage": usage_report.to_dict()
+                }
+                import inspect
+                if inspect.iscoroutinefunction(on_event):
+                    await on_event(ev_data)
+                else:
+                    res = on_event(ev_data)
+                    if inspect.isawaitable(res):
+                        await res
+            except Exception as e:
+                logger.debug(f"Failed to emit context_usage: {e}")
+
         initial_state: PPTAgentState = {
             "user_query": user_message,
-            "messages": [{"role": "user", "content": user_message}],
+            "messages": compressed_messages,
             "iteration": 0,
             "max_iterations": max_iterations,
             "active_slide_id": pres.active_slide_id,

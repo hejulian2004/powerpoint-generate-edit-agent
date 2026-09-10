@@ -1,5 +1,8 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react'
-import { ZoomIn, ZoomOut, Maximize2, Trash2, Move } from 'lucide-react'
+import {
+  ZoomIn, ZoomOut, Maximize2, Trash2, Move,
+  Edit3, Bold, Image as ImageIcon
+} from 'lucide-react'
 import { usePPTStore } from '../store/usePPTStore'
 import { SVGRendererComponent } from './SVGRendererComponent'
 import { CanvasToolbar } from './CanvasToolbar'
@@ -25,6 +28,15 @@ interface DragState {
   snapCandidates: SnapCandidate[]
 }
 
+const safeHexColor = (col?: string, fallback = '#0F172A') => {
+  if (!col) return fallback
+  if (/^#[0-9A-Fa-f]{6}$/.test(col)) return col
+  if (/^#[0-9A-Fa-f]{3}$/.test(col)) {
+    return `#${col[1]}${col[1]}${col[2]}${col[2]}${col[3]}${col[3]}`
+  }
+  return fallback
+}
+
 export const SlideCanvas: React.FC = () => {
   const {
     getActiveSlide,
@@ -38,7 +50,9 @@ export const SlideCanvas: React.FC = () => {
     showGrid,
     snapEnabled,
     showSmartGuides,
-    updateElementDirect
+    updateElementDirect,
+    editingElementId,
+    setEditingElementId
   } = usePPTStore()
 
   const slide = getActiveSlide()
@@ -52,7 +66,28 @@ export const SlideCanvas: React.FC = () => {
 
   const handleDeleteSelected = () => {
     deleteSelectedElement()
+    setEditingElementId(null)
   }
+
+  // Double click to trigger inline canvas editing
+  const handleElementDoubleClick = useCallback((elemId: string) => {
+    if (!slide) return
+    const elem = slide.elements.find((el) => el.id === elemId)
+    if (!elem) return
+    setSelectedElementId(elemId)
+    if (elem.type === 'text' || elem.type === 'shape') {
+      setEditingElementId(elemId)
+    }
+  }, [slide, setSelectedElementId, setEditingElementId])
+
+  const handleCommitInlineEdit = useCallback((elemId: string, text: string) => {
+    updateElementDirect(elemId, { text })
+    setEditingElementId(null)
+  }, [updateElementDirect, setEditingElementId])
+
+  const handleCancelInlineEdit = useCallback(() => {
+    setEditingElementId(null)
+  }, [setEditingElementId])
 
   // 1. Mouse down on any element -> Select & Start Dragging Move
   const handleElementMouseDown = useCallback((elemId: string, e: React.MouseEvent) => {
@@ -228,13 +263,21 @@ export const SlideCanvas: React.FC = () => {
       if (slide) {
         const target = slide.elements.find((el) => el.id === dragState.elemId)
         if (target) {
-          // Single backend mutation per drag; mousemove never commits to history.
-          updateElementDirect(dragState.elemId, {
-            x: target.x,
-            y: target.y,
-            width: target.width,
-            height: target.height
-          })
+          const hasMoved =
+            Math.abs(target.x - dragState.initialElem.x) > 0.5 ||
+            Math.abs(target.y - dragState.initialElem.y) > 0.5 ||
+            Math.abs(target.width - dragState.initialElem.width) > 0.5 ||
+            Math.abs(target.height - dragState.initialElem.height) > 0.5
+
+          if (hasMoved) {
+            // Single backend mutation per actual drag/resize; pure clicks never commit to history.
+            updateElementDirect(dragState.elemId, {
+              x: target.x,
+              y: target.y,
+              width: target.width,
+              height: target.height
+            })
+          }
         }
       }
       snapSessionRef.current = {}
@@ -287,7 +330,12 @@ export const SlideCanvas: React.FC = () => {
   return (
     <main
       className="flex-1 bg-canvas relative flex flex-col items-center justify-center p-8 overflow-hidden select-none"
-      onClick={() => setSelectedElementId(null)}
+      onClick={(e) => {
+        if (e.target === e.currentTarget) {
+          setSelectedElementId(null)
+          setEditingElementId(null)
+        }
+      }}
     >
       {/* Floating Canvas Top Toolbar (Supports Drag to Canvas) */}
       <CanvasToolbar />
@@ -327,19 +375,24 @@ export const SlideCanvas: React.FC = () => {
           // Deselect if clicked on empty canvas background
           if (e.target === canvasRef.current) {
             setSelectedElementId(null)
+            setEditingElementId(null)
           }
         }}
       >
         <SVGRendererComponent
           slide={slide}
           onElementMouseDown={handleElementMouseDown}
+          onElementDoubleClick={handleElementDoubleClick}
           onResizeHandleMouseDown={handleResizeHandleMouseDown}
           alignmentGuides={alignmentGuides}
+          editingElementId={editingElementId}
+          onCommitInlineEdit={handleCommitInlineEdit}
+          onCancelInlineEdit={handleCancelInlineEdit}
         />
       </div>
 
-      {/* Bottom Floating Control Bar: Zoom & Quick Info */}
-      <div className="absolute bottom-6 flex items-center gap-3 z-10">
+      {/* Bottom Floating Control Bar: Zoom & Quick Info & Instant Formatter */}
+      <div className="absolute bottom-6 flex flex-wrap items-center justify-center gap-3 z-10 max-w-[95%]">
         <div className="flex items-center gap-1 bg-panel/95 backdrop-blur-xl px-2.5 py-1.5 rounded-xl border border-line-strong shadow-xl shadow-slate-200/60 text-secondary">
           <button
             onClick={() => setZoom(Math.max(zoom - 0.1, 0.5))}
@@ -368,25 +421,129 @@ export const SlideCanvas: React.FC = () => {
           </button>
         </div>
 
-        {/* Selected Element Floating Info & Quick Transform */}
-        {selectedElement && (
-          <div className="flex items-center gap-3 bg-panel/95 backdrop-blur-xl px-3 py-1.5 rounded-xl border border-line-strong shadow-xl shadow-slate-200/60 text-xs text-main animate-in fade-in duration-150">
-            <span className="font-tabular text-main font-semibold bg-elevated px-2 py-0.5 rounded border border-line flex items-center gap-1">
-              <Move className="w-3.5 h-3.5 text-muted" />
-              <span>{selectedElement.type} #{selectedElement.id}</span>
-            </span>
-            <span className="text-muted font-tabular text-[11px] font-medium">
-              X: {Math.round(selectedElement.x)} Y: {Math.round(selectedElement.y)} · {Math.round(selectedElement.width)} × {Math.round(selectedElement.height)} px
-            </span>
-            <button
-              onClick={handleDeleteSelected}
-              className="p-1 rounded hover:bg-rose-50 text-muted hover:text-rose-600 transition-colors ml-0.5"
-              title="删除此图元"
-            >
-              <Trash2 className="w-3.5 h-3.5" />
-            </button>
-          </div>
-        )}
+        {/* Selected Element Floating Info & Instant Formatter */}
+        {selectedElement && (() => {
+          const isTextOrShape = selectedElement.type === 'text' || selectedElement.type === 'shape'
+          const isImageOrShape = selectedElement.type === 'image' || selectedElement.type === 'shape'
+          const textContent = (selectedElement as any)?.text_content
+          const firstPara = textContent?.paragraphs?.[0]
+          const firstRun = firstPara?.runs?.[0]
+          const currentFontSize = firstRun?.font?.size ?? (selectedElement.type === 'text' ? 24 : 16)
+          const currentFontColor = firstRun?.font?.color ?? '#0F172A'
+          const isBold = firstRun?.font?.bold ?? false
+          const currentRadius = selectedElement.style?.radius ?? 0
+
+          return (
+            <div className="flex items-center gap-2.5 bg-panel/95 backdrop-blur-xl px-3 py-1.5 rounded-xl border border-line-strong shadow-xl shadow-slate-200/60 text-xs text-main animate-in fade-in duration-150">
+              <span className="font-tabular text-main font-semibold bg-elevated px-2 py-0.5 rounded border border-line flex items-center gap-1">
+                {selectedElement.type === 'image' ? (
+                  <ImageIcon className="w-3.5 h-3.5 text-blue-600" />
+                ) : (
+                  <Move className="w-3.5 h-3.5 text-muted" />
+                )}
+                <span>{selectedElement.type} #{selectedElement.id}</span>
+              </span>
+
+              <span className="text-muted font-tabular text-[11px] font-medium hidden sm:inline">
+                {Math.round(selectedElement.width)} × {Math.round(selectedElement.height)} px
+              </span>
+
+              <div className="w-[1px] h-3.5 bg-line" />
+
+              {/* Instant Inline Text Edit Button */}
+              {isTextOrShape && (
+                <button
+                  onClick={() => setEditingElementId(selectedElement.id)}
+                  className="flex items-center gap-1 px-2 py-0.5 rounded bg-blue-50 text-blue-600 hover:bg-blue-100 font-medium transition-colors text-[11px]"
+                  title="就地双击或点击此按钮输入文本"
+                >
+                  <Edit3 className="w-3 h-3" />
+                  <span>编辑文字</span>
+                </button>
+              )}
+
+              {/* Font Size Quick Stepper */}
+              {isTextOrShape && (
+                <div className="flex items-center gap-1 bg-subtle px-1.5 py-0.5 rounded border border-line">
+                  <span className="text-[10px] text-muted font-medium">字号</span>
+                  <button
+                    onClick={() => updateElementDirect(selectedElement.id, { font_size: Math.max(10, currentFontSize - 2) })}
+                    className="w-4 h-4 rounded flex items-center justify-center hover:bg-line text-muted hover:text-main text-[10px] font-bold"
+                  >
+                    -
+                  </button>
+                  <span className="font-tabular text-[11px] font-semibold w-5 text-center">
+                    {Math.round(currentFontSize)}
+                  </span>
+                  <button
+                    onClick={() => updateElementDirect(selectedElement.id, { font_size: Math.min(96, currentFontSize + 2) })}
+                    className="w-4 h-4 rounded flex items-center justify-center hover:bg-line text-muted hover:text-main text-[10px] font-bold"
+                  >
+                    +
+                  </button>
+                </div>
+              )}
+
+              {/* Bold Quick Toggle */}
+              {isTextOrShape && (
+                <button
+                  onClick={() => updateElementDirect(selectedElement.id, { bold: !isBold })}
+                  className={`p-1 rounded transition-colors ${
+                    isBold ? 'bg-inverted text-inverted-text shadow-xs' : 'hover:bg-elevated text-secondary'
+                  }`}
+                  title="文字加粗"
+                >
+                  <Bold className="w-3 h-3" />
+                </button>
+              )}
+
+              {/* Font Color Picker */}
+              {isTextOrShape && (
+                <div className="flex items-center gap-1" title="设置字体颜色">
+                  <div className="relative w-5 h-5 rounded overflow-hidden border border-line-strong cursor-pointer shrink-0 shadow-xs">
+                    <input
+                      type="color"
+                      value={safeHexColor(currentFontColor, '#0F172A')}
+                      onChange={(e) => updateElementDirect(selectedElement.id, { font_color: e.target.value })}
+                      className="absolute -inset-2 w-10 h-10 cursor-pointer opacity-0"
+                    />
+                    <div className="w-full h-full" style={{ backgroundColor: currentFontColor }} />
+                  </div>
+                </div>
+              )}
+
+              {/* Corner Radius Quick Selector (for Cards & Images) */}
+              {isImageOrShape && (
+                <div className="flex items-center gap-1 bg-subtle px-1.5 py-0.5 rounded border border-line">
+                  <span className="text-[10px] text-muted font-medium">圆角</span>
+                  {[0, 4, 8, 16].map((r) => (
+                    <button
+                      key={r}
+                      onClick={() => updateElementDirect(selectedElement.id, { radius: r })}
+                      className={`px-1.5 py-0.2 rounded text-[10px] font-tabular transition-colors ${
+                        currentRadius === r
+                          ? 'bg-inverted text-inverted-text font-bold shadow-xs'
+                          : 'hover:bg-line text-muted hover:text-main'
+                      }`}
+                    >
+                      {r}px
+                    </button>
+                  ))}
+                </div>
+              )}
+
+              <div className="w-[1px] h-3.5 bg-line" />
+
+              <button
+                onClick={handleDeleteSelected}
+                className="p-1 rounded hover:bg-rose-50 text-muted hover:text-rose-600 transition-colors ml-0.5"
+                title="删除此图元"
+              >
+                <Trash2 className="w-3.5 h-3.5" />
+              </button>
+            </div>
+          )
+        })()}
       </div>
     </main>
   )

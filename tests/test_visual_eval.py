@@ -350,7 +350,7 @@ def test_langgraph_vision_critique_closed_loop():
 # =====================================================================
 
 def test_multidimensional_visual_quality_score_weights():
-    """Verify that VisualQualityScore breaks down into geometry 40%, readability 25%, contrast 15%, balance 20%."""
+    """Verify that VisualQualityScore breaks down into geometry 30%, readability 20%, contrast 15%, balance 15%, aesthetics 20%."""
     slide = SlideIR(id="score_slide", slide_num=1, width=1280, height=720)
 
     # Clean slide: 100 on all dimensions
@@ -360,6 +360,7 @@ def test_multidimensional_visual_quality_score_weights():
     assert qs.readability == 100.0
     assert qs.contrast == 100.0
     assert qs.balance == 100.0
+    assert qs.aesthetics == 100.0
     assert qs.total == 100.0
     assert clean_report.score == 100.0
 
@@ -372,9 +373,98 @@ def test_multidimensional_visual_quality_score_weights():
     assert qs_clip.geometry < 100.0
     assert qs_clip.readability == 100.0
     assert qs_clip.contrast == 100.0
-    # Expected weighted composite: 0.40 * G + 0.25 * 100 + 0.15 * 100 + 0.20 * 100
-    expected_total = round(0.40 * qs_clip.geometry + 0.25 * 100.0 + 0.15 * 100.0 + 0.20 * 100.0, 1)
+    assert qs_clip.balance == 100.0
+    assert qs_clip.aesthetics == 100.0
+    # Expected weighted composite: 0.30 * G + 0.20 * 100 + 0.15 * 100 + 0.15 * 100 + 0.20 * 100
+    expected_total = round(0.30 * qs_clip.geometry + 0.20 * 100.0 + 0.15 * 100.0 + 0.15 * 100.0 + 0.20 * 100.0, 1)
     assert qs_clip.total == expected_total
     assert clip_report.score == expected_total
     assert "quality_score" in clip_report.to_dict()
+    assert "aesthetics" in clip_report.to_dict()["quality_score"]
+
+
+def test_aesthetic_quality_scoring():
+    """Verify that LayoutDiffEngine penalises aesthetic flaws: oversized radius, garish colors, weak hierarchy."""
+    # 1. Slide with oversized card radius (violating no-large-rounded-card rule)
+    slide_round = SlideIR(id="slide_round", slide_num=1, width=1280, height=720)
+    pill_card = ShapeElementIR(
+        id="pill_card",
+        shape_type="roundRect",
+        x=100.0,
+        y=100.0,
+        width=300.0,
+        height=200.0,
+        style=ElementStyleIR(fill=FillStyle(type="solid", color="#F8FAFC"), radius=24.0)
+    )
+    slide_round.add_element(pill_card)
+    rep_round = LayoutDiffEngine.evaluate_slide(slide_round)
+    assert rep_round.quality_score.aesthetics < 100.0
+    assert any(d.defect_type == "oversized_card_radius" for d in rep_round.defects)
+
+    # 2. Slide with garish primary color (neon green)
+    slide_garish = SlideIR(id="slide_garish", slide_num=1, width=1280, height=720)
+    neon_card = ShapeElementIR(
+        id="neon_card",
+        x=100.0,
+        y=100.0,
+        width=200.0,
+        height=100.0,
+        style=ElementStyleIR(fill=FillStyle(type="solid", color="#00FF00"))
+    )
+    slide_garish.add_element(neon_card)
+    rep_garish = LayoutDiffEngine.evaluate_slide(slide_garish)
+    assert rep_garish.quality_score.aesthetics < 100.0
+    assert any(d.defect_type == "garish_color" for d in rep_garish.defects)
+
+    # 3. Slide with weak typographic hierarchy (title 16px, body 15px)
+    slide_weak = SlideIR(id="slide_weak", slide_num=1, width=1280, height=720)
+    t1 = TextElementIR(
+        id="t1", x=100, y=100, width=400, height=40,
+        text_content=TextContentIR.from_plain_text("标题", font=FontIR(size=16.0, color="#16181D"))
+    )
+    t2 = TextElementIR(
+        id="t2", x=100, y=150, width=400, height=40,
+        text_content=TextContentIR.from_plain_text("正文一", font=FontIR(size=15.0, color="#5A6472"))
+    )
+    t3 = TextElementIR(
+        id="t3", x=100, y=200, width=400, height=40,
+        text_content=TextContentIR.from_plain_text("正文二", font=FontIR(size=15.0, color="#5A6472"))
+    )
+    slide_weak.add_element(t1)
+    slide_weak.add_element(t2)
+    slide_weak.add_element(t3)
+    rep_weak = LayoutDiffEngine.evaluate_slide(slide_weak)
+    assert any(d.defect_type == "weak_hierarchy" for d in rep_weak.defects)
+
+
+def test_visual_critic_multimodal_aesthetic_fusion():
+    """Verify that VisualCritic parses Vision Model aesthetic score and fuses into quality_score."""
+    class MockVisionLLM:
+        api_key = "test_key_vision"
+        async def chat_completion(self, messages, role="vision", **kwargs):
+            return {
+                "choices": [{
+                    "message": {
+                        "content": "排版平衡度好，质感较高。\n【美学评分: 80/100】"
+                    }
+                }]
+            }
+
+    async def _run():
+        slide = SlideIR(id="slide_fusion", slide_num=1, width=1280, height=720)
+        # Clean slide rule aesthetics = 100.0
+        # Vision model gives 80.0
+        # Fused aesthetics should be 0.5 * 100 + 0.5 * 80 = 90.0
+        review = await VisualCritic.review_slide(
+            slide=slide,
+            llm_client=MockVisionLLM(),
+            include_multimodal=True
+        )
+        assert review.health_report.quality_score.aesthetics == 90.0
+        # Total score should reflect fused aesthetics
+        # 0.30*100 + 0.20*100 + 0.15*100 + 0.15*100 + 0.20*90.0 = 98.0
+        assert review.health_report.quality_score.total == 98.0
+        assert review.health_report.score == 98.0
+
+    asyncio.run(_run())
 
