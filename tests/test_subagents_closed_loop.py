@@ -213,8 +213,10 @@ def test_content_critic_rejection_loops_back_to_executor():
             }
         })
 
-        # Content critic ran twice due to loop back to executor
-        assert mock_llm.content_call_count == 2
+        # Deck-level review: every generated slide is audited, and the rejection
+        # loops back to the executor for a targeted rework pass.
+        assert mock_llm.content_call_count >= len(pres.slides)
         assert final_state["content_review"]["approved"] is True
+        assert final_state["content_review"]["reviewed_slide_ids"]
 
     asyncio.run(_run())

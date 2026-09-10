@@ -5,7 +5,6 @@ import json
 import logging
 from typing import Dict, Any, List, Optional, Callable
 from .llm import LLMClient
-from .tools import tools
 from .memory import AgentMemory
 from .vision import VisionEngine
 from .graph import build_ppt_agent_graph, PPTAgentState
@@ -82,12 +81,17 @@ class AgentRuntime:
         confirmed_ids = list(confirmed_tool_ids or [])
         from .context_compressor import ContextCompressor, CONTEXT_LIMIT_PRESETS
 
-        # 1. Evaluate context tokens & execute auto-compression at >= 90% threshold
+        # 1. Evaluate context tokens & execute auto-compression at >= 90% threshold.
+        #    AgentRuntime is the single owner of the conversation transcript: the
+        #    user turn is appended exactly once here (transports must not do it).
         ctx_limit_key = getattr(settings, "context_limit", "256k").lower()
         max_tokens_budget = CONTEXT_LIMIT_PRESETS.get(ctx_limit_key, 256 * 1024)
 
-        session_messages = list(session.messages) if session and hasattr(session, "messages") else []
-        session_messages.append({"role": "user", "content": user_message})
+        if session is not None and hasattr(session, "add_message"):
+            session.add_message(role="user", content=user_message)
+            session_messages = list(session.messages)
+        else:
+            session_messages = [{"role": "user", "content": user_message}]
 
         compressed_messages, usage_report = ContextCompressor.evaluate_and_compress(
             messages=session_messages,
@@ -95,8 +99,7 @@ class AgentRuntime:
             context_key=ctx_limit_key
         )
 
-        if usage_report.is_compressed and session and hasattr(session, "messages"):
-            session.messages = compressed_messages
+        # The compressed form is model-facing only; the raw transcript is preserved.
 
         # Emit real-time context usage report for frontend circular progress indicator
         if on_event:
@@ -134,7 +137,7 @@ class AgentRuntime:
                 "session": session,
                 "on_event": on_event,
                 "llm_client": self.llm,
-                "memory": self.memory,
+                "memory": (getattr(session, "agent_memory", None) if session else None) or self.memory,
                 "confirmed_tool_ids": confirmed_ids,
             }
         }
@@ -148,6 +151,14 @@ class AgentRuntime:
             intent = final_state.get("intent", "chat")
             plan = final_state.get("plan", "")
 
+            if session is not None and hasattr(session, "add_message"):
+                session.add_message(
+                    role="assistant",
+                    content=reply,
+                    tool_calls=executed_tools,
+                    vision_critique=vision_critique
+                )
+
             return {
                 "reply": reply,
                 "tools_executed": executed_tools,
@@ -159,6 +170,8 @@ class AgentRuntime:
         except Exception as e:
             logger.error(f"LangGraph execution error: {e}", exc_info=True)
             err_msg = f"LangGraph 运行异常: {str(e)}"
+            if session is not None and hasattr(session, "add_message"):
+                session.add_message(role="assistant", content=err_msg)
             if on_event:
                 await on_event({"type": "agent_error", "error": err_msg})
             return {
@@ -196,13 +209,21 @@ class AgentRuntime:
             return result
 
         current_version = session.pres.version
-        if record["presentation_version"] != current_version:
+        current_epoch = getattr(session, "document_epoch", None)
+        record_epoch = record.get("document_epoch")
+        expected_revision = record.get("expected_revision", record["presentation_version"])
+
+        # A pending call is only valid for the SAME document revision it was blocked
+        # on. Replacing the deck (import / generation / checkpoint restore) rotates the
+        # document epoch, and any mutation bumps the revision - either invalidates it.
+        epoch_mismatch = record_epoch is not None and record_epoch != current_epoch
+        if epoch_mismatch or expected_revision != current_version:
             session.consume_pending_confirmation(call_id)
             result = {
                 "success": False,
                 "error": "confirmation_invalidated",
                 "call_id": call_id,
-                "expected_version": record["presentation_version"],
+                "expected_version": expected_revision,
                 "current_version": current_version,
                 "message": (
                     "演示文稿在等待确认期间已发生变化，该挂起调用已失效，"
@@ -222,7 +243,16 @@ class AgentRuntime:
                 "tool": record["tool"],
             })
 
-        res = tools.execute(record["tool"], record["arguments"], session.pres, session.history)
+        from .mutation_gateway import MutationGateway
+        batch = await MutationGateway.execute_tool_calls(
+            [{"name": record["tool"], "arguments": record["arguments"], "id": call_id}],
+            session.pres,
+            session.history,
+            session=session,
+            confirmed_ids={call_id},
+            source="user_confirmation",
+        )
+        res = batch.first_result()
         target_el_id = record["arguments"].get("element_id") or (
             res.get("element_id") if isinstance(res, dict) else None
         )

@@ -7,7 +7,7 @@ leakage, and modular extensibility.
 
 from .visual_critic import VisualCriticSubagent, SubagentReviewResult
 from .plan_critic import PlanCriticSubagent, PlanCriticResult
-from .executor import ExecutorSubagent, ExecutorReport
+from .executor import ExecutorSubagent, ExecutorPlan, ExecutorReport
 from .content_critic import ContentCriticSubagent, ContentCriticResult
 from .memory import SubagentSessionMemory, SubagentHistoryEntry
 
@@ -17,6 +17,7 @@ __all__ = [
     "PlanCriticSubagent",
     "PlanCriticResult",
     "ExecutorSubagent",
+    "ExecutorPlan",
     "ExecutorReport",
     "ContentCriticSubagent",
     "ContentCriticResult",

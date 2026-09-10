@@ -39,8 +39,19 @@ class HistoryManager(UndoRedoStack):
     """Manages Undo/Redo and version rollback for a PresentationIR.
 
     Inherits from UndoRedoStack, leveraging the Command Pattern for reversible PPT mutations.
+
+    The first positional argument is accepted for backward compatibility with legacy
+    `HistoryManager(pres)` call sites and never corrupts the stack configuration.
     """
-    pass
+
+    def __init__(
+        self,
+        pres: Optional[PresentationIR] = None,
+        max_history: int = 50,
+        max_depth: Optional[int] = None,
+    ):
+        super().__init__(max_history=max_history, max_depth=max_depth)
+        self.presentation = pres
 
 
 __all__ = [

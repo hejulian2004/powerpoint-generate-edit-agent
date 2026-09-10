@@ -265,7 +265,11 @@ def test_upload_uses_requested_session():
     session_manager.delete_session(sid)
 
 
-def test_generation_respects_session_mutation_lock(monkeypatch):
+def test_generation_does_not_hold_session_mutation_lock(monkeypatch):
+    """The generation pipeline must not hold the session lock (GUI stays responsive).
+
+    Only the final persist replaces the document, and it rotates the epoch atomically.
+    """
     from backend.agent.graphs.generation import generation_graph
 
     raw_text = """
@@ -280,19 +284,21 @@ def test_generation_respects_session_mutation_lock(monkeypatch):
     norm_id = res_norm.json()["normalization_id"]
 
     orig_ainvoke = generation_graph.ainvoke
-    lock_was_held = False
+    lock_observations = []
 
     async def mock_ainvoke(*args, **kwargs):
-        nonlocal lock_was_held
         s = session_manager.get_session(sid)
-        lock_was_held = s.mutation_lock.locked()
+        lock_observations.append(s.mutation_lock.locked())
         return await orig_ainvoke(*args, **kwargs)
 
     monkeypatch.setattr(generation_graph, "ainvoke", mock_ainvoke)
 
     res_gen = client.post("/api/pptspec/generate", json={"normalization_id": norm_id, "session_id": sid})
     assert res_gen.status_code == 200
-    assert lock_was_held is True
+    assert lock_observations == [False]
+
+    sess = session_manager.get_session(sid)
+    assert len(sess.pres.slides) >= 1
 
     session_manager.delete_session(sid)
 

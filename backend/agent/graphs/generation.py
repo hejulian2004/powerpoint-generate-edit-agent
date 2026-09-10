@@ -322,12 +322,12 @@ async def persist_session_node(state: PPTGenerationState, config: RunnableConfig
     if session_id and pres_ir:
         session = session_manager.get_session(session_id)
         if session is not None:
-            session.pres = pres_ir
-            session.history.clear()
-            session.last_target_id = None
-            session.last_action_type = None
-            session.checkpoint_mgr.clear()
-            session.checkpoint_mgr.create(pres_ir, description="Generated from CanonicalPPTSpec (PR13)")
+            session.replace_presentation(
+                pres_ir,
+                clear_history=True,
+                clear_checkpoints=True,
+                checkpoint_description="Generated from CanonicalPPTSpec (PR13)",
+            )
             logger.info(f"PresentationIR successfully persisted to session '{session_id}'")
 
     await _safe_emit(on_event, {

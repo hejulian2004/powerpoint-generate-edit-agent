@@ -84,7 +84,7 @@ class RiskEnricher:
     """Normalizes any tool call (live LLM or heuristic) into a risk-assessed call.
 
     The live LLM path builds raw `{"name", "arguments", "id"}` calls and previously
-    bypassed risk policy entirely. `tools_node` now runs every call through this
+    bypassed risk policy entirely. `MutationGateway` now runs every call through this
     enricher before `ConfirmationGate`, so the gate sees a `_needs_confirmation`
     decision regardless of which planner produced the call.
 

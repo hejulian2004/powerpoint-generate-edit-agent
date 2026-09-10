@@ -19,7 +19,12 @@ class AppSettings(BaseModel):
     # Server
     host: str = os.getenv("HOST", "0.0.0.0")
     port: int = int(os.getenv("PORT", "8000"))
-    
+
+    # Runtime environment: "production" | "test" | "dev".
+    # Mock LLM completions are only permitted outside production when explicitly enabled.
+    app_env: str = os.getenv("APP_ENV", "production").strip().lower()
+    mock_llm: bool = os.getenv("MOCK_LLM", "false").strip().lower() in ("1", "true", "yes")
+
     # LLM Settings
     openai_base_url: str = os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1")
     openai_api_key: str = os.getenv("OPENAI_API_KEY", "")
