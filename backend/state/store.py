@@ -3,7 +3,7 @@
 Manages:
 - Active PresentationIR instance and slide selection
 - HistoryManager (undo / redo)
-- PPTX import via PPTXParser and export via PPTXBuilder
+- PPTX import via FidelityEngine/OOXMLParser (production) and export via PPTXBuilder
 - WebSocket connection broadcasting
 """
 
@@ -20,12 +20,11 @@ from ..ir.models import (
     ConnectorElementIR, FillStyle, BorderStyle, ShadowStyle,
     FontIR, TextContentIR, ParagraphIR, RunIR
 )
-from ..ir.converter import PPTIRConverter
+from ..ir.converter import PPTIRConverter, import_pptx
 from ..ir.patch import HistoryManager
 from ..agent.runtime import AgentRuntime
 from ..session.manager import session_manager, SessionManager
 from ..session.session import PPTSession
-from pptx_agent_converter.extractor.pptx_parser import PPTXParser
 from pptx_agent_converter.renderer.pptx_builder import PPTXBuilder
 
 logger = logging.getLogger(__name__)
@@ -277,9 +276,8 @@ class PresentationStore:
             tmp_path = tmp.name
 
         try:
-            parser = PPTXParser(tmp_path)
-            ooxml_pres = parser.parse()
-            ir_pres = PPTIRConverter.presentation_to_ir(ooxml_pres)
+            # Production import path: FidelityEngine/OOXMLParser (via import_pptx)
+            ir_pres = import_pptx(tmp_path)
             ir_pres.title = filename.replace(".pptx", "")
 
             target_session.pres = ir_pres

@@ -31,6 +31,16 @@ SUPPORTED_FEATURES = frozenset({"shape", "text", "image", "group", "table", "the
 # Features that are detectable but NOT safe to edit.
 DETECT_ONLY_FEATURES = frozenset({"chart", "smartart", "animation", "master_slide"})
 
+# Features that parse/edit losslessly in IR but whose OOXML write-back is lossy.
+# Format: feature -> machine-readable degradation reason.
+# - table: TableElementIR is currently exported as a Group of styled cell
+#   rectangles, permanently dropping native <a:tbl> semantics (row/column
+#   editing, merged cells, table styles). Do NOT treat "group with cell text"
+#   as table preservation.
+LOSSY_WRITEBACK_FEATURES: Dict[str, str] = {
+    "table": "flattened_to_group",
+}
+
 
 @dataclass
 class FidelityCapability:
@@ -90,6 +100,21 @@ class FidelityCapability:
             warnings.append(
                 f"presentation uses {name}, which the Fidelity Engine can detect but not safely edit"
             )
+        return warnings
+
+    @classmethod
+    def lossy_writeback_features(cls) -> Dict[str, str]:
+        """Declarative map of features whose export degrades native OOXML semantics."""
+        return dict(LOSSY_WRITEBACK_FEATURES)
+
+    def lossy_warnings(self) -> List[str]:
+        """Warnings for features present in this file that will degrade on export."""
+        warnings = []
+        for name, reason in LOSSY_WRITEBACK_FEATURES.items():
+            if getattr(self, name, False):
+                warnings.append(
+                    f"export of {name} is lossy ({reason}): native OOXML semantics are not preserved"
+                )
         return warnings
 
 
@@ -157,6 +182,19 @@ class CapabilityDetector:
         if feature_norm in DETECT_ONLY_FEATURES:
             return {"supported": False, "reason": "unsupported_feature"}
         return {"supported": False, "reason": "unknown_feature"}
+
+    @classmethod
+    def check_writeback(cls, feature: str) -> Dict[str, object]:
+        """Returns whether exporting a feature preserves native OOXML semantics.
+
+        >>> CapabilityDetector.check_writeback("table")
+        {'lossless': False, 'reason': 'flattened_to_group'}
+        """
+        feature_norm = feature.lower().strip()
+        reason = LOSSY_WRITEBACK_FEATURES.get(feature_norm)
+        if reason:
+            return {"lossless": False, "reason": reason}
+        return {"lossless": True, "reason": ""}
 
     @classmethod
     def _detect_in_zip(cls, zf: zipfile.ZipFile) -> FidelityCapability:

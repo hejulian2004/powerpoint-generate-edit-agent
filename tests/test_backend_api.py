@@ -1,7 +1,9 @@
 """End-to-end integration tests for backend API, PPTX import/export, and store."""
 
 import io
+from pathlib import Path
 from fastapi.testclient import TestClient
+import pytest
 from backend.main import app
 from backend.state.store import store
 from pptx_agent_converter.extractor.pptx_parser import PPTXParser
@@ -9,6 +11,8 @@ import tempfile
 import os
 
 client = TestClient(app)
+
+_FRONTEND_DIST_INDEX = Path(__file__).resolve().parents[1] / "frontend" / "dist" / "index.html"
 
 
 def test_api_get_presentation():
@@ -84,6 +88,10 @@ def test_api_upload_and_export():
     assert export_resp.content[:4] == b"PK\x03\x04"
 
 
+@pytest.mark.skipif(
+    not _FRONTEND_DIST_INDEX.exists(),
+    reason="frontend not built (run `npm run build` in frontend/ to enable SPA serving test)"
+)
 def test_frontend_spa_serving():
     resp = client.get("/")
     assert resp.status_code == 200

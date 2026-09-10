@@ -131,3 +131,41 @@ def test_fidelity_evaluator_composite_score():
     score_drifted = FidelityEvaluator.evaluate_slides(slide1, slide_drifted)
     assert score_drifted.geometry < 90.0
     assert any("Geometry drift" in d for d in score_drifted.diagnostics)
+
+
+def test_evaluator_declares_internal_raster_basis():
+    """Internal Pillow raster SSIM measures IR consistency, not PowerPoint WYSIWYG."""
+    slide1 = _make_sample_slide()
+    slide2 = _make_sample_slide()
+    score = FidelityEvaluator.evaluate_slides(slide1, slide2)
+    assert score.visual_source == "internal_rasterizer"
+    assert score.degraded is False
+
+
+def test_evaluator_strict_visual_requires_external_raster():
+    """strict_visual must fail a PASS when only the internal rasterizer is available."""
+    slide1 = _make_sample_slide()
+    slide2 = _make_sample_slide()
+    score = FidelityEvaluator.evaluate_slides(slide1, slide2, strict_visual=True)
+    assert score.visual_source == "internal_rasterizer"
+    assert score.degraded is True
+    assert score.passed is False
+    assert any("strict_visual" in d for d in score.diagnostics)
+
+
+def test_evaluator_raster_failure_is_degraded_and_never_passes(monkeypatch):
+    """A synthesized fallback visual score must not be able to produce a PASS."""
+    from backend.eval.renderer_snapshot import PillowSlideRasterizer
+
+    def _boom(*args, **kwargs):
+        raise RuntimeError("raster explosion")
+
+    monkeypatch.setattr(PillowSlideRasterizer, "render_to_image", _boom)
+
+    slide1 = _make_sample_slide()
+    slide2 = _make_sample_slide()
+    score = FidelityEvaluator.evaluate_slides(slide1, slide2)
+    assert score.visual_source == "fallback"
+    assert score.degraded is True
+    assert score.passed is False
+    assert any("DEGRADED" in d for d in score.diagnostics)

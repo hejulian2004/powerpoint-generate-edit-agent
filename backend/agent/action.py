@@ -226,8 +226,14 @@ class ActionResolver:
                     if theme_engine is None:
                         from ..fidelity.theme_engine import ThemeEngine
                         t_data = getattr(pres, "theme", None)
-                        scheme = getattr(t_data, "color_scheme", None) if t_data else None
-                        theme_engine = ThemeEngine(color_scheme=scheme)
+                        if isinstance(t_data, dict):
+                            theme_engine = ThemeEngine.from_dict(t_data)
+                        elif isinstance(t_data, ThemeEngine):
+                            theme_engine = t_data
+                        elif t_data and hasattr(t_data, "color_scheme"):
+                            theme_engine = ThemeEngine(color_scheme=t_data.color_scheme)
+                        else:
+                            theme_engine = ThemeEngine()
                     action.parameters[k] = theme_engine.resolve_color(token)
 
         # Guard: Relative movement requires a valid target element

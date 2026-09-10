@@ -501,6 +501,7 @@ class PresentationSnapshot:
     undo_stack_depth: Optional[int] = None
     redo_stack_depth: Optional[int] = None
     raw_dump: Optional[Dict[str, Any]] = None
+    capabilities: Dict[str, bool] = dc_field(default_factory=dict)
 
 
 class PresentationTransaction:
@@ -601,7 +602,8 @@ class PresentationIR(BaseModel):
             metadata=copy.deepcopy(self.metadata),
             undo_stack_depth=len(history.undo_stack) if (history is not None and hasattr(history, "undo_stack")) else None,
             redo_stack_depth=len(history.redo_stack) if (history is not None and hasattr(history, "redo_stack")) else None,
-            raw_dump=copy.deepcopy(self.model_dump())
+            raw_dump=copy.deepcopy(self.model_dump()),
+            capabilities=copy.deepcopy(self.capabilities)
         )
 
     def restore_snapshot(
@@ -624,6 +626,7 @@ class PresentationIR(BaseModel):
             self.assets = rebuilt.assets
             self.asset_metadata = rebuilt.asset_metadata
             self.metadata = rebuilt.metadata
+            self.capabilities = copy.deepcopy(rebuilt.capabilities)
             undo_depth = None
             redo_depth = None
         else:
@@ -639,6 +642,7 @@ class PresentationIR(BaseModel):
             self.assets = copy.deepcopy(snapshot.assets)
             self.asset_metadata = copy.deepcopy(snapshot.asset_metadata)
             self.metadata = copy.deepcopy(snapshot.metadata)
+            self.capabilities = copy.deepcopy(getattr(snapshot, "capabilities", {}))
             undo_depth = snapshot.undo_stack_depth
             redo_depth = snapshot.redo_stack_depth
 

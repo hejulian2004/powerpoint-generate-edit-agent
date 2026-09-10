@@ -60,6 +60,7 @@ class PPTAgentState(TypedDict, total=False):
     active_slide_id: Optional[str]
     presentation_version: int
     last_target_id: Optional[str]
+    confirmed_tool_ids: List[str]
 
 
 # =====================================================================
@@ -491,9 +492,35 @@ async def tools_node(state: PPTAgentState, config: RunnableConfig) -> Dict[str, 
     results: List[Dict[str, Any]] = []
     current_target_id = state.get("last_target_id")
 
+    confirmed_ids = set(state.get("confirmed_tool_ids") or [])
+    extra_confirmed = configurable.get("confirmed_tool_ids") or []
+    confirmed_ids.update(extra_confirmed)
+
     for tc in tool_calls:
         fn_name = tc.get("name", "")
         args = tc.get("arguments", {})
+
+        from .risk_policy import ConfirmationGate
+        if ConfirmationGate.is_blocked(tc, confirmed_ids):
+            res = ConfirmationGate.blocked_result(tc)
+            results.append({
+                "tool": fn_name,
+                "arguments": args,
+                "result": res,
+                "requires_confirmation": True
+            })
+            if on_event:
+                await _safe_emit(on_event, {
+                    "type": "confirmation_required",
+                    "tool": fn_name,
+                    "arguments": args,
+                    "resolution_confidence": tc.get("_resolution_confidence"),
+                    "call_id": tc.get("id"),
+                    "message": res["message"]
+                })
+            if memory:
+                memory.log_action(f"RiskPolicy 拦截低置信度操作 '{fn_name}'，等待用户确认")
+            continue
 
         if on_event:
             await _safe_emit(on_event, {

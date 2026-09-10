@@ -73,3 +73,40 @@ class ActionRiskPolicy:
         if confidence is None:
             return True
         return confidence < cls.threshold(action_type)
+
+
+class ConfirmationGate:
+    """Execution-level gate that blocks unconfirmed low-confidence mutations.
+
+    `ActionResolver.action_to_tool_call` only *flags* `_needs_confirmation`; this gate is
+    the enforcement point consulted by the agent runtime before any tool handler runs.
+    A tool call is only allowed through when:
+      - it carries no `_needs_confirmation` flag (direct LLM / deterministic planning), or
+      - it carries `_needs_confirmation=False`, or
+      - its call id (`id`) is present in the explicit user-confirmed id set.
+    """
+
+    @staticmethod
+    def is_blocked(tool_call: Dict[str, Any], confirmed_ids: Optional[set] = None) -> bool:
+        if tool_call.get("_needs_confirmation") is not True:
+            return False
+        if confirmed_ids and tool_call.get("id") in confirmed_ids:
+            return False
+        return True
+
+    @staticmethod
+    def blocked_result(tool_call: Dict[str, Any]) -> Dict[str, Any]:
+        name = tool_call.get("name", "unknown")
+        confidence = tool_call.get("_resolution_confidence")
+        conf_txt = f"{confidence:.2f}" if isinstance(confidence, (int, float)) else "unknown"
+        return {
+            "success": False,
+            "blocked": True,
+            "requires_confirmation": True,
+            "resolution_confidence": confidence,
+            "message": (
+                f"操作 '{name}' 语义解析置信度 {conf_txt} 低于安全阈值，已被 RiskPolicy 拦截。"
+                f"请明确确认后重试（确认方式：二次确认同一指令或提供更精确的目标描述）。"
+            ),
+            "error": "requires_user_confirmation",
+        }

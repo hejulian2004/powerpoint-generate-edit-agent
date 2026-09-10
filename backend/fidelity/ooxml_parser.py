@@ -293,7 +293,19 @@ class OOXMLParser:
         bg_fill = FillStyle(type="solid", color="#FFFFFF", alpha=1.0)
         bg_elem = tree.find(".//p:bg", NS)
         if bg_elem is not None:
-            bg_fill = self._parse_fill_element(bg_elem, theme)
+            bg_pr = bg_elem.find("p:bgPr", NS)
+            bg_target = bg_pr if bg_pr is not None else bg_elem
+            parsed_bg = self._parse_fill_element(bg_target, theme)
+            if parsed_bg.type != "none":
+                bg_fill = parsed_bg
+            else:
+                # p:bgRef theme fill reference (e.g. bg1 -> lt1)
+                bg_ref = bg_elem.find("p:bgRef", NS)
+                if bg_ref is not None:
+                    scheme = bg_ref.find(".//a:schemeClr", NS)
+                    if scheme is not None and scheme.get("val"):
+                        color, alpha, _ = self._extract_color(bg_ref, theme)
+                        bg_fill = FillStyle(type="solid", color=color, alpha=alpha)
 
         return SlideIR(
             id=f"slide_{slide_num:02d}",
@@ -495,25 +507,50 @@ class OOXMLParser:
         xfrm = grpSpPr.find("a:xfrm", NS) if grpSpPr is not None else None
         x, y, w, h, _, _, _ = self._parse_xfrm(xfrm, scale_x, scale_y)
 
+        # Coordinate projection for child elements via a:chOff and a:chExt
+        off = xfrm.find("a:off", NS) if xfrm is not None else None
+        ext = xfrm.find("a:ext", NS) if xfrm is not None else None
+        chOff = xfrm.find("a:chOff", NS) if xfrm is not None else None
+        chExt = xfrm.find("a:chExt", NS) if xfrm is not None else None
+
+        off_x_emu = int(off.get("x", "0")) if off is not None else 0
+        off_y_emu = int(off.get("y", "0")) if off is not None else 0
+        ext_cx_emu = int(ext.get("cx", "1")) if ext is not None else 1
+        ext_cy_emu = int(ext.get("cy", "1")) if ext is not None else 1
+
+        # Defaults: If chOff/chExt not specified, they equal off/ext
+        ch_x_emu = int(chOff.get("x", str(off_x_emu))) if chOff is not None else off_x_emu
+        ch_y_emu = int(chOff.get("y", str(off_y_emu))) if chOff is not None else off_y_emu
+        ch_cx_emu = int(chExt.get("cx", str(ext_cx_emu))) if chExt is not None else ext_cx_emu
+        ch_cy_emu = int(chExt.get("cy", str(ext_cy_emu))) if chExt is not None else ext_cy_emu
+        if ch_cx_emu == 0: ch_cx_emu = 1
+        if ch_cy_emu == 0: ch_cy_emu = 1
+
+        child_scale_x = scale_x * (float(ext_cx_emu) / float(ch_cx_emu))
+        child_scale_y = scale_y * (float(ext_cy_emu) / float(ch_cy_emu))
+        origin_offset_x = (off_x_emu - ch_x_emu * (float(ext_cx_emu) / float(ch_cx_emu))) * scale_x
+        origin_offset_y = (off_y_emu - ch_y_emu * (float(ext_cy_emu) / float(ch_cy_emu))) * scale_y
+
         children: List[ElementIR] = []
         for child in grpSp:
             tag = child.tag.split("}")[-1]
+            c = None
             if tag == "sp":
-                c = self._parse_shape(child, scale_x, scale_y, theme, style_resolver)
-                if c:
-                    children.append(c)
+                c = self._parse_shape(child, child_scale_x, child_scale_y, theme, style_resolver)
             elif tag == "pic":
-                c = self._parse_pic(child, scale_x, scale_y, slide_rels, assets)
-                if c:
-                    children.append(c)
+                c = self._parse_pic(child, child_scale_x, child_scale_y, slide_rels, assets)
             elif tag == "cxnSp":
-                c = self._parse_connector(child, scale_x, scale_y, theme, style_resolver)
-                if c:
-                    children.append(c)
+                c = self._parse_connector(child, child_scale_x, child_scale_y, theme, style_resolver)
             elif tag == "grpSp":
-                c = self._parse_group(child, scale_x, scale_y, theme, style_resolver, slide_rels, assets)
-                if c:
-                    children.append(c)
+                c = self._parse_group(child, child_scale_x, child_scale_y, theme, style_resolver, slide_rels, assets)
+
+            if c:
+                c.x = round(c.x + origin_offset_x, 2)
+                c.y = round(c.y + origin_offset_y, 2)
+                if hasattr(c, "transform") and c.transform:
+                    c.transform.x = c.x
+                    c.transform.y = c.y
+                children.append(c)
 
         # If bounding box is empty, calculate from children
         if children and (w <= 0 or h <= 0):
@@ -708,19 +745,39 @@ class OOXMLParser:
             )
         return ShadowStyle(enabled=False)
 
+    def _extract_color_modifiers(self, elem: ET.Element) -> Dict[str, Any]:
+        mods = {}
+        for tag, key in [
+            ("a:lumMod", "lumMod"),
+            ("a:lumOff", "lumOff"),
+            ("a:tint", "tint"),
+            ("a:shade", "shade"),
+        ]:
+            child = elem.find(tag, NS)
+            if child is not None and child.get("val"):
+                try:
+                    mods[key] = int(child.get("val"))
+                except Exception:
+                    pass
+        return mods
+
     def _extract_color(
         self, parent: ET.Element, theme: ThemeEngine
     ) -> Tuple[str, float, Optional[str]]:
         srgb = parent.find(".//a:srgbClr", NS)
         if srgb is not None and srgb.get("val"):
             alpha = self._parse_alpha(srgb)
-            return f"#{srgb.get('val').upper()}", alpha, None
+            mods = self._extract_color_modifiers(srgb)
+            raw_hex = f"#{srgb.get('val').upper()}"
+            resolved = theme.resolve_color(raw_hex, modifiers=mods) if mods else raw_hex
+            return resolved, alpha, None
 
         scheme = parent.find(".//a:schemeClr", NS)
         if scheme is not None and scheme.get("val"):
             val = scheme.get("val")
             alpha = self._parse_alpha(scheme)
-            resolved = theme.resolve_color(val)
+            mods = self._extract_color_modifiers(scheme)
+            resolved = theme.resolve_color(val, modifiers=mods)
             return resolved, alpha, val
 
         return "#000000", 1.0, None
@@ -744,14 +801,61 @@ class OOXMLParser:
         for p in txBody.findall("a:p", NS):
             pPr = p.find("a:pPr", NS)
             align = "left"
-            if pPr is not None and pPr.get("algn"):
-                raw_algn = pPr.get("algn")
-                if raw_algn in ["ctr", "center"]:
-                    align = "center"
-                elif raw_algn in ["r", "right"]:
-                    align = "right"
-                elif raw_algn in ["just", "justify"]:
-                    align = "justify"
+            line_spacing = 1.2
+            line_spacing_px: Optional[float] = None
+            space_before = 0.0
+            space_after = 0.0
+            bullet: Optional[str] = None
+            indent_level = 0
+            margin_left = 0.0
+
+            if pPr is not None:
+                if pPr.get("algn"):
+                    raw_algn = pPr.get("algn")
+                    if raw_algn in ["ctr", "center"]:
+                        align = "center"
+                    elif raw_algn in ["r", "right"]:
+                        align = "right"
+                    elif raw_algn in ["just", "justify"]:
+                        align = "justify"
+
+                if pPr.get("lvl"):
+                    try:
+                        indent_level = max(0, min(9, int(pPr.get("lvl"))))
+                    except Exception:
+                        indent_level = 0
+
+                lnSpc = pPr.find("a:lnSpc", NS)
+                if lnSpc is not None:
+                    pct = lnSpc.find("a:spcPct", NS)
+                    pts = lnSpc.find("a:spcPts", NS)
+                    if pct is not None and pct.get("val"):
+                        line_spacing = round(float(pct.get("val")) / 100000.0, 2)
+                    elif pts is not None and pts.get("val"):
+                        line_spacing_px = float(pts.get("val")) / 100.0 * (96.0 / 72.0)
+
+                spcBef = pPr.find("a:spcBef/a:spcPts", NS)
+                if spcBef is not None and spcBef.get("val"):
+                    space_before = round(float(spcBef.get("val")) / 100.0 * (96.0 / 72.0), 1)
+                spcAft = pPr.find("a:spcAft/a:spcPts", NS)
+                if spcAft is not None and spcAft.get("val"):
+                    space_after = round(float(spcAft.get("val")) / 100.0 * (96.0 / 72.0), 1)
+
+                if pPr.get("marL"):
+                    try:
+                        margin_left = round(float(pPr.get("marL")) / 12700.0 * (96.0 / 72.0) * 0.75, 1)
+                    except Exception:
+                        margin_left = 0.0
+
+                if pPr.find("a:buNone", NS) is not None:
+                    bullet = "none"
+                else:
+                    buChar = pPr.find("a:buChar", NS)
+                    buAuto = pPr.find("a:buAutoNum", NS)
+                    if buAuto is not None:
+                        bullet = "number"
+                    elif buChar is not None:
+                        bullet = buChar.get("char") or "disc"
 
             runs: List[RunIR] = []
             for r in p.findall("a:r", NS):
@@ -792,6 +896,19 @@ class OOXMLParser:
                 )
                 runs.append(RunIR(text=txt, font=font_ir))
 
-            paragraphs.append(ParagraphIR(align=align, runs=runs))
+            if line_spacing_px is not None:
+                max_size = max((r.font.size for r in runs if r.font and r.font.size), default=18.0)
+                line_spacing = round(max(0.5, min(4.0, line_spacing_px / max(max_size, 1.0))), 2)
+
+            paragraphs.append(ParagraphIR(
+                align=align,
+                line_spacing=line_spacing,
+                space_before=space_before,
+                space_after=space_after,
+                bullet=bullet,
+                indent_level=indent_level,
+                margin_left=margin_left,
+                runs=runs
+            ))
 
         return TextContentIR(paragraphs=paragraphs)
