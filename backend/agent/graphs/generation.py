@@ -39,9 +39,6 @@ from langchain_core.runnables import RunnableConfig
 from langgraph.graph import END, START, StateGraph
 
 from ...compiler.presentation_ir import compile_layout_to_presentation_ir
-from ...evaluation.evaluator import RuleBasedEvaluator
-from ...evaluation.patch import apply_deck_patches
-from ...evaluation.repair import generate_patches_for_issues
 from ...evaluation.schema import IssueSeverity, VisualIssue
 from ...ir.svg_renderer import SVGRenderer
 from ...layout.engine import generate_deck_layout
@@ -53,6 +50,7 @@ from ...pptspec.normalizer import (
 from ...pptspec.parser import detect_format, parse_presentation_input
 from ...pptspec.schema import CanonicalPPTSpec
 from ...pptspec.validator import validate_truthfulness
+from ...quality import QualityService
 from ...session.manager import session_manager
 from .generation_state import PPTGenerationState
 
@@ -269,8 +267,7 @@ async def visual_review_node(state: PPTGenerationState, config: RunnableConfig) 
     deck_layout = state["deck_layout"]
     assert deck_layout is not None, "DeckLayoutSpec cannot be None"
 
-    evaluator = RuleBasedEvaluator()
-    issues: List[VisualIssue] = evaluator.evaluate_deck(slide_images=[], deck_spec=deck_layout)
+    issues: List[VisualIssue] = QualityService.evaluate_layout(deck_layout)
 
     return {
         "visual_issues": issues,
@@ -294,10 +291,10 @@ async def visual_repair_node(state: PPTGenerationState, config: RunnableConfig) 
     all_patches = []
     for slide in deck_layout.slides:
         slide_issues = [i for i in issues if i.slide_id == slide.slide_id]
-        all_patches.extend(generate_patches_for_issues(slide_issues, slide))
+        all_patches.extend(QualityService.patches_for_issues(slide_issues, slide))
 
     if all_patches:
-        patched_deck_layout, _ = apply_deck_patches(
+        patched_deck_layout, _ = QualityService.apply_layout_patches(
             deck_layout,
             all_patches,
             enforce_transaction=True,

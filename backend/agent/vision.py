@@ -23,7 +23,7 @@ except ImportError:
     _playwright_available = False
 
 
-from ..eval.renderer_snapshot import SlideSnapshotRenderer
+from ..quality import QualityService
 
 
 class VisionEngine:
@@ -32,8 +32,7 @@ class VisionEngine:
     @classmethod
     def evaluate_slide_layout(cls, slide: SlideIR) -> Any:
         """Runs the rule-based geometric and accessibility layout evaluation."""
-        from ..eval.layout_diff import LayoutDiffEngine
-        return LayoutDiffEngine.evaluate_slide(slide)
+        return QualityService.evaluate_slide(slide)
 
     @classmethod
     async def audit_and_remediate(
@@ -43,8 +42,7 @@ class VisionEngine:
         include_multimodal: bool = True
     ) -> Any:
         """Executes full Visual Critic inspection producing scores and remediation actions."""
-        from ..eval.visual_critic import VisualCritic
-        return await VisualCritic.review_slide(
+        return await QualityService.review_slide(
             slide=slide,
             llm_client=client,
             include_multimodal=include_multimodal
@@ -54,12 +52,12 @@ class VisionEngine:
     async def capture_slide_snapshot(cls, slide: SlideIR, format: str = "png") -> str:
         """Returns base64 data URI for the slide (PNG or SVG)."""
         if format == "svg":
-            svg_code = SlideSnapshotRenderer.render_svg(slide)
+            svg_code = QualityService.render_svg(slide)
             b64_svg = base64.b64encode(svg_code.encode("utf-8")).decode("utf-8")
             return f"data:image/svg+xml;base64,{b64_svg}"
 
         # Standard deterministic PNG data URI
-        return SlideSnapshotRenderer.render_data_uri(slide)
+        return QualityService.render_data_uri(slide)
 
     @classmethod
     def format_slide_element_manifest(cls, slide: SlideIR) -> str:
@@ -80,8 +78,7 @@ class VisionEngine:
         prompt: str = "请分析当前 PPT 页面的排版布局，检查是否有文字重叠、元素拥挤或边距失衡问题，并给出简明优化意见。"
     ) -> str:
         """Sends visual snapshot to Vision Model for analysis."""
-        from ..eval.renderer_snapshot import SlideSnapshotRenderer, RendererMode
-        meta = SlideSnapshotRenderer.get_render_metadata(slide, mode=RendererMode.DETERMINISTIC)
+        meta = QualityService.render_metadata(slide)
         snapshot_uri = await cls.capture_slide_snapshot(slide)
         manifest = cls.format_slide_element_manifest(slide)
 

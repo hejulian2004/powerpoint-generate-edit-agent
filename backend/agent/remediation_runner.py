@@ -16,8 +16,9 @@ from ..ir.patch import HistoryManager
 from ..eval.remediation import (
     FixAction, FixActionType, DefectCategory, RemediationPlan, FidelityRemediationGenerator
 )
-from ..eval.layout_diff import LayoutDiffEngine, BoundingBox
+from ..eval.layout_diff import BoundingBox
 from ..eval.fidelity import FidelityEvaluator, FidelityRegressionGuard
+from ..quality import QualityService
 from .mutation_gateway import MutationGateway
 
 logger = logging.getLogger(__name__)
@@ -100,7 +101,7 @@ class RemediationRunner:
             }
 
         # 3. Transaction boundary with rollback guard (preserves IR state and history depth)
-        before_report = LayoutDiffEngine.evaluate_slide(slide)
+        before_report = QualityService.evaluate_slide(slide)
         before_score = before_report.score
         before_qs = before_report.quality_score
         applied_records = []
@@ -135,7 +136,7 @@ class RemediationRunner:
                 })
 
             # Re-evaluate multidimensional layout score after changes
-            after_report = LayoutDiffEngine.evaluate_slide(slide)
+            after_report = QualityService.evaluate_slide(slide)
             after_score = after_report.score
             after_qs = after_report.quality_score
 

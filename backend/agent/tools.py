@@ -1834,8 +1834,8 @@ def evaluate_layout(
     if not slide:
         return {"success": False, "error": "Slide not found"}
 
-    from ..eval.layout_diff import LayoutDiffEngine
-    report = LayoutDiffEngine.evaluate_slide(slide)
+    from ..quality import QualityService
+    report = QualityService.evaluate_slide(slide)
     return {
         "success": True,
         "slide_id": slide.id,
@@ -1870,13 +1870,12 @@ def auto_fix_layout(
     if not slide:
         return {"success": False, "error": "Slide not found"}
 
-    from ..eval.visual_critic import VisualCritic
-    from ..eval.layout_diff import LayoutDiffEngine
+    from ..quality import QualityService
     from .remediation_runner import RemediationRunner
 
     # Generate decoupled plan
-    health_report = LayoutDiffEngine.evaluate_slide(slide)
-    plan = VisualCritic.plan_remediations(slide, health_report)
+    health_report = QualityService.evaluate_slide(slide)
+    plan = QualityService.plan_remediation(slide, health_report)
 
     # Execute plan safely with rollback protection
     res = RemediationRunner.apply_plan(
