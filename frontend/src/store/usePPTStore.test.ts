@@ -18,6 +18,8 @@ const resetStore = () => {
     wsConnected: false,
     pendingMutations: [],
     outbox: [],
+    documentEpoch: null,
+    confirmedRevision: 0,
     mutationStatus: 'idle'
   })
 }
@@ -244,5 +246,90 @@ describe('usePPTStore mutation pipeline', () => {
 
     expect(usePPTStore.getState().selectedElementIds).toEqual(['created1'])
     expect(usePPTStore.getState().selectedElementId).toBe('created1')
+  })
+
+  it('stamps the live document epoch and revision onto outgoing mutations', () => {
+    const slide = makeSlide([makeShape('s1', 0, 0)])
+    const pres = makePresentation([slide], 5)
+    usePPTStore.getState().setPresentation(pres)
+    const ws = connect()
+
+    ws.emit('presentation_loaded', {
+      presentation: pres,
+      active_slide_id: slide.id,
+      version: 5,
+      document_epoch: 'epoch_A'
+    })
+
+    usePPTStore.getState().updateElementDirect('s1', { x: 10 })
+
+    const sent = ws.sentMessages().find((m) => m.type === 'direct_update_element')!
+    expect(sent.document_epoch).toBe('epoch_A')
+    expect(sent.expected_revision).toBe(5)
+    expect(usePPTStore.getState().documentEpoch).toBe('epoch_A')
+    expect(usePPTStore.getState().confirmedRevision).toBe(5)
+  })
+
+  it('drops outbox mutations bound to a previous document epoch after reload', () => {
+    const slide = makeSlide([makeShape('s1', 0, 0)])
+    const presA = makePresentation([slide], 5)
+    usePPTStore.getState().setPresentation(presA)
+    const ws = connect()
+
+    ws.emit('presentation_loaded', {
+      presentation: presA,
+      active_slide_id: slide.id,
+      version: 5,
+      document_epoch: 'epoch_A'
+    })
+
+    ws.readyState = FakeWebSocket.CLOSED
+    usePPTStore.getState().updateElementDirect('s1', { x: 10 })
+    expect(usePPTStore.getState().outbox).toHaveLength(1)
+
+    // Server restored a checkpoint while we were offline: new document epoch.
+    ws.readyState = FakeWebSocket.OPEN
+    const presB = makePresentation([makeSlide([makeShape('s1', 0, 0)])], 1)
+    ws.emit('presentation_loaded', {
+      presentation: presB,
+      active_slide_id: slide.id,
+      version: 1,
+      document_epoch: 'epoch_B'
+    })
+
+    expect(usePPTStore.getState().outbox).toHaveLength(0)
+    expect(usePPTStore.getState().pendingMutations).toHaveLength(0)
+    expect(ws.sentMessages().filter((m) => m.type === 'direct_update_element')).toHaveLength(0)
+    expect(usePPTStore.getState().documentEpoch).toBe('epoch_B')
+  })
+
+  it('replays same-epoch outbox mutations after reload', () => {
+    const slide = makeSlide([makeShape('s1', 0, 0)])
+    const pres = makePresentation([slide], 5)
+    usePPTStore.getState().setPresentation(pres)
+    const ws = connect()
+
+    ws.emit('presentation_loaded', {
+      presentation: pres,
+      active_slide_id: slide.id,
+      version: 5,
+      document_epoch: 'epoch_A'
+    })
+
+    ws.readyState = FakeWebSocket.CLOSED
+    usePPTStore.getState().updateElementDirect('s1', { x: 10 })
+    expect(usePPTStore.getState().outbox).toHaveLength(1)
+
+    ws.readyState = FakeWebSocket.OPEN
+    ws.emit('presentation_loaded', {
+      presentation: pres,
+      active_slide_id: slide.id,
+      version: 5,
+      document_epoch: 'epoch_A'
+    })
+
+    expect(usePPTStore.getState().outbox).toHaveLength(0)
+    expect(usePPTStore.getState().pendingMutations).toHaveLength(1)
+    expect(ws.sentMessages().filter((m) => m.type === 'direct_update_element')).toHaveLength(1)
   })
 })
