@@ -11,7 +11,7 @@ from ..state.store import store
 from ..session.manager import session_manager
 from ..session.session import PPTSession
 from ..ir.svg_renderer import SVGRenderer
-from ..eval.layout_diff import LayoutDiffEngine
+from ..quality import QualityService
 from ..agent.mutation_gateway import MutationGateway
 
 logger = logging.getLogger(__name__)
@@ -30,7 +30,7 @@ def build_preview_update(session: PPTSession, slide_id: Optional[str] = None) ->
 
     try:
         svg = SVGRenderer.render_slide(slide)
-        health_report = LayoutDiffEngine.evaluate_slide(slide)
+        health_report = QualityService.evaluate_slide(slide)
         return {
             "type": "preview_update",
             "session_id": session.session_id,
@@ -358,7 +358,7 @@ async def websocket_endpoint(websocket: WebSocket):
             elif msg_type == "create_checkpoint":
                 desc = data.get("description", "手动快照")
                 async with session.mutation_lock:
-                    health = LayoutDiffEngine.evaluate_slide(session.get_active_slide()) if session.get_active_slide() else None
+                    health = QualityService.evaluate_slide(session.get_active_slide()) if session.get_active_slide() else None
                     score = health.score if health else None
                     cp = session.create_checkpoint(description=desc, score=score)
                     await websocket.send_json({

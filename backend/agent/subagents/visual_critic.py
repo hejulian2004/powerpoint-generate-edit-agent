@@ -20,9 +20,9 @@ import re
 from dataclasses import dataclass, field
 from typing import Dict, Any, Optional, Callable, List
 from ...ir.models import SlideIR
-from ...eval.layout_diff import LayoutDiffEngine, LayoutHealthReport
+from ...eval.layout_diff import LayoutHealthReport
 from ...eval.remediation import RemediationPlan
-from ...eval.renderer_snapshot import SlideSnapshotRenderer, RendererMode
+from ...quality import QualityService
 
 logger = logging.getLogger(__name__)
 
@@ -144,15 +144,14 @@ class VisualCriticSubagent:
             })
 
         # 2. Objective geometric, contrast, and rule-based aesthetic inspection
-        health_report = LayoutDiffEngine.evaluate_slide(slide)
+        health_report = QualityService.evaluate_slide(slide)
 
         # 3. Formulate tool-agnostic remediation plan
-        from ...eval.visual_critic import VisualCritic
-        remediation_plan = VisualCritic.plan_remediations(slide, health_report)
+        remediation_plan = QualityService.plan_remediation(slide, health_report)
         needs_correction = len(remediation_plan.auto_executable_actions) > 0
 
         # 4. Raster snapshot metadata
-        meta = SlideSnapshotRenderer.get_render_metadata(slide, mode=RendererMode.DETERMINISTIC)
+        meta = QualityService.render_metadata(slide)
         multimodal_feedback = None
         vision_status: Dict[str, Any] = {
             "vision_available": False,
@@ -169,7 +168,7 @@ class VisualCriticSubagent:
         has_vision_api = bool(llm_client and getattr(llm_client, "api_key", None))
         if include_multimodal and has_vision_api:
             try:
-                snapshot_uri = SlideSnapshotRenderer.render_data_uri(slide)
+                snapshot_uri = QualityService.render_data_uri(slide)
                 manifest = cls.format_slide_element_manifest(slide)
 
                 user_prompt = (
@@ -247,7 +246,7 @@ class VisualCriticSubagent:
 
         # 6. Snapshot URI
         try:
-            snapshot_uri = SlideSnapshotRenderer.render_data_uri(slide)
+            snapshot_uri = QualityService.render_data_uri(slide)
         except Exception as e:
             logger.debug(f"Snapshot URI generation failed: {e}")
             snapshot_uri = None
