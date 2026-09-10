@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 import io
+import json
 import logging
 import urllib.parse
 from typing import Dict, Any, Optional
@@ -135,11 +136,20 @@ async def upload_pptx(
             "session_id": session.session_id,
             "presentation": pres.model_dump()
         }, session_id=session.session_id)
+        importer_used = pres.metadata.get("importer_used", "unknown")
+        fallback_reason = pres.metadata.get("importer_fallback_reason")
         return {
             "success": True,
             "session_id": session.session_id,
             "title": pres.title,
             "slides_count": len(pres.slides),
+            # Import provenance: "fidelity" is canonical; a fallback to the legacy
+            # parser is surfaced instead of being a silent success.
+            "importer": importer_used,
+            "degraded": bool(fallback_reason),
+            "fallback_reason": fallback_reason,
+            "warnings": pres.metadata.get("parser_warnings", []),
+            "capabilities": dict(pres.capabilities),
             "presentation": pres.model_dump()
         }
     except HTTPException:
@@ -148,18 +158,54 @@ async def upload_pptx(
         raise HTTPException(status_code=500, detail=f"Failed to parse PPTX: {str(e)}")
 
 
-@router.get("/export")
-async def export_pptx(session_id: Optional[str] = Query(None)):
+@router.get("/export/preflight")
+async def export_preflight(session_id: Optional[str] = Query(None)):
+    """Structured lossy/unsupported write-back warnings before an export happens."""
     session = _resolve_session(session_id)
+    return {
+        "session_id": session.session_id,
+        "presentation_version": session.pres.version,
+        **store.export_preflight(pres=session.pres),
+    }
+
+
+@router.get("/export")
+async def export_pptx(
+    session_id: Optional[str] = Query(None),
+    allow_lossy: bool = Query(True),
+):
+    session = _resolve_session(session_id)
+    preflight = store.export_preflight(pres=session.pres)
+
+    if preflight["has_lossy"] and not allow_lossy:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": "lossy_export_requires_confirmation",
+                "message": "此文档包含原生 Table，当前导出会将其转为普通图形（不可逆）。",
+                **preflight,
+            },
+        )
+
     try:
-        data = store.export_pptx_bytes(pres=session.pres)
+        data = store.export_pptx_bytes(pres=session.pres, allow_lossy=allow_lossy)
         pres = session.pres
         safe_filename = urllib.parse.quote(f"{pres.title or 'presentation'}.pptx")
+        warning_header = json.dumps(
+            {"warnings": preflight["warnings"], "lossy_features": preflight["lossy_features"]},
+            ensure_ascii=True,
+        )
         return StreamingResponse(
             io.BytesIO(data),
             media_type="application/vnd.openxmlformats-officedocument.presentationml.presentation",
-            headers={"Content-Disposition": f"attachment; filename*=UTF-8''{safe_filename}"}
+            headers={
+                "Content-Disposition": f"attachment; filename*=UTF-8''{safe_filename}",
+                "X-Fidelity-Warnings": warning_header,
+                "X-Export-Lossy": "true" if preflight["has_lossy"] else "false",
+            },
         )
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to export PPTX: {str(e)}")
 
@@ -214,6 +260,7 @@ async def chat_interaction(
 
     sid = session_id or payload.get("session_id")
     session = _resolve_session(sid)
+    confirmed_tool_ids = payload.get("confirmed_tool_ids") or []
 
     async def on_event(event):
         event["session_id"] = session.session_id
@@ -224,7 +271,9 @@ async def chat_interaction(
             user_message=prompt,
             pres=session.pres,
             history=session.history,
-            on_event=on_event
+            session=session,
+            on_event=on_event,
+            confirmed_tool_ids=confirmed_tool_ids,
         )
 
     # Broadcast updated presentation
@@ -233,6 +282,59 @@ async def chat_interaction(
         "session_id": session.session_id,
         "presentation": session.pres.model_dump()
     }, session_id=session.session_id)
+
+    return result
+
+
+@router.get("/confirm/pending")
+async def list_pending_confirmations(session_id: Optional[str] = Query(None)):
+    """Lists pending low-confidence calls awaiting explicit user confirmation."""
+    session = _resolve_session(session_id)
+    return {
+        "session_id": session.session_id,
+        "presentation_version": session.pres.version,
+        "pending": list(session.pending_confirmations.values()),
+    }
+
+
+@router.post("/confirm")
+async def confirm_pending_action(
+    payload: Dict[str, Any] = Body(...),
+    session_id: Optional[str] = Query(None),
+):
+    """Executes (or cancels) the ORIGINAL pending call after explicit confirmation."""
+    call_id = payload.get("call_id")
+    if not call_id:
+        raise HTTPException(status_code=400, detail="call_id is required")
+
+    sid = session_id or payload.get("session_id")
+    session = _resolve_session(sid)
+    decision = (payload.get("decision") or "confirm").lower()
+
+    async def on_event(event):
+        event["session_id"] = session.session_id
+        await store.broadcast(event, session_id=session.session_id)
+
+    async with session.mutation_lock:
+        if decision == "cancel":
+            result = await store.agent_runtime.cancel_pending(
+                session, call_id, on_event=on_event
+            )
+        elif decision in ("confirm", "approve"):
+            result = await store.agent_runtime.confirm_pending(
+                session, call_id, on_event=on_event
+            )
+        else:
+            raise HTTPException(status_code=400, detail="decision must be 'confirm' or 'cancel'")
+
+        await store.broadcast({
+            "type": "presentation_updated",
+            "session_id": session.session_id,
+            "presentation": session.pres.model_dump(),
+            "can_undo": session.history.can_undo(),
+            "can_redo": session.history.can_redo(),
+            "last_target_id": session.last_target_id,
+        }, session_id=session.session_id)
 
     return result
 

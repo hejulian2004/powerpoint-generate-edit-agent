@@ -817,7 +817,9 @@ def import_pptx(
 def export_pptx(
     pres_ir: PresentationIR,
     output_path: Union[str, Path, os.PathLike],
-    exporter: str = "legacy"
+    exporter: str = "legacy",
+    *,
+    allow_lossy: bool = True
 ) -> Path:
     """Exports a PPT-IR presentation into a valid OOXML PPTX file.
 
@@ -826,9 +828,19 @@ def export_pptx(
     some IR features is still lossy — see ``backend.fidelity.capability`` for the
     declarative lossy-writeback matrix (e.g. ``TableElementIR`` currently flattens
     to a group of styled rectangles).
+
+    With ``allow_lossy=False`` the export is refused (``LossyWritebackError``) when
+    the preflight finds features whose native semantics would be degraded, so a
+    caller cannot silently accept data loss.
     """
     if exporter != "legacy":
         raise ValueError(f"Unknown exporter: {exporter!r}. Only 'legacy' is implemented.")
+
+    from ..fidelity.preflight import evaluate_export_preflight, LossyWritebackError
+    preflight = evaluate_export_preflight(pres_ir)
+    if preflight.has_lossy and not allow_lossy:
+        raise LossyWritebackError(preflight)
+
     out = Path(output_path)
     out.parent.mkdir(parents=True, exist_ok=True)
 

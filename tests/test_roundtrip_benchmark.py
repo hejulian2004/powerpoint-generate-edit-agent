@@ -132,6 +132,7 @@ def test_roundtrip_table_flattening_is_declared_lossy(tmp_path: Path):
     # 2. Export write-back is declaratively lossy, not silently "preserved"
     from backend.fidelity.capability import CapabilityDetector
     verdict = CapabilityDetector.check_writeback("table")
+    assert verdict["status"] == "lossy"
     assert verdict["lossless"] is False
     assert verdict["reason"] == "flattened_to_group"
 

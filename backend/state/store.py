@@ -291,12 +291,32 @@ class PresentationStore:
             if os.path.exists(tmp_path):
                 os.remove(tmp_path)
 
-    def export_pptx_bytes(self, pres: Optional[PresentationIR] = None) -> bytes:
+    def export_preflight(self, pres: Optional[PresentationIR] = None) -> Dict[str, Any]:
+        """Returns structured lossy/unsupported write-back warnings for an export."""
+        from ..fidelity.preflight import evaluate_export_preflight
+
+        target_pres = pres if pres is not None else self.presentation
+        return evaluate_export_preflight(target_pres).to_dict()
+
+    def export_pptx_bytes(
+        self,
+        pres: Optional[PresentationIR] = None,
+        *,
+        allow_lossy: bool = True,
+    ) -> bytes:
         """Renders PPT-IR into native PPTX binary bytes.
-        
+
         Accepts explicit PresentationIR or defaults to current active presentation.
+        With ``allow_lossy=False`` the export is refused when native semantics
+        (e.g. tables) would be degraded by write-back.
         """
         target_pres = pres if pres is not None else self.presentation
+
+        from ..fidelity.preflight import evaluate_export_preflight, LossyWritebackError
+        preflight = evaluate_export_preflight(target_pres)
+        if preflight.has_lossy and not allow_lossy:
+            raise LossyWritebackError(preflight)
+
         ooxml_pres = PPTIRConverter.ir_to_presentation(target_pres)
         with tempfile.NamedTemporaryFile(suffix=".pptx", delete=False) as tmp:
             tmp_path = tmp.name

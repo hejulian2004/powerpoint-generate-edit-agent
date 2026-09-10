@@ -47,12 +47,18 @@ class FidelityReport:
     overall: float = 100.0
     dimensions: Dict[str, float] = field(default_factory=dict)
     issues: List[FidelityIssue] = field(default_factory=list)
+    passed: bool = True
+    degraded: bool = False
+    visual_source: str = "internal_rasterizer"
 
     def to_dict(self) -> Dict[str, Any]:
         return {
             "overall": round(self.overall, 1),
             "dimensions": {k: round(v, 1) for k, v in self.dimensions.items()},
             "issues": [i.to_dict() for i in self.issues],
+            "passed": self.passed,
+            "degraded": self.degraded,
+            "visual_source": self.visual_source,
         }
 
     def issues_by_severity(self, severity: str) -> List[FidelityIssue]:
@@ -67,9 +73,25 @@ def build_fidelity_report(
     orig_slide: SlideIR,
     recon_slide: SlideIR,
     scale: float = 0.5,
+    *,
+    orig_image: Any = None,
+    recon_image: Any = None,
+    strict_visual: bool = False,
 ) -> FidelityReport:
-    """Builds a structured fidelity report comparing original vs reconstructed slide."""
-    score = FidelityEvaluator.evaluate_slides(orig_slide, recon_slide, scale=scale)
+    """Builds a structured fidelity report comparing original vs reconstructed slide.
+
+    ``passed`` / ``degraded`` / ``visual_source`` are propagated from the underlying
+    ``FidelityScore`` so consumers can distinguish a real WYSIWYG screenshot score
+    from an internal-rasterizer or fallback score.
+    """
+    score = FidelityEvaluator.evaluate_slides(
+        orig_slide,
+        recon_slide,
+        orig_image=orig_image,
+        recon_image=recon_image,
+        scale=scale,
+        strict_visual=strict_visual,
+    )
     issues: List[FidelityIssue] = []
 
     _append_dedup(issues, _geometry_and_structure_issues(orig_slide, recon_slide))
@@ -85,15 +107,35 @@ def build_fidelity_report(
             "visual": score.visual,
         },
         issues=issues,
+        passed=score.passed,
+        degraded=score.degraded,
+        visual_source=score.visual_source,
     )
+
+
+def _worst_visual_source(sources: List[str]) -> str:
+    """Precedence: fallback > internal_rasterizer > external_raster."""
+    if any(s == "fallback" for s in sources):
+        return "fallback"
+    if any(s == "internal_rasterizer" for s in sources):
+        return "internal_rasterizer"
+    return "external_raster"
 
 
 def build_presentation_report(
     orig_pres: PresentationIR,
     recon_pres: PresentationIR,
     scale: float = 0.5,
+    *,
+    orig_images: Optional[List[Any]] = None,
+    recon_images: Optional[List[Any]] = None,
+    strict_visual: bool = False,
 ) -> Dict[str, Any]:
-    """Aggregates per-slide reports into a presentation-level summary."""
+    """Aggregates per-slide reports into a presentation-level summary.
+
+    ``passed`` requires every slide to pass; ``degraded`` is true when any slide is
+    degraded, and the aggregate ``visual_source`` reflects the weakest basis used.
+    """
     slides = []
     for idx, o_slide in enumerate(orig_pres.slides):
         r_slide = recon_pres.slides[idx] if idx < len(recon_pres.slides) else None
@@ -101,6 +143,9 @@ def build_presentation_report(
             slides.append({
                 "slide_num": o_slide.slide_num,
                 "overall": 0.0,
+                "passed": False,
+                "degraded": True,
+                "visual_source": "fallback",
                 "issues": [{
                     "type": "MISSING_SLIDE",
                     "element": o_slide.id,
@@ -110,14 +155,34 @@ def build_presentation_report(
                 }],
             })
             continue
-        report = build_fidelity_report(o_slide, r_slide, scale=scale)
+        o_img = orig_images[idx] if orig_images and idx < len(orig_images) else None
+        r_img = recon_images[idx] if recon_images and idx < len(recon_images) else None
+        report = build_fidelity_report(
+            o_slide,
+            r_slide,
+            scale=scale,
+            orig_image=o_img,
+            recon_image=r_img,
+            strict_visual=strict_visual,
+        )
         slides.append({"slide_num": o_slide.slide_num, **report.to_dict()})
 
     if not slides:
-        return {"overall": 100.0, "slides": []}
+        return {
+            "overall": 100.0, "slides": [], "passed": True,
+            "degraded": False, "visual_source": "external_raster",
+        }
 
     overall = sum(s["overall"] for s in slides) / len(slides)
-    return {"overall": round(overall, 1), "slides": slides}
+    return {
+        "overall": round(overall, 1),
+        "slides": slides,
+        "passed": all(s.get("passed", False) for s in slides),
+        "degraded": any(s.get("degraded", False) for s in slides),
+        "visual_source": _worst_visual_source(
+            [s.get("visual_source", "fallback") for s in slides]
+        ),
+    }
 
 
 # =====================================================================

@@ -236,9 +236,11 @@ def test_slide_background_bgpr_round_trip(tmp_path: Path):
 
 def test_table_writeback_declared_lossy():
     assert CapabilityDetector.check_writeback("table") == {
-        "lossless": False, "reason": "flattened_to_group"
+        "status": "lossy", "lossless": False, "reason": "flattened_to_group"
     }
-    assert CapabilityDetector.check_writeback("text")["lossless"] is True
+    text_verdict = CapabilityDetector.check_writeback("text")
+    assert text_verdict["status"] == "lossless"
+    assert text_verdict["lossless"] is True
     assert "table" in LOSSY_WRITEBACK_FEATURES
 
 

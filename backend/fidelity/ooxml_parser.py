@@ -15,7 +15,7 @@ from typing import Optional, Dict, Any, List, Tuple, Union
 from .theme_engine import ThemeEngine
 from .style_resolver import StyleResolver
 from .relationship import RelationshipGraph, REL_TYPE_IMAGE
-from .capability import CapabilityDetector, FidelityCapability
+from .capability import CapabilityDetector, DetectedFeatures
 from ..ir.models import (
     PresentationIR, SlideIR, ElementIR, ShapeElementIR, TextElementIR,
     ConnectorElementIR, ImageElementIR, TableElementIR, TableCellIR,

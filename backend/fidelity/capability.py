@@ -1,10 +1,18 @@
 """OOXML Capability Matrix & Detection.
 
-Defines the features the Fidelity Engine can parse/edit and which OOXML features it can
-only detect (present in the package but not editable). This is the single source of truth
-the Agent uses to answer "can I modify that?" before attempting a mutation.
+Two deliberately separate concepts (PR6-hardening round 2):
 
-Engine support boundary (FidelityCapability defaults):
+1. ``EngineCapabilities`` — the static boundary of what the Fidelity Engine can
+   parse/edit and which OOXML features it can only detect. This is a *support
+   matrix*, identical for every deck.
+2. ``DetectedFeatures`` — which features a *specific package* actually contains.
+   All presence defaults are ``False``; a deck without tables must report
+   ``table=False`` and must NOT produce table lossy warnings.
+
+Mixing those two meanings previously made ``FidelityCapability()`` default
+``table=True`` and poisoned detection (`cap.table = has_table or cap.table`).
+
+Engine support boundary:
 - Fully supported: shape, text, image, group, table, theme
 - Detect-only (parsed into IR if possible, but edits are NOT safe):
   chart, smartart, animation, master_slide
@@ -15,8 +23,8 @@ import io
 import os
 import zipfile
 import xml.etree.ElementTree as ET
-from dataclasses import dataclass
-from typing import Dict, List, Optional, Set, Union
+from dataclasses import dataclass, field
+from typing import Dict, List, Mapping, Optional, Set, Union
 
 from ..ir.models import PresentationIR, GroupElementIR
 
@@ -42,19 +50,64 @@ LOSSY_WRITEBACK_FEATURES: Dict[str, str] = {
 }
 
 
-@dataclass
-class FidelityCapability:
-    """Per-file OOXML feature presence + engine support matrix.
+@dataclass(frozen=True)
+class EngineCapabilities:
+    """Static engine support matrix (NOT per-file feature presence).
 
-    Defaults represent the ENGINE's support boundary (what we can safely edit).
-    A detected FidelityCapability reflects which features a specific file actually uses.
+    Answers: can the engine edit this feature? can it export it losslessly?
     """
 
-    shape: bool = True
-    text: bool = True
-    image: bool = True
-    group: bool = True
-    table: bool = True
+    editable: frozenset = SUPPORTED_FEATURES
+    detect_only: frozenset = DETECT_ONLY_FEATURES
+    lossy_writeback: Mapping[str, str] = field(
+        default_factory=lambda: dict(LOSSY_WRITEBACK_FEATURES)
+    )
+
+    def supports_edit(self, feature: str) -> bool:
+        return feature.lower().strip() in self.editable
+
+    def detect_status(self, feature: str) -> Dict[str, object]:
+        """Structured support verdict: {'supported': bool, 'reason': str}."""
+        feature_norm = feature.lower().strip()
+        if feature_norm in self.editable:
+            return {"supported": True, "reason": ""}
+        if feature_norm in self.detect_only:
+            return {"supported": False, "reason": "unsupported_feature"}
+        return {"supported": False, "reason": "unknown_feature"}
+
+    def writeback_status(self, feature: str) -> Dict[str, object]:
+        """Tri-state write-back verdict for a feature.
+
+        Returns one of:
+        - {'status': 'lossless',    'lossless': True,  'reason': ''}
+        - {'status': 'lossy',       'lossless': False, 'reason': <degradation>}
+        - {'status': 'unsupported', 'lossless': False, 'reason': 'unsupported_feature'}
+        - {'status': 'unsupported', 'lossless': False, 'reason': 'unknown_feature'}
+        """
+        feature_norm = feature.lower().strip()
+        reason = self.lossy_writeback.get(feature_norm)
+        if reason:
+            return {"status": "lossy", "lossless": False, "reason": reason}
+        if feature_norm in self.editable:
+            return {"status": "lossless", "lossless": True, "reason": ""}
+        if feature_norm in self.detect_only:
+            return {"status": "unsupported", "lossless": False, "reason": "unsupported_feature"}
+        return {"status": "unsupported", "lossless": False, "reason": "unknown_feature"}
+
+    def lossy_writeback_features(self) -> Dict[str, str]:
+        """Declarative map of features whose export degrades native OOXML semantics."""
+        return dict(self.lossy_writeback)
+
+
+@dataclass
+class DetectedFeatures:
+    """Per-package OOXML feature presence (all defaults absent)."""
+
+    shape: bool = False
+    text: bool = False
+    image: bool = False
+    group: bool = False
+    table: bool = False
     chart: bool = False
     smartart: bool = False
     animation: bool = False
@@ -74,11 +127,6 @@ class FidelityCapability:
             "master_slide": self.master_slide,
             "theme": self.theme,
         }
-
-    @classmethod
-    def engine_supported(cls) -> FidelityCapability:
-        """The static engine capability matrix (which features can be edited)."""
-        return cls()
 
     def present_features(self) -> List[str]:
         return [name for name, present in self.to_dict().items() if present]
@@ -102,11 +150,6 @@ class FidelityCapability:
             )
         return warnings
 
-    @classmethod
-    def lossy_writeback_features(cls) -> Dict[str, str]:
-        """Declarative map of features whose export degrades native OOXML semantics."""
-        return dict(LOSSY_WRITEBACK_FEATURES)
-
     def lossy_warnings(self) -> List[str]:
         """Warnings for features present in this file that will degrade on export."""
         warnings = []
@@ -121,8 +164,10 @@ class FidelityCapability:
 class CapabilityDetector:
     """Detects OOXML feature presence inside a PPTX package (independent of IR parsing)."""
 
+    ENGINE = EngineCapabilities()
+
     @classmethod
-    def detect(cls, pptx_source: Union[str, bytes, io.BytesIO]) -> FidelityCapability:
+    def detect(cls, pptx_source: Union[str, bytes, io.BytesIO]) -> DetectedFeatures:
         """Detects which OOXML features the package uses."""
         if isinstance(pptx_source, (str, os.PathLike)):
             with zipfile.ZipFile(pptx_source, "r") as zf:
@@ -134,14 +179,16 @@ class CapabilityDetector:
             return cls.detect_in_open_zip(pptx_source)
 
     @classmethod
-    def detect_in_open_zip(cls, zf: zipfile.ZipFile) -> FidelityCapability:
+    def detect_in_open_zip(cls, zf: zipfile.ZipFile) -> DetectedFeatures:
         """Detects OOXML feature presence from an already-open zip archive."""
         return cls._detect_in_zip(zf)
 
     @classmethod
-    def detect_from_ir(cls, pres: PresentationIR, detected: Optional[FidelityCapability] = None) -> FidelityCapability:
+    def detect_from_ir(
+        cls, pres: PresentationIR, detected: Optional[DetectedFeatures] = None
+    ) -> DetectedFeatures:
         """Merges element-level presence (shape/text/image/group/table) from parsed IR."""
-        cap = detected if detected is not None else FidelityCapability()
+        cap = detected if detected is not None else DetectedFeatures()
         has_shape = False
         has_text = False
         has_image = False
@@ -170,43 +217,46 @@ class CapabilityDetector:
         return cap
 
     @classmethod
+    def engine_capabilities(cls) -> EngineCapabilities:
+        """The static engine support matrix (which features can be edited/exported)."""
+        return cls.ENGINE
+
+    @classmethod
     def check_support(cls, feature: str) -> Dict[str, object]:
         """Returns a structured support verdict for a feature.
 
         >>> CapabilityDetector.check_support("chart")
         {'supported': False, 'reason': 'unsupported_feature'}
         """
-        feature_norm = feature.lower().strip()
-        if feature_norm in SUPPORTED_FEATURES:
-            return {"supported": True, "reason": ""}
-        if feature_norm in DETECT_ONLY_FEATURES:
-            return {"supported": False, "reason": "unsupported_feature"}
-        return {"supported": False, "reason": "unknown_feature"}
+        return cls.ENGINE.detect_status(feature)
 
     @classmethod
     def check_writeback(cls, feature: str) -> Dict[str, object]:
-        """Returns whether exporting a feature preserves native OOXML semantics.
+        """Tri-state verdict for whether export preserves native OOXML semantics.
 
         >>> CapabilityDetector.check_writeback("table")
-        {'lossless': False, 'reason': 'flattened_to_group'}
+        {'status': 'lossy', 'lossless': False, 'reason': 'flattened_to_group'}
+        >>> CapabilityDetector.check_writeback("chart")["status"]
+        'unsupported'
         """
-        feature_norm = feature.lower().strip()
-        reason = LOSSY_WRITEBACK_FEATURES.get(feature_norm)
-        if reason:
-            return {"lossless": False, "reason": reason}
-        return {"lossless": True, "reason": ""}
+        return cls.ENGINE.writeback_status(feature)
 
     @classmethod
-    def _detect_in_zip(cls, zf: zipfile.ZipFile) -> FidelityCapability:
+    def lossy_writeback_features(cls) -> Dict[str, str]:
+        """Declarative map of features whose export degrades native OOXML semantics."""
+        return cls.ENGINE.lossy_writeback_features()
+
+    @classmethod
+    def _detect_in_zip(cls, zf: zipfile.ZipFile) -> DetectedFeatures:
         namelist = set(zf.namelist())
-        cap = FidelityCapability()
+        cap = DetectedFeatures()
         cap.chart = cls._has_chart(namelist)
         cap.smartart = cls._has_smartart(namelist)
         cap.master_slide = cls._has_master(namelist)
         cap.theme = cls._has_theme(namelist)
         has_animation, has_table = cls._scan_slide_xmls(zf, namelist)
         cap.animation = has_animation
-        cap.table = has_table or cap.table
+        cap.table = has_table
         return cap
 
     @staticmethod

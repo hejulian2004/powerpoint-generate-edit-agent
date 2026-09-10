@@ -7,7 +7,12 @@ STYLE_MISMATCH, ...) an agent can act on.
 
 import copy
 
-from backend.eval.fidelity import build_fidelity_report, FidelityIssue, FidelityReport
+from PIL import Image
+
+from backend.eval.fidelity import (
+    build_fidelity_report, build_presentation_report, FidelityIssue, FidelityReport
+)
+from backend.fidelity import FidelityEngine
 from backend.ir.models import (
     PresentationIR, SlideIR, ShapeElementIR, TextElementIR,
     ElementStyleIR, FillStyle, TextContentIR, FontIR,
@@ -95,3 +100,80 @@ def test_missing_element_flagged_high():
     missing = [i for i in report.issues if i.type == "MISSING_ELEMENT"]
     assert missing and missing[0].element == "card"
     assert missing[0].severity == "high"
+
+
+# =====================================================================
+# Honest fidelity contract through the public facade (PR6-hardening r2)
+# =====================================================================
+
+def test_report_exposes_honesty_contract_fields():
+    report = build_fidelity_report(_baseline_slide(), copy.deepcopy(_baseline_slide()))
+    assert report.passed is True
+    assert report.degraded is False
+    assert report.visual_source == "internal_rasterizer"
+    data = report.to_dict()
+    assert data["passed"] is True
+    assert data["degraded"] is False
+    assert data["visual_source"] == "internal_rasterizer"
+
+
+def test_facade_evaluate_accepts_external_screenshots():
+    slide = _baseline_slide()
+    img = Image.new("RGB", (160, 90), color=(255, 255, 255))
+    score = FidelityEngine.evaluate(
+        slide, copy.deepcopy(slide), orig_image=img, recon_image=img
+    )
+    assert score.visual_source == "external_raster"
+    assert score.degraded is False
+
+
+def test_facade_evaluate_strict_visual_degrades_without_screenshots():
+    slide = _baseline_slide()
+    score = FidelityEngine.evaluate(slide, copy.deepcopy(slide), strict_visual=True)
+    assert score.visual_source == "internal_rasterizer"
+    assert score.degraded is True
+    assert score.passed is False
+
+
+def test_facade_report_exposes_honesty_contract():
+    slide = _baseline_slide()
+    report = FidelityEngine.report(slide, copy.deepcopy(slide), strict_visual=True)
+    assert report.passed is False
+    assert report.degraded is True
+    assert report.visual_source == "internal_rasterizer"
+    external = FidelityEngine.report(
+        slide,
+        copy.deepcopy(slide),
+        orig_image=Image.new("RGB", (160, 90)),
+        recon_image=Image.new("RGB", (160, 90)),
+    )
+    assert external.visual_source == "external_raster"
+    assert external.degraded is False
+
+
+def test_presentation_report_propagates_passed_degraded_visual_source():
+    orig = PresentationIR(title="Aggregate")
+    orig.slides.append(_baseline_slide())
+    recon = PresentationIR(title="Aggregate")
+    recon.slides.append(copy.deepcopy(_baseline_slide()))
+
+    healthy = build_presentation_report(orig, recon)
+    assert healthy["passed"] is True
+    assert healthy["degraded"] is False
+    assert healthy["visual_source"] == "internal_rasterizer"
+    assert healthy["slides"][0]["visual_source"] == "internal_rasterizer"
+
+    strict = build_presentation_report(orig, recon, strict_visual=True)
+    assert strict["passed"] is False
+    assert strict["degraded"] is True
+
+
+def test_presentation_report_missing_slide_fails_aggregate():
+    orig = PresentationIR(title="Aggregate")
+    orig.slides.append(_baseline_slide())
+    recon = PresentationIR(title="Aggregate")  # no slides
+
+    summary = build_presentation_report(orig, recon)
+    assert summary["passed"] is False
+    assert summary["degraded"] is True
+    assert summary["visual_source"] == "fallback"
