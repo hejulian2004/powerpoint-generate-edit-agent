@@ -100,7 +100,12 @@ router_node ──> planner_node ──> plan_critic_node
 ### 2.4 上下文注入 / 返工指令 / Deck 级评审
 - **压缩上下文注入**：`AgentRuntime.run_turn` 将压缩后的 `state["messages"]` 交给 `ExecutorSubagent.plan_task`；Executor 提示词 = system（含压缩摘要锚点）+ 最近 8 轮对话 + 执行指令，当前用户轮已去重。Critic 仍保持盲审，不接收对话历史。
 - **返工指令 (`rework_directive`)**：`content_critic_node` 在评审未通过时输出缺陷、建议与 `target_ids`；`executor_node` 将其注入执行提示词并强制返工模式，禁止再次调用 `generate_presentation`，只做精准文本修改。
-- **Deck 级评审**：`mutation_node` 通过幻灯片指纹计算 `changed_slide_ids`；Content/Visual Critic 逐页审查所有变更页，聚合为 `content_review.slides` / `visual_review.slides`（含 `reviewed_slide_ids`、`failed_slide_ids`、`deck_average_score`），不再只审当前一页。
+- **Deck 级评审**：`mutation_node` 通过幻灯片指纹计算 `changed_slide_ids`；Content/Visual Critic 逐页审查所有变更页，聚合为 `content_review.slides` / `visual_review.slides`（含 `reviewed_slide_ids`、`failed_slide_ids`、`deck_average_score`），不再只审当前一页。`auto_correct_node` 对 `slides` 中每一张失败页逐个执行自愈，而非只修聚合主页面。
+
+### 2.6 生成真实性门控 (`agent/grounding.py`)
+- **无来源先追问**：`router_node` 识别数据型请求（财报/数据/指标/报告/benchmark 等关键词，或具体数值）后调用 `assess_generation_request`；若用户未提供可核验来源，则 `grounding_clarification` 直达 `summary_node`，不进入规划/执行，绝不编造内容。
+- **有来源硬约束**：Executor 收到“只允许使用用户资料中的数字/事实”系统指令与资料原文；`mutation_node` 对 `generate_presentation` / `generate_slide_layout` 的数值断言做回溯校验，未在来源中出现的数字直接阻止写入并返回缺失数字清单。
+- **占位豁免**：用户明确说明“示例/占位/不用真实数据”时跳过来源门控与数值校验。
 
 ### 2.5 统一质量门面 (`quality/`) 与 CORS 白名单
 - **QualityService 是唯一质量入口**：交互式 Agent/WS/工具/管线统一调用 `QualityService.evaluate_slide / plan_remediation / review_slide / render_* / score_fidelity`；生成图统一调用 `QualityService.evaluate_layout / patches_for_issues / apply_layout_patches`。底层 `eval/`（SlideIR）与 `evaluation/`（LayoutSpec）保持原实现，不做算法合并；LayoutSpec 分支为惰性导入，避免把 PIL/python-pptx 带进交互热路径。
@@ -163,6 +168,9 @@ router_node ──> planner_node ──> plan_critic_node
 
 # 运行复合工具撤销/重做精确性测试
 .venv\Scripts\python.exe -m pytest tests/test_tool_undo_precision.py -q
+
+# 运行聊天生成真实性门控与 Deck 级自愈测试
+.venv\Scripts\python.exe -m pytest tests/test_chat_generation_grounding.py tests/test_deck_auto_correct.py -q
 
 # 运行上下文核算与 90% 自动压缩测试
 .venv\Scripts\python.exe -m pytest tests/test_context_compressor.py -q
