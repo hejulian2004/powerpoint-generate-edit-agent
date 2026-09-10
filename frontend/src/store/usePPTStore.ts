@@ -37,6 +37,8 @@ export interface PendingMutation {
   mutationId: string
   operations: MutationOperation[]
   description?: string
+  documentEpoch?: string | null
+  expectedRevision?: number | null
 }
 
 interface OutboxEntry {
@@ -268,6 +270,9 @@ interface PPTState {
   mutationStatus: MutationStatus
   pendingMutations: PendingMutation[]
   outbox: OutboxEntry[]
+  // CAS bookkeeping mirroring the last server-confirmed document identity + revision.
+  documentEpoch: string | null
+  confirmedRevision: number
   contextUsage: ContextUsageData | null
   setContextUsage: (usage: ContextUsageData | null) => void
 
@@ -374,6 +379,8 @@ export const usePPTStore = create<PPTState>((set, get) => ({
   mutationStatus: 'idle',
   pendingMutations: [],
   outbox: [],
+  documentEpoch: null,
+  confirmedRevision: 0,
   contextUsage: {
     current_tokens: 1200,
     max_tokens: 256 * 1024,
@@ -520,19 +527,32 @@ export const usePPTStore = create<PPTState>((set, get) => ({
   }),
 
   sendOrQueueMutation: (message, mutation) => {
-    const { ws } = get()
-    const enriched = { ...message, mutation_id: mutation.mutationId }
+    const { ws, pendingMutations, documentEpoch, confirmedRevision } = get()
+    // Base revision stamps the document generation + version this mutation was
+    // computed against, so the server can reject stale/offline edits via CAS.
+    const baseRevision = confirmedRevision + pendingMutations.length
+    const stampedMutation: PendingMutation = {
+      ...mutation,
+      documentEpoch,
+      expectedRevision: baseRevision
+    }
+    const enriched = {
+      ...message,
+      mutation_id: mutation.mutationId,
+      document_epoch: documentEpoch,
+      expected_revision: baseRevision
+    }
     if (ws && ws.readyState === WebSocket.OPEN) {
       set((state) => ({
-        pendingMutations: [...state.pendingMutations, mutation],
+        pendingMutations: [...state.pendingMutations, stampedMutation],
         mutationStatus: 'pending'
       }))
       ws.send(JSON.stringify(enriched))
       return
     }
     set((state) => ({
-      pendingMutations: [...state.pendingMutations, mutation],
-      outbox: [...state.outbox, { message: enriched, mutation }],
+      pendingMutations: [...state.pendingMutations, stampedMutation],
+      outbox: [...state.outbox, { message: enriched, mutation: stampedMutation }],
       mutationStatus: 'offline'
     }))
   },
@@ -795,7 +815,9 @@ export const usePPTStore = create<PPTState>((set, get) => ({
 
     ws.onopen = () => {
       set({ wsConnected: true, ws })
-      get().flushOutbox()
+      // NOTE: do NOT flush the outbox here. The server's presentation_loaded
+      // snapshot first reconciles document_epoch/revision; only mutations that
+      // still match the live deck are safe to replay.
     }
 
     ws.onclose = () => {
@@ -820,19 +842,43 @@ export const usePPTStore = create<PPTState>((set, get) => ({
         const type = data.type
 
         if (type === 'presentation_loaded') {
-          const hasPending = get().pendingMutations.length > 0
-          set((state) => ({
-            sessionId: data.session_id || state.sessionId,
-            presentation: hasPending ? state.presentation : data.presentation,
-            confirmedPresentation: data.presentation,
-            activeSlideId: data.active_slide_id || data.presentation.slides[0]?.id,
-            canUndo: data.can_undo ?? false,
-            canRedo: data.can_redo ?? false,
-            selectedElementId: hasPending ? state.selectedElementId : null,
-            selectedElementIds: hasPending ? state.selectedElementIds : [],
-            selectionScope: hasPending ? state.selectionScope : [],
-            editingElementId: null
-          }))
+          set((state) => {
+            const loadedEpoch: string | null = data.document_epoch ?? null
+            const loadedRevision: number = data.version ?? data.presentation?.version ?? state.confirmedRevision
+            const epochChanged = loadedEpoch !== null
+              && state.documentEpoch !== null
+              && loadedEpoch !== state.documentEpoch
+            let outbox = state.outbox
+            let pendingMutations = state.pendingMutations
+            if (epochChanged) {
+              // The deck was replaced (checkpoint restore / new document). Any
+              // queued or in-flight mutation bound to the old epoch is obsolete.
+              outbox = outbox.filter(
+                (entry) => entry.mutation.documentEpoch == null || entry.mutation.documentEpoch === loadedEpoch
+              )
+              pendingMutations = pendingMutations.filter(
+                (m) => m.documentEpoch == null || m.documentEpoch === loadedEpoch
+              )
+            }
+            const hasPending = pendingMutations.length > 0
+            return {
+              sessionId: data.session_id || state.sessionId,
+              presentation: hasPending ? state.presentation : data.presentation,
+              confirmedPresentation: data.presentation,
+              activeSlideId: data.active_slide_id || data.presentation.slides[0]?.id,
+              canUndo: data.can_undo ?? false,
+              canRedo: data.can_redo ?? false,
+              selectedElementId: hasPending ? state.selectedElementId : null,
+              selectedElementIds: hasPending ? state.selectedElementIds : [],
+              selectionScope: hasPending ? state.selectionScope : [],
+              editingElementId: null,
+              outbox,
+              pendingMutations,
+              documentEpoch: loadedEpoch ?? state.documentEpoch,
+              confirmedRevision: loadedRevision,
+              mutationStatus: hasPending ? 'pending' : 'idle'
+            }
+          })
           get().flushOutbox()
         } else if (type === 'preview_update') {
           set({
@@ -894,6 +940,8 @@ export const usePPTStore = create<PPTState>((set, get) => ({
               canUndo: data.can_undo ?? state.canUndo,
               canRedo: data.can_redo ?? state.canRedo,
               mutationStatus: pending.length === 0 ? 'committed' : 'pending',
+              documentEpoch: data.document_epoch ?? state.documentEpoch,
+              confirmedRevision: typeof data.version === 'number' ? data.version : state.confirmedRevision,
               pendingMutations: pending,
               selectedElementIds: selectedIds,
               selectedElementId: selectedId,
@@ -916,7 +964,9 @@ export const usePPTStore = create<PPTState>((set, get) => ({
               pendingMutations: pending,
               outbox,
               presentation: rollback ? state.confirmedPresentation : state.presentation,
-              mutationStatus: rollback ? 'rolled_back' : 'pending'
+              mutationStatus: rollback ? 'rolled_back' : 'pending',
+              documentEpoch: data.document_epoch ?? state.documentEpoch,
+              confirmedRevision: typeof data.version === 'number' ? data.version : state.confirmedRevision
             }
           })
         } else if (type === 'active_slide_changed') {
