@@ -71,6 +71,8 @@ class ExecutorPlan:
 
     tool_calls: List[Dict[str, Any]]
     summary_message: str
+    document_epoch: Optional[str] = None
+    base_revision: Optional[int] = None
     subagent_info: Dict[str, Any] = field(default_factory=lambda: {
         "subagent_name": "ExecutorSubagent",
         "context_isolated": True,
@@ -81,6 +83,8 @@ class ExecutorPlan:
         return {
             "tool_calls": self.tool_calls,
             "summary_message": self.summary_message,
+            "document_epoch": self.document_epoch,
+            "base_revision": self.base_revision,
             "subagent_info": self.subagent_info,
         }
 
@@ -215,7 +219,12 @@ class ExecutorSubagent:
         tool_summary_desc = ', '.join(n for n in tool_names if n) if tool_names else '无具体工具'
         summary = f"执行 Subagent 已完成操作规划，计划运行: {tool_summary_desc}。"
 
-        return ExecutorPlan(tool_calls=tool_calls, summary_message=summary)
+        return ExecutorPlan(
+            tool_calls=tool_calls,
+            summary_message=summary,
+            document_epoch=getattr(session, "document_epoch", None) if session else None,
+            base_revision=pres.version if pres else None,
+        )
 
     @staticmethod
     def _build_rework_directive_text(rework_directive: Optional[Dict[str, Any]]) -> str:

@@ -121,6 +121,7 @@ class AgentRuntime:
         initial_state: PPTAgentState = {
             "user_query": user_message,
             "messages": compressed_messages,
+            "raw_messages": session_messages,
             "iteration": 0,
             "max_iterations": max_iterations,
             "active_slide_id": pres.active_slide_id,

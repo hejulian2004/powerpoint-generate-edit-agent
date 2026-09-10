@@ -46,6 +46,7 @@ async def _safe_emit(on_event: Optional[Callable], data: Dict[str, Any]):
 
 class PPTAgentState(TypedDict, total=False):
     messages: List[Dict[str, Any]]
+    raw_messages: List[Dict[str, Any]]
     user_query: str
     intent: str  # "generate_presentation" | "generate_slide" | "modify_elements" | "optimize_layout" | "apply_theme" | "undo" | "chat"
     plan: Optional[str]
@@ -72,6 +73,10 @@ class PPTAgentState(TypedDict, total=False):
     changed_slide_ids: List[str]
     grounding: Optional[Dict[str, Any]]
     grounding_clarification: Optional[str]
+    plan_document_epoch: Optional[str]
+    plan_base_revision: Optional[int]
+    stale_plan: bool
+    stale_replan_count: int
 
 
 # =====================================================================
@@ -198,7 +203,11 @@ async def router_node(state: PPTAgentState, config: RunnableConfig) -> Dict[str,
     if intent == "generate_presentation":
         from .grounding import assess_generation_request
 
-        assessment = assess_generation_request(user_query, state.get("messages"))
+        # Prefer the raw transcript so grounding provenance is not corrupted by
+        # model-facing context compression.
+        assessment = assess_generation_request(
+            user_query, state.get("raw_messages") or state.get("messages")
+        )
         grounding = assessment.to_dict()
         if assessment.requires_source:
             grounding_clarification = assessment.question
@@ -337,7 +346,14 @@ async def executor_node(state: PPTAgentState, config: RunnableConfig) -> Dict[st
     return {
         "execution_plan": plan.tool_calls,
         "last_target_id": last_target_id,
-        "active_slide_id": active_slide_id
+        "active_slide_id": active_slide_id,
+        "plan_document_epoch": plan.document_epoch or (
+            getattr(session, "document_epoch", None) if session else None
+        ),
+        "plan_base_revision": plan.base_revision if plan.base_revision is not None else (
+            pres.version if pres else None
+        ),
+        "stale_plan": False,
     }
 
 
@@ -648,17 +664,56 @@ async def mutation_node(state: PPTAgentState, config: RunnableConfig) -> Dict[st
     from .subagents.executor import ExecutorSubagent
     from .grounding import collect_generation_text, unsupported_numbers
 
+    if pres is None:
+        return {
+            "tool_results": [],
+            "execution_plan": [],
+            "presentation_version": 1,
+            "stale_plan": False,
+        }
+
+    plan_epoch = state.get("plan_document_epoch")
+    plan_revision = state.get("plan_base_revision")
+    live_epoch = getattr(session, "document_epoch", None) if session else None
+    epoch_changed = (
+        plan_epoch is not None and session is not None and live_epoch != plan_epoch
+    )
+    revision_changed = plan_revision is not None and pres.version != plan_revision
+
+    # Stale-plan guard: the GUI (or another turn) mutated the deck while the
+    # executor was planning. Never commit this plan against a newer revision;
+    # route back to the executor to replan from the current state.
+    if tool_calls and (epoch_changed or revision_changed):
+        replan_count = state.get("stale_replan_count", 0) + 1
+        reason = "document_epoch_mismatch" if epoch_changed else "stale_mutation"
+        await _safe_emit(on_event, {
+            "type": "plan_stale_replanning",
+            "reason": reason,
+            "expected_revision": plan_revision,
+            "current_revision": pres.version,
+            "attempt": replan_count,
+        })
+        return {
+            "tool_results": [],
+            "execution_plan": [],
+            "stale_plan": True,
+            "stale_replan_count": replan_count,
+            "presentation_version": pres.version,
+            "changed_slide_ids": [],
+        }
+
     # Grounded generation: block planned content whose numbers are absent from
     # the user-provided source instead of fabricating facts.
     grounding = state.get("grounding") or {}
     source_text = grounding.get("source_text", "")
+    enforce_grounding = bool(grounding.get("enforce_numeric_grounding"))
     blocked_results: List[Dict[str, Any]] = []
     unsupported_seen: List[str] = []
-    if grounding.get("enforce_numeric_grounding"):
+    if enforce_grounding:
         executable_calls = []
         for call in tool_calls:
             fn_name = str(call.get("name") or call.get("tool") or "")
-            if fn_name in ("generate_presentation", "generate_slide_layout"):
+            if fn_name in ("generate_presentation", "generate_slide_layout", "batch_add_cards"):
                 call_text = collect_generation_text(dict(call.get("arguments") or {}))
                 unsupported = unsupported_numbers(call_text, source_text)
                 if unsupported:
@@ -680,6 +735,8 @@ async def mutation_node(state: PPTAgentState, config: RunnableConfig) -> Dict[st
         tool_calls = executable_calls
 
     before_signatures = _slide_signatures(pres)
+    # The whole agent plan is ONE atomic envelope: any failed/blocked/ungrounded
+    # call restores content, version, and history, and the plan is one undo step.
     batch = await MutationGateway.execute_tool_calls(
         tool_calls,
         pres,
@@ -690,8 +747,17 @@ async def mutation_node(state: PPTAgentState, config: RunnableConfig) -> Dict[st
         confirmed_ids=confirmed_ids,
         source="agent",
         subagent="ExecutorSubagent",
+        atomic=True,
+        document_epoch=plan_epoch if session is not None else None,
+        expected_revision=plan_revision,
+        grounding_source=source_text if enforce_grounding else None,
+        enforce_grounding=enforce_grounding,
     )
     changed_slide_ids = _collect_changed_slide_ids(pres, before_signatures)
+
+    for token in batch.unsupported_numbers:
+        if token not in unsupported_seen:
+            unsupported_seen.append(token)
 
     await ExecutorSubagent.emit_completed(
         batch.executed_tools, on_event, error=batch.error
@@ -710,6 +776,7 @@ async def mutation_node(state: PPTAgentState, config: RunnableConfig) -> Dict[st
         "last_target_id": batch.last_target_id,
         "active_slide_id": active_slide_id,
         "changed_slide_ids": changed_slide_ids,
+        "stale_plan": False,
     }
     if unsupported_seen:
         result["grounding_clarification"] = (
@@ -914,7 +981,7 @@ async def auto_correct_node(state: PPTAgentState, config: RunnableConfig) -> Dic
 
     if pres is None:
         runs = []
-    elif lock is not None and not lock.locked():
+    elif lock is not None:
         async with lock:
             runs = await _run_remediations()
     else:
@@ -968,6 +1035,11 @@ async def summary_node(state: PPTAgentState, config: RunnableConfig) -> Dict[str
 
     if grounding_clarification:
         final_text = grounding_clarification
+    elif state.get("stale_plan") and not [r for r in tool_results if r.get("executed")]:
+        final_text = (
+            "检测到演示文稿在规划期间发生了变化，为避免覆盖您的最新编辑，"
+            "本次操作已安全取消，请重试。"
+        )
     elif intent == "undo":
         final_text = "已为您成功撤销上一步修改，画布已恢复至先前的状态快照。"
     elif intent == "chat" and not tool_results:
@@ -996,6 +1068,20 @@ async def summary_node(state: PPTAgentState, config: RunnableConfig) -> Dict[str
             f"\n\n[安全拦截] 操作 {blocked_names} 的语义解析置信度不足，"
             "已被 RiskPolicy 挂起，等待您确认后执行。"
         )
+
+    failed_results = [
+        r for r in tool_results
+        if r.get("executed")
+        and r.get("tool") not in ("undo", "redo")
+        and isinstance(r.get("result"), dict)
+        and r["result"].get("success") is False
+    ]
+    if failed_results:
+        failed_names = ', '.join(r.get("tool", "?") for r in failed_results)
+        final_text = (
+            f"本次操作未完成：工具 {failed_names} 执行失败或未通过校验，"
+            "所有改动已整体回滚，演示文稿保持原状。\n\n"
+        ) + final_text
 
     if correction_count > 0 and visual_review:
         score_val = visual_review.get("score", 95.0)
@@ -1133,6 +1219,16 @@ def should_route_plan_critic(state: PPTAgentState) -> str:
     return "executor_node"
 
 
+def should_route_mutation(state: PPTAgentState) -> str:
+    """Loops back to the executor when a plan was rejected as stale.
+
+    Bounded so a continuously-editing GUI cannot starve the turn forever.
+    """
+    if state.get("stale_plan") and state.get("stale_replan_count", 0) <= 2:
+        return "executor_node"
+    return "content_critic_node"
+
+
 def should_route_content_critic(state: PPTAgentState) -> str:
     """Decides whether to proceed to visual critic or loop back to executor to refine text."""
     content_review = state.get("content_review")
@@ -1195,7 +1291,10 @@ def build_ppt_agent_graph() -> StateGraph:
         "executor_node": "executor_node"
     })
     workflow.add_edge("executor_node", "mutation_node")
-    workflow.add_edge("mutation_node", "content_critic_node")
+    workflow.add_conditional_edges("mutation_node", should_route_mutation, {
+        "executor_node": "executor_node",
+        "content_critic_node": "content_critic_node"
+    })
     workflow.add_conditional_edges("content_critic_node", should_route_content_critic, {
         "executor_node": "executor_node",
         "vision_critic_node": "vision_critic_node"

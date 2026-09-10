@@ -1,10 +1,19 @@
-"""WebSocket service for realtime PPT-Agent-Studio streaming, session state, and preview updates."""
+"""WebSocket service for realtime PPT-Agent-Studio streaming, session state, and preview updates.
+
+Mutation protocol (single-writer envelope):
+- Every direct/batch mutation may carry a client `mutation_id` plus optional CAS
+  hints (`document_epoch`, `expected_revision`).
+- Successful mutations broadcast `presentation_updated` carrying
+  `last_mutation_id`, `version`, and `document_epoch` so the client can retire
+  optimistic patches and discard stale outbox entries.
+- Failed / stale mutations emit `mutation_rejected` instead of a success broadcast.
+"""
 
 from __future__ import annotations
 import json
 import logging
 import uuid
-from typing import Dict, Any, Optional
+from typing import Dict, Any, List, Optional
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
 from ..state.store import store
@@ -45,27 +54,84 @@ def build_preview_update(session: PPTSession, slide_id: Optional[str] = None) ->
         return None
 
 
-async def run_direct_tool(
-    session: PPTSession,
-    name: str,
-    args: Dict[str, Any],
-    on_event: Optional[Any] = None,
-) -> Dict[str, Any]:
-    """Executes an explicit user action through the MutationGateway.
+def _mutation_id(data: Dict[str, Any]) -> str:
+    return data.get("mutation_id") or f"mut_{uuid.uuid4().hex[:10]}"
 
-    Direct GUI actions are unambiguous user intent, so the confirmation gate is
-    bypassed; schema validation, transactions, and history tracking still apply.
-    """
-    batch = await MutationGateway.execute_tool_calls(
-        [{"name": name, "arguments": args, "id": f"call_{uuid.uuid4().hex[:6]}"}],
+
+def build_presentation_updated(
+    session: PPTSession,
+    *,
+    last_mutation_id: Optional[str] = None,
+    **extra: Any,
+) -> Dict[str, Any]:
+    """Canonical `presentation_updated` envelope with ACK + CAS version fields."""
+    payload: Dict[str, Any] = {
+        "type": "presentation_updated",
+        "session_id": session.session_id,
+        "presentation": session.pres.model_dump(),
+        "can_undo": session.history.can_undo(),
+        "can_redo": session.history.can_redo(),
+        "active_slide_id": session.active_slide_id,
+        "last_target_id": session.last_target_id,
+        "version": session.pres.version,
+        "document_epoch": getattr(session, "document_epoch", None),
+        "last_mutation_id": last_mutation_id,
+    }
+    payload.update(extra)
+    return payload
+
+
+async def execute_direct_batch(
+    session: PPTSession,
+    tool_calls: List[Dict[str, Any]],
+    *,
+    mutation_id: str,
+    atomic: bool = False,
+    document_epoch: Optional[str] = None,
+    expected_revision: Optional[int] = None,
+    on_event: Optional[Any] = None,
+):
+    """Executes a direct (unambiguous user) mutation envelope through the gateway."""
+    return await MutationGateway.execute_tool_calls(
+        tool_calls,
         session.pres,
         session.history,
         session=session,
         on_event=on_event,
         bypass_confirmation=True,
         source="user_direct",
+        atomic=atomic,
+        mutation_id=mutation_id,
+        document_epoch=document_epoch,
+        expected_revision=expected_revision,
     )
-    return batch.first_result()
+
+
+def _rejection_payload(session: PPTSession, mutation_id: str, batch: Any) -> Dict[str, Any]:
+    if batch.error:
+        error = batch.error
+    elif batch.results:
+        error = batch.first_result().get("error") or "mutation_failed"
+    else:
+        error = "mutation_failed"
+    return {
+        "type": "mutation_rejected",
+        "session_id": session.session_id,
+        "mutation_id": mutation_id,
+        "error": error,
+        "version": session.pres.version,
+        "document_epoch": getattr(session, "document_epoch", None),
+    }
+
+
+async def _broadcast_state(session: PPTSession, *, last_mutation_id: Optional[str] = None) -> None:
+    await store.broadcast(
+        build_presentation_updated(session, last_mutation_id=last_mutation_id),
+        session_id=session.session_id,
+    )
+    new_preview = build_preview_update(session)
+    if new_preview:
+        await store.broadcast(new_preview, session_id=session.session_id)
 
 
 @ws_router.websocket("/ws")
@@ -87,7 +153,10 @@ async def websocket_endpoint(websocket: WebSocket):
             "can_undo": session.history.can_undo(),
             "can_redo": session.history.can_redo(),
             "last_target_id": session.last_target_id,
-            "checkpoints_count": len(session.checkpoints)
+            "checkpoints_count": len(session.checkpoints),
+            "version": session.pres.version,
+            "document_epoch": getattr(session, "document_epoch", None),
+            "last_mutation_id": None,
         })
 
         # 2. Push initial preview update
@@ -132,19 +201,7 @@ async def websocket_endpoint(websocket: WebSocket):
                     # Transcript is owned by AgentRuntime.run_turn.
 
                     # Broadcast refreshed state & preview
-                    await store.broadcast({
-                        "type": "presentation_updated",
-                        "session_id": session.session_id,
-                        "presentation": session.pres.model_dump(),
-                        "can_undo": session.history.can_undo(),
-                        "can_redo": session.history.can_redo(),
-                        "active_slide_id": session.active_slide_id,
-                        "last_target_id": session.last_target_id
-                    }, session_id=session.session_id)
-
-                    new_preview = build_preview_update(session)
-                    if new_preview:
-                        await store.broadcast(new_preview, session_id=session.session_id)
+                    await _broadcast_state(session)
 
                 except Exception as e:
                     logger.error(f"Error in agent turn: {e}", exc_info=True)
@@ -180,16 +237,13 @@ async def websocket_endpoint(websocket: WebSocket):
                         session, call_id, on_event=on_event
                     )
 
-                await store.broadcast({
-                    "type": "presentation_updated",
-                    "session_id": session.session_id,
-                    "presentation": session.pres.model_dump(),
-                    "can_undo": session.history.can_undo(),
-                    "can_redo": session.history.can_redo(),
-                    "active_slide_id": session.active_slide_id,
-                    "last_target_id": session.last_target_id,
-                    "pending_confirmations_count": len(session.pending_confirmations),
-                }, session_id=session.session_id)
+                await store.broadcast(
+                    build_presentation_updated(
+                        session,
+                        pending_confirmations_count=len(session.pending_confirmations),
+                    ),
+                    session_id=session.session_id,
+                )
 
                 new_preview = build_preview_update(session)
                 if new_preview:
@@ -214,138 +268,139 @@ async def websocket_endpoint(websocket: WebSocket):
                 async with session.mutation_lock:
                     cmd = session.undo()
                     if cmd:
-                        await store.broadcast({
-                            "type": "presentation_updated",
-                            "session_id": session.session_id,
-                            "presentation": session.pres.model_dump(),
-                            "can_undo": session.history.can_undo(),
-                            "can_redo": session.history.can_redo(),
-                            "active_slide_id": session.active_slide_id
-                        }, session_id=session.session_id)
-                        new_preview = build_preview_update(session)
-                        if new_preview:
-                            await store.broadcast(new_preview, session_id=session.session_id)
+                        await _broadcast_state(session)
 
             # User triggered Redo
             elif msg_type == "redo":
                 async with session.mutation_lock:
                     cmd = session.redo()
                     if cmd:
-                        await store.broadcast({
-                            "type": "presentation_updated",
-                            "session_id": session.session_id,
-                            "presentation": session.pres.model_dump(),
-                            "can_undo": session.history.can_undo(),
-                            "can_redo": session.history.can_redo(),
-                            "active_slide_id": session.active_slide_id
-                        }, session_id=session.session_id)
-                        new_preview = build_preview_update(session)
-                        if new_preview:
-                            await store.broadcast(new_preview, session_id=session.session_id)
+                        await _broadcast_state(session)
 
             # User edited element on canvas directly
             elif msg_type == "direct_update_element":
                 args = data.get("payload", {})
-                # run_direct_tool commits through the gateway, which owns the lock.
-                res = await run_direct_tool(session, "update_element", args)
-                if args.get("element_id"):
-                    session.last_target_id = args.get("element_id")
-
-                await store.broadcast({
-                    "type": "presentation_updated",
-                    "session_id": session.session_id,
-                    "presentation": session.pres.model_dump(),
-                    "can_undo": session.history.can_undo(),
-                    "can_redo": session.history.can_redo(),
-                    "active_slide_id": session.active_slide_id,
-                    "last_target_id": session.last_target_id
-                }, session_id=session.session_id)
-                new_preview = build_preview_update(session)
-                if new_preview:
-                    await store.broadcast(new_preview, session_id=session.session_id)
+                mutation_id = _mutation_id(data)
+                batch = await execute_direct_batch(
+                    session,
+                    [{"name": "update_element", "arguments": args, "id": f"call_{uuid.uuid4().hex[:6]}"}],
+                    mutation_id=mutation_id,
+                    document_epoch=data.get("document_epoch"),
+                    expected_revision=data.get("expected_revision"),
+                )
+                if batch.error or not batch.success:
+                    await websocket.send_json(_rejection_payload(session, mutation_id, batch))
+                else:
+                    if args.get("element_id"):
+                        session.last_target_id = args.get("element_id")
+                    await _broadcast_state(session, last_mutation_id=mutation_id)
 
             # Direct GUI manipulation (create slide, delete slide, add shape/text, delete element, etc.)
             # Decoupled from agent dialogue - does not append to chat messages
             elif msg_type == "direct_action":
                 action = data.get("action", "")
-                args = data.get("payload", {})
+                args = dict(data.get("payload", {}))
                 if "slide_id" not in args and session.active_slide_id:
                     args["slide_id"] = session.active_slide_id
+                mutation_id = _mutation_id(data)
 
-                # Each run_direct_tool acquires the session lock via the gateway.
+                tool_name = action
+                tool_args = args
                 if action == "create_slide":
-                    bg = args.get("background_color", "#FFFFFF")
-                    res = await run_direct_tool(session, "create_slide", {
+                    tool_args = {
                         "title": args.get("title", "新建幻灯片"),
-                        "background_color": bg
-                    })
-                    if res.get("success"):
-                        new_sid = res.get("slide_id") or (session.pres.slides[-1].id if session.pres.slides else None)
+                        "background_color": args.get("background_color", "#FFFFFF"),
+                    }
+                elif action == "delete_slide":
+                    tool_args = {
+                        "slide_id_or_num": args.get("slide_id_or_num", args.get("slide_id", ""))
+                    }
+                elif action == "duplicate_slide":
+                    tool_args = {"slide_id": args.get("slide_id")}
+                elif action == "delete_element":
+                    tool_args = {
+                        "element_id": args.get("element_id"),
+                        "slide_id": args.get("slide_id"),
+                    }
+                elif action == "duplicate_element":
+                    tool_args = {
+                        "element_id": args.get("element_id"),
+                        "slide_id": args.get("slide_id"),
+                    }
+                elif action == "set_slide_background":
+                    tool_args = {
+                        "color": args.get("color", "#FFFFFF"),
+                        "slide_id": args.get("slide_id"),
+                    }
+
+                batch = await execute_direct_batch(
+                    session,
+                    [{"name": tool_name, "arguments": tool_args, "id": f"call_{uuid.uuid4().hex[:6]}"}],
+                    mutation_id=mutation_id,
+                    document_epoch=data.get("document_epoch"),
+                    expected_revision=data.get("expected_revision"),
+                )
+
+                if batch.error or not batch.success:
+                    await websocket.send_json(_rejection_payload(session, mutation_id, batch))
+                else:
+                    res = batch.first_result()
+                    if action == "create_slide":
+                        new_sid = res.get("slide_id") or (
+                            session.pres.slides[-1].id if session.pres.slides else None
+                        )
                         if new_sid:
                             session.set_active_slide(new_sid)
-                elif action == "delete_slide":
-                    res = await run_direct_tool(session, "delete_slide", {
-                        "slide_id_or_num": args.get("slide_id_or_num", args.get("slide_id", ""))
-                    })
-                    if res.get("success"):
+                    elif action == "delete_slide":
                         if not session.get_active_slide() and session.pres.slides:
                             session.set_active_slide(session.pres.slides[0].id)
-                elif action == "duplicate_slide":
-                    res = await run_direct_tool(session, "duplicate_slide", {
-                        "slide_id": args.get("slide_id")
-                    })
-                elif action == "delete_element":
-                    elem_id = args.get("element_id")
-                    if elem_id:
-                        await run_direct_tool(session, "delete_element", {
-                            "element_id": elem_id,
-                            "slide_id": args.get("slide_id")
-                        })
+                    elif action == "delete_element":
                         session.last_target_id = None
-                elif action == "duplicate_element":
-                    elem_id = args.get("element_id")
-                    if elem_id:
-                        await run_direct_tool(session, "duplicate_element", {
-                            "element_id": elem_id,
-                            "slide_id": args.get("slide_id")
-                        })
-                elif action == "set_slide_background":
-                    color = args.get("color", "#FFFFFF")
-                    await run_direct_tool(session, "set_slide_background", {
-                        "color": color,
-                        "slide_id": args.get("slide_id")
-                    })
-                elif action == "group_elements":
-                    res = await run_direct_tool(session, action, args)
-                    if res.get("group_id"):
-                        session.last_target_id = res.get("group_id")
-                elif action == "ungroup_elements":
-                    await run_direct_tool(session, action, args)
-                    session.last_target_id = None
-                elif action == "align_elements":
-                    await run_direct_tool(session, action, args)
-                    session.last_target_id = None
-                elif action in (
-                    "add_shape", "add_text", "add_connector", "optimize_layout", "apply_theme",
-                    "clear_slide_elements", "generate_slide_layout",
-                    "batch_add_cards", "auto_fix_layout",
-                ):
-                    res = await run_direct_tool(session, action, args)
-                    if res.get("element_id"):
-                        session.last_target_id = res.get("element_id")
+                    elif action in ("ungroup_elements", "align_elements"):
+                        session.last_target_id = None
+                    elif action == "group_elements":
+                        if res.get("group_id"):
+                            session.last_target_id = res.get("group_id")
+                    elif action in (
+                        "duplicate_element", "add_shape", "add_text", "add_connector",
+                        "optimize_layout", "apply_theme", "clear_slide_elements",
+                        "generate_slide_layout", "batch_add_cards", "auto_fix_layout",
+                    ):
+                        if res.get("element_id"):
+                            session.last_target_id = res.get("element_id")
 
-                await store.broadcast({
-                    "type": "presentation_updated",
-                    "session_id": session.session_id,
-                    "presentation": session.pres.model_dump(),
-                    "can_undo": session.history.can_undo(),
-                    "can_redo": session.history.can_redo(),
-                    "active_slide_id": session.active_slide_id,
-                    "last_target_id": session.last_target_id
-                }, session_id=session.session_id)
-                new_preview = build_preview_update(session)
-                if new_preview:
-                    await store.broadcast(new_preview, session_id=session.session_id)
+                    await _broadcast_state(session, last_mutation_id=mutation_id)
+
+            # Atomic batch mutation (e.g. multi-select drag as ONE undo step)
+            elif msg_type == "batch_mutation":
+                mutation_id = _mutation_id(data)
+                raw_ops = data.get("mutations") or data.get("operations") or []
+                calls: List[Dict[str, Any]] = []
+                for op in raw_ops:
+                    if not isinstance(op, dict):
+                        continue
+                    name = op.get("name") or op.get("tool") or ""
+                    op_args = dict(op.get("payload") or op.get("arguments") or {})
+                    if "slide_id" not in op_args and session.active_slide_id:
+                        op_args["slide_id"] = session.active_slide_id
+                    calls.append({
+                        "name": name,
+                        "arguments": op_args,
+                        "id": op.get("id") or f"call_{uuid.uuid4().hex[:6]}",
+                    })
+
+                batch = await execute_direct_batch(
+                    session,
+                    calls,
+                    mutation_id=mutation_id,
+                    atomic=True,
+                    document_epoch=data.get("document_epoch"),
+                    expected_revision=data.get("expected_revision"),
+                )
+                if batch.error or not batch.success:
+                    await websocket.send_json(_rejection_payload(session, mutation_id, batch))
+                else:
+                    await _broadcast_state(session, last_mutation_id=mutation_id)
 
             # Client requested immediate preview
             elif msg_type == "preview_request":
@@ -371,17 +426,7 @@ async def websocket_endpoint(websocket: WebSocket):
                 cp_id = data.get("checkpoint_id")
                 async with session.mutation_lock:
                     if cp_id and session.restore_checkpoint(cp_id):
-                        await store.broadcast({
-                            "type": "presentation_updated",
-                            "session_id": session.session_id,
-                            "presentation": session.pres.model_dump(),
-                            "can_undo": session.history.can_undo(),
-                            "can_redo": session.history.can_redo(),
-                            "active_slide_id": session.active_slide_id
-                        }, session_id=session.session_id)
-                        new_preview = build_preview_update(session)
-                        if new_preview:
-                            await store.broadcast(new_preview, session_id=session.session_id)
+                        await _broadcast_state(session)
 
     except WebSocketDisconnect:
         logger.info(f"WebSocket client disconnected from session '{session.session_id}'")

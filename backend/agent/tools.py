@@ -1346,10 +1346,12 @@ def _build_slide_elements_by_layout(
 
     elif layout == "kpi_metrics":
         header("04 / METRICS")
+        # Neutral placeholders only: a layout default must never fabricate a
+        # factual numeric claim (grounding is enforced at mutation time).
         stats = items or [
-            {"value": "99.9%", "label": "系统高可用性", "subtext": "SLA 严格达标保证"},
-            {"value": "10x", "label": "PPT 制作效率提升", "subtext": "自动化秒级编排"},
-            {"value": "< 500ms", "label": "双向渲染延迟", "subtext": "实时高保真同步"}
+            {"value": "—", "label": "待补充指标", "subtext": "请提供数据来源"},
+            {"value": "—", "label": "待补充指标", "subtext": "请提供数据来源"},
+            {"value": "—", "label": "待补充指标", "subtext": "请提供数据来源"},
         ]
         n = len(stats)
         margin = 100.0
@@ -1359,8 +1361,8 @@ def _build_slide_elements_by_layout(
 
         for idx, st in enumerate(stats):
             cx = margin + idx * (col_w + gap)
-            val = st.get("value", "100%")
-            lbl = st.get("label", "Metric")
+            val = st.get("value", "—")
+            lbl = st.get("label", "指标")
             sub = st.get("subtext", "")
 
             # Oversized numeral is the hero; hairline separator beneath.
