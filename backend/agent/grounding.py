@@ -34,6 +34,15 @@ SOURCE_CONTENT_MARKERS = (
     "根据这", "基于这", "摘要", "笔记", "文档", "大纲", "要点",
 )
 
+# Markers indicating the current turn explicitly refers back to material supplied
+# in an earlier turn. Without one of these, prior user turns MUST NOT ground a
+# new generation request (a source from Turn A cannot launder Turn B's numbers).
+CONTINUATION_MARKERS = (
+    "以上", "上述", "如下", "以下", "根据这", "基于这", "之前", "刚才",
+    "前面的", "上面", "该资料", "这些资料", "这份资料", "我提供的", "我给的",
+    "已提供", "资料中", "素材中", "原文中", "如下所示", "如下内容", "上述资料",
+)
+
 # Slide argument fields that carry factual content for numeric grounding.
 _FACTUAL_SLIDE_FIELDS = ("title", "subtitle", "value", "label", "subtext", "description")
 
@@ -42,6 +51,23 @@ _FACTUAL_SLIDE_FIELDS = ("title", "subtitle", "value", "label", "subtext", "desc
 _DATA_CLAIM_RE = re.compile(
     r"\d[\d.,]*\s*(?:%|％|万元|亿元|万|亿|元|美元|倍|个百分点|bps|人|个|家|次|台|件)"
 )
+
+
+@dataclass
+class SourceBundle:
+    """Explicitly bound grounding source for one generation request.
+
+    `origin` records where the text came from so a prior turn's source cannot be
+    silently reused: "current_turn", "conversation" (current turn explicitly
+    referred back to earlier material), or "none".
+    """
+
+    text: str = ""
+    origin: str = "none"
+    turn_count: int = 0
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {"text": self.text, "origin": self.origin, "turn_count": self.turn_count}
 
 
 @dataclass
@@ -55,6 +81,7 @@ class GroundingAssessment:
     requires_source: bool = False
     enforce_numeric_grounding: bool = False
     question: Optional[str] = None
+    source_origin: str = "none"
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -65,6 +92,7 @@ class GroundingAssessment:
             "requires_source": self.requires_source,
             "enforce_numeric_grounding": self.enforce_numeric_grounding,
             "question": self.question,
+            "source_origin": self.source_origin,
         }
 
 
@@ -128,7 +156,8 @@ def assess_generation_request(
     user_query: str, messages: Optional[List[Dict[str, Any]]] = None
 ) -> GroundingAssessment:
     """Assess whether a deck request needs source material and numeric grounding."""
-    source_text = extract_source_text(user_query, messages)
+    bundle = build_source_bundle(user_query, messages)
+    source_text = bundle.text
     lowered = (user_query or "").lower()
     is_placeholder = any(marker.lower() in lowered for marker in PLACEHOLDER_MARKERS)
     factual_subject = any(kw.lower() in lowered for kw in FACTUAL_SUBJECT_KEYWORDS) or bool(
@@ -153,7 +182,77 @@ def assess_generation_request(
         requires_source=requires_source,
         enforce_numeric_grounding=factual_subject and not is_placeholder,
         question=question,
+        source_origin=bundle.origin,
     )
+
+
+def build_source_bundle(
+    user_query: str = "", messages: Optional[List[Dict[str, Any]]] = None
+) -> SourceBundle:
+    """Binds the grounding source for the CURRENT turn only.
+
+    Prior user turns are only consulted when the current turn explicitly refers
+    back to earlier material (continuation markers). This prevents a source
+    supplied for an earlier deck from grounding fabricated numbers in a later,
+    unrelated generation request.
+    """
+    query = (user_query or "").strip()
+    user_turns = [
+        m for m in (messages or [])
+        if isinstance(m, dict) and m.get("role") == "user"
+    ]
+    uses_prior = any(marker in query for marker in CONTINUATION_MARKERS)
+
+    if uses_prior:
+        text = extract_source_text(user_query, messages)
+    else:
+        text = query
+
+    origin = "none"
+    if _has_substantive_source(text):
+        origin = "conversation" if uses_prior else "current_turn"
+
+    return SourceBundle(text=text, origin=origin, turn_count=len(user_turns))
+
+
+def _element_text(el: Any) -> List[str]:
+    parts: List[str] = []
+    text_content = getattr(el, "text_content", None)
+    if text_content is not None:
+        plain = getattr(text_content, "plain_text", None)
+        if plain:
+            parts.append(str(plain))
+    for child in getattr(el, "children", None) or []:
+        parts.extend(_element_text(child))
+    return parts
+
+
+def collect_ir_text(slides: Optional[List[Any]]) -> str:
+    """Collect the visible text of a list of slides from their committed IR."""
+    parts: List[str] = []
+    for slide in slides or []:
+        for el in getattr(slide, "elements", None) or []:
+            parts.extend(_element_text(el))
+    return "\n".join(part for part in parts if part and part.strip())
+
+
+def data_claim_numbers(text: str, source_text: str) -> List[str]:
+    """Unsupported numeric DATA claims (units/percent/uncertainty/comparator).
+
+    Structural numerals (slide kickers like "02 / CONTENT", ordinal step markers,
+    years) carry no unit and are intentionally ignored so IR-wide post-validation
+    does not raise false positives.
+    """
+    unsupported: List[str] = []
+    for token in parse_numeric_tokens(text or ""):
+        if not (token.percent or token.unit or token.uncertainty or token.comparator):
+            continue
+        if check_token_in_raw_text(token, source_text or ""):
+            continue
+        raw = token.raw_text.strip()
+        if raw and raw not in unsupported:
+            unsupported.append(raw)
+    return unsupported
 
 
 def collect_generation_text(arguments: Dict[str, Any]) -> str:
