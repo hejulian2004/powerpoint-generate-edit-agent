@@ -57,6 +57,211 @@ const LAYOUT_PRESETS = [
 
 const COLOR_SWATCHES = DEFAULT_COLOR_SWATCHES
 
+interface CommitNumberInputProps {
+  value: number
+  onCommit: (value: number) => void
+  min?: number
+  max?: number
+  fallback?: number
+  className: string
+}
+
+const CommitNumberInput: React.FC<CommitNumberInputProps> = ({
+  value,
+  onCommit,
+  min,
+  max,
+  fallback,
+  className
+}) => {
+  const [draft, setDraft] = useState(String(Math.round(value)))
+  const focusedRef = useRef(false)
+  const draftRef = useRef(String(Math.round(value)))
+
+  useEffect(() => {
+    if (!focusedRef.current) {
+      const next = String(Math.round(value))
+      draftRef.current = next
+      setDraft(next)
+    }
+  }, [value])
+
+  const commit = () => {
+    focusedRef.current = false
+    const parsed = parseFloat(draftRef.current)
+    const next = Number.isFinite(parsed) ? parsed : fallback ?? value
+    if (next === value) return
+    onCommit(next)
+  }
+
+  return (
+    <input
+      type="number"
+      min={min}
+      max={max}
+      value={draft}
+      onFocus={() => {
+        focusedRef.current = true
+      }}
+      onChange={(e) => {
+        focusedRef.current = true
+        draftRef.current = e.target.value
+        setDraft(e.target.value)
+      }}
+      onBlur={commit}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter') {
+          e.preventDefault()
+          ;(e.target as HTMLInputElement).blur()
+        }
+      }}
+      className={className}
+    />
+  )
+}
+
+interface CommitTextInputProps {
+  value: string
+  onCommit: (value: string) => void
+  className: string
+}
+
+const CommitTextInput: React.FC<CommitTextInputProps> = ({ value, onCommit, className }) => {
+  const [draft, setDraft] = useState(value)
+  const focusedRef = useRef(false)
+  const draftRef = useRef(value)
+
+  useEffect(() => {
+    if (!focusedRef.current) {
+      draftRef.current = value
+      setDraft(value)
+    }
+  }, [value])
+
+  const commit = () => {
+    focusedRef.current = false
+    if (draftRef.current === value) return
+    onCommit(draftRef.current)
+  }
+
+  return (
+    <input
+      type="text"
+      value={draft}
+      onFocus={() => {
+        focusedRef.current = true
+      }}
+      onChange={(e) => {
+        focusedRef.current = true
+        draftRef.current = e.target.value
+        setDraft(e.target.value)
+      }}
+      onBlur={commit}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter') {
+          e.preventDefault()
+          ;(e.target as HTMLInputElement).blur()
+        }
+      }}
+      className={className}
+    />
+  )
+}
+
+interface CommitColorInputProps {
+  value: string
+  onCommit: (value: string) => void
+  className: string
+}
+
+const CommitColorInput: React.FC<CommitColorInputProps> = ({ value, onCommit, className }) => {
+  const [draft, setDraft] = useState(value)
+  const focusedRef = useRef(false)
+  const draftRef = useRef(value)
+
+  useEffect(() => {
+    if (!focusedRef.current) {
+      draftRef.current = value
+      setDraft(value)
+    }
+  }, [value])
+
+  return (
+    <input
+      type="color"
+      value={safeHexColor(draft, '#000000')}
+      onFocus={() => {
+        focusedRef.current = true
+      }}
+      onChange={(e) => {
+        focusedRef.current = true
+        draftRef.current = e.target.value
+        setDraft(e.target.value)
+      }}
+      onBlur={() => {
+        focusedRef.current = false
+        if (safeHexColor(draftRef.current, '#000000') === safeHexColor(value, '#000000')) return
+        onCommit(draftRef.current)
+      }}
+      className={className}
+    />
+  )
+}
+
+interface CommitSliderProps {
+  value: number
+  min: number
+  max: number
+  onCommit: (value: number) => void
+  className: string
+}
+
+const CommitSlider: React.FC<CommitSliderProps> = ({ value, min, max, onCommit, className }) => {
+  const [draft, setDraft] = useState(value)
+  const draftRef = useRef(value)
+  const draggingRef = useRef(false)
+
+  useEffect(() => {
+    if (!draggingRef.current) {
+      draftRef.current = value
+      setDraft(value)
+    }
+  }, [value])
+
+  const commit = () => {
+    if (!draggingRef.current) return
+    draggingRef.current = false
+    if (draftRef.current === value) return
+    onCommit(draftRef.current)
+  }
+
+  return (
+    <input
+      type="range"
+      min={min}
+      max={max}
+      value={draft}
+      onPointerDown={() => {
+        draggingRef.current = true
+      }}
+      onChange={(e) => {
+        draggingRef.current = true
+        const next = parseFloat(e.target.value) || 0
+        draftRef.current = next
+        setDraft(next)
+      }}
+      onPointerUp={commit}
+      onKeyUp={(e) => {
+        if (e.key.startsWith('Arrow')) {
+          commit()
+        }
+      }}
+      onBlur={commit}
+      className={className}
+    />
+  )
+}
+
 export const PropertyPanel: React.FC = () => {
   const {
     getActiveSlide,
@@ -407,37 +612,37 @@ export const PropertyPanel: React.FC = () => {
         <div className="grid grid-cols-2 gap-2">
           <div className="flex items-center bg-subtle border border-line-strong rounded-lg px-2.5 py-1.5 focus-within:border-blue-500 transition-colors">
             <span className="text-[11px] text-muted w-5 font-tabular font-medium">X</span>
-            <input
-              type="number"
+            <CommitNumberInput
               value={Math.round(elem.x)}
-              onChange={(e) => handleUpdate({ x: parseFloat(e.target.value) || 0 })}
+              fallback={0}
+              onCommit={(v) => handleUpdate({ x: v })}
               className="w-full bg-transparent text-xs text-main font-tabular focus:outline-none font-medium"
             />
           </div>
           <div className="flex items-center bg-subtle border border-line-strong rounded-lg px-2.5 py-1.5 focus-within:border-blue-500 transition-colors">
             <span className="text-[11px] text-muted w-5 font-tabular font-medium">Y</span>
-            <input
-              type="number"
+            <CommitNumberInput
               value={Math.round(elem.y)}
-              onChange={(e) => handleUpdate({ y: parseFloat(e.target.value) || 0 })}
+              fallback={0}
+              onCommit={(v) => handleUpdate({ y: v })}
               className="w-full bg-transparent text-xs text-main font-tabular focus:outline-none font-medium"
             />
           </div>
           <div className="flex items-center bg-subtle border border-line-strong rounded-lg px-2.5 py-1.5 focus-within:border-blue-500 transition-colors">
             <span className="text-[11px] text-muted w-5 font-tabular font-medium">宽</span>
-            <input
-              type="number"
+            <CommitNumberInput
               value={Math.round(elem.width)}
-              onChange={(e) => handleUpdate({ width: parseFloat(e.target.value) || 10 })}
+              fallback={10}
+              onCommit={(v) => handleUpdate({ width: v })}
               className="w-full bg-transparent text-xs text-main font-tabular focus:outline-none font-medium"
             />
           </div>
           <div className="flex items-center bg-subtle border border-line-strong rounded-lg px-2.5 py-1.5 focus-within:border-blue-500 transition-colors">
             <span className="text-[11px] text-muted w-5 font-tabular font-medium">高</span>
-            <input
-              type="number"
+            <CommitNumberInput
               value={Math.round(elem.height)}
-              onChange={(e) => handleUpdate({ height: parseFloat(e.target.value) || 10 })}
+              fallback={10}
+              onCommit={(v) => handleUpdate({ height: v })}
               className="w-full bg-transparent text-xs text-main font-tabular focus:outline-none font-medium"
             />
           </div>
@@ -542,12 +747,12 @@ export const PropertyPanel: React.FC = () => {
                 >
                   -
                 </button>
-                <input
-                  type="number"
-                  min="10"
-                  max="120"
+                <CommitNumberInput
                   value={Math.round(currentFontSize)}
-                  onChange={(e) => handleUpdate({ font_size: parseFloat(e.target.value) || 16 })}
+                  min={10}
+                  max={120}
+                  fallback={16}
+                  onCommit={(v) => handleUpdate({ font_size: v })}
                   className="w-14 bg-subtle border border-line-strong rounded px-1.5 py-1 text-xs text-main font-tabular font-medium text-center focus:outline-none focus:border-blue-500"
                 />
                 <button
@@ -639,17 +844,15 @@ export const PropertyPanel: React.FC = () => {
             <span className="text-[11px] text-muted font-medium">文字颜色 (Font Color)</span>
             <div className="flex items-center gap-2">
               <div className="relative w-8 h-8 rounded-lg overflow-hidden border border-line-strong shrink-0 shadow-xs">
-                <input
-                  type="color"
-                  value={safeHexColor(currentFontColor, '#0F172A')}
-                  onChange={(e) => handleUpdate({ font_color: e.target.value })}
+                <CommitColorInput
+                  value={currentFontColor}
+                  onCommit={(v) => handleUpdate({ font_color: v })}
                   className="absolute -inset-2 w-12 h-12 cursor-pointer bg-transparent border-0"
                 />
               </div>
-              <input
-                type="text"
+              <CommitTextInput
                 value={currentFontColor}
-                onChange={(e) => handleUpdate({ font_color: e.target.value })}
+                onCommit={(v) => handleUpdate({ font_color: v })}
                 className="flex-1 bg-subtle border border-line-strong rounded-lg px-2.5 py-1.5 text-xs text-main font-tabular font-medium focus:outline-none focus:border-blue-500"
               />
             </div>
@@ -684,7 +887,18 @@ export const PropertyPanel: React.FC = () => {
               value={localText}
               onChange={(e) => {
                 setLocalText(e.target.value)
-                handleUpdate({ text: e.target.value })
+              }}
+              onBlur={() => {
+                if (localText !== plainText) {
+                  handleUpdate({ text: localText })
+                }
+              }}
+              onKeyDown={(e) => {
+                if (e.key === 'Escape') {
+                  e.stopPropagation()
+                  setLocalText(plainText)
+                  ;(e.target as HTMLTextAreaElement).blur()
+                }
               }}
               rows={3}
               placeholder="输入卡片或段落文本内容..."
@@ -708,17 +922,15 @@ export const PropertyPanel: React.FC = () => {
               <span className="text-[11px] text-muted block font-medium">图元填充色</span>
               <div className="flex items-center gap-2">
                 <div className="relative w-8 h-8 rounded-lg overflow-hidden border border-line-strong shrink-0 shadow-xs">
-                  <input
-                    type="color"
-                    value={safeHexColor(elem.style?.fill?.color, '#F8FAFC')}
-                    onChange={(e) => handleUpdate({ fill_color: e.target.value })}
+                  <CommitColorInput
+                    value={elem.style?.fill?.color || themeColors.surface.subtle}
+                    onCommit={(v) => handleUpdate({ fill_color: v })}
                     className="absolute -inset-2 w-12 h-12 cursor-pointer bg-transparent border-0"
                   />
                 </div>
-                <input
-                  type="text"
+                <CommitTextInput
                   value={elem.style?.fill?.color || themeColors.surface.subtle}
-                  onChange={(e) => handleUpdate({ fill_color: e.target.value })}
+                  onCommit={(v) => handleUpdate({ fill_color: v })}
                   className="flex-1 bg-subtle border border-line-strong rounded-lg px-2.5 py-1.5 text-xs text-main font-tabular font-medium focus:outline-none focus:border-blue-500"
                 />
               </div>
@@ -730,25 +942,23 @@ export const PropertyPanel: React.FC = () => {
             <span className="text-[11px] text-muted block font-medium">边框描边与宽度</span>
             <div className="flex items-center gap-2">
               <div className="relative w-8 h-8 rounded-lg overflow-hidden border border-line-strong shrink-0 shadow-xs">
-                <input
-                  type="color"
-                  value={safeHexColor(elem.style?.border?.color, '#CBD5E1')}
-                  onChange={(e) => handleUpdate({ border_color: e.target.value })}
+                <CommitColorInput
+                  value={elem.style?.border?.color || themeColors.border.strong}
+                  onCommit={(v) => handleUpdate({ border_color: v })}
                   className="absolute -inset-2 w-12 h-12 cursor-pointer bg-transparent border-0"
                 />
               </div>
-              <input
-                type="text"
+              <CommitTextInput
                 value={elem.style?.border?.color || themeColors.border.strong}
-                onChange={(e) => handleUpdate({ border_color: e.target.value })}
+                onCommit={(v) => handleUpdate({ border_color: v })}
                 className="flex-1 bg-subtle border border-line-strong rounded-lg px-2 py-1.5 text-xs text-main font-tabular font-medium focus:outline-none focus:border-blue-500"
               />
-              <input
-                type="number"
-                min="0"
-                max="16"
+              <CommitNumberInput
                 value={elem.style?.border?.width ?? 1}
-                onChange={(e) => handleUpdate({ border_width: parseFloat(e.target.value) || 0 })}
+                min={0}
+                max={16}
+                fallback={0}
+                onCommit={(v) => handleUpdate({ border_width: v })}
                 className="w-14 bg-subtle border border-line-strong rounded-lg px-2 py-1.5 text-xs text-main font-tabular font-medium text-center focus:outline-none focus:border-blue-500"
               />
               <span className="text-[10px] text-muted font-medium">px</span>
@@ -763,20 +973,19 @@ export const PropertyPanel: React.FC = () => {
                 <span className="font-tabular text-main font-semibold">{currentRadius}px</span>
               </div>
               <div className="flex items-center gap-2">
-                <input
-                  type="range"
-                  min="0"
-                  max="48"
+                <CommitSlider
                   value={currentRadius}
-                  onChange={(e) => handleUpdate({ radius: parseFloat(e.target.value) || 0 })}
+                  min={0}
+                  max={48}
+                  onCommit={(v) => handleUpdate({ radius: v })}
                   className="w-full accent-inverted bg-line h-1.5 rounded-lg cursor-pointer"
                 />
-                <input
-                  type="number"
-                  min="0"
-                  max="48"
+                <CommitNumberInput
                   value={currentRadius}
-                  onChange={(e) => handleUpdate({ radius: parseFloat(e.target.value) || 0 })}
+                  min={0}
+                  max={48}
+                  fallback={0}
+                  onCommit={(v) => handleUpdate({ radius: v })}
                   className="w-12 bg-subtle border border-line-strong rounded px-1.5 py-0.5 text-xs text-main font-tabular font-medium text-center focus:outline-none"
                 />
               </div>
@@ -790,12 +999,11 @@ export const PropertyPanel: React.FC = () => {
               <span className="font-tabular text-main font-semibold">{currentOpacity}%</span>
             </div>
             <div className="flex items-center gap-2">
-              <input
-                type="range"
-                min="10"
-                max="100"
+              <CommitSlider
                 value={currentOpacity}
-                onChange={(e) => handleUpdate({ opacity: (parseFloat(e.target.value) || 100) / 100.0 })}
+                min={10}
+                max={100}
+                onCommit={(v) => handleUpdate({ opacity: v / 100.0 })}
                 className="w-full accent-inverted bg-line h-1.5 rounded-lg cursor-pointer"
               />
               <span className="text-xs font-tabular text-muted font-semibold w-12 text-right">{currentOpacity}%</span>

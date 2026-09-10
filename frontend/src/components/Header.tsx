@@ -12,12 +12,35 @@ export const Header: React.FC = () => {
     canRedo,
     wsConnected,
     sessionId,
+    mutationStatus,
+    pendingMutations,
     triggerUndo,
     triggerRedo,
     addNewSlide,
     setSettingsOpen,
     setPptspecModalOpen
   } = usePPTStore()
+
+  const pendingCount = pendingMutations.length
+  const syncFailed = mutationStatus === 'failed' || mutationStatus === 'rolled_back'
+  const syncLabel = syncFailed
+    ? 'SYNC FAILED'
+    : !wsConnected && pendingCount > 0
+    ? `OFFLINE · ${pendingCount}`
+    : pendingCount > 0
+    ? `SYNC · ${pendingCount}`
+    : wsConnected
+    ? 'LIVE'
+    : 'OFFLINE'
+  const syncDot = syncFailed
+    ? 'bg-rose-500 shadow-[0_0_6px_rgba(244,63,94,0.5)]'
+    : !wsConnected && pendingCount > 0
+    ? 'bg-amber-500 shadow-[0_0_6px_rgba(245,158,11,0.5)] animate-pulse'
+    : pendingCount > 0
+    ? 'bg-amber-400 shadow-[0_0_6px_rgba(245,158,11,0.4)]'
+    : wsConnected
+    ? 'bg-emerald-500 shadow-[0_0_6px_rgba(16,185,129,0.5)]'
+    : 'bg-line-focus'
 
   const fileInputRef = useRef<HTMLInputElement>(null)
 
@@ -146,13 +169,9 @@ export const Header: React.FC = () => {
         </button>
 
         <div className="flex items-center gap-1.5 pl-2.5 border-l border-line">
-          <span
-            className={`w-1.5 h-1.5 rounded-full ${
-              wsConnected ? 'bg-emerald-500 shadow-[0_0_6px_rgba(16,185,129,0.5)]' : 'bg-line-focus'
-            }`}
-          />
+          <span className={`w-1.5 h-1.5 rounded-full ${syncDot}`} />
           <span className="text-[11px] text-muted font-tabular font-medium">
-            {wsConnected ? 'LIVE' : 'OFFLINE'}
+            {syncLabel}
           </span>
         </div>
       </div>

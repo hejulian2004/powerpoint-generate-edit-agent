@@ -16,11 +16,12 @@ export function collectSlideCandidates(slide: SlideBounds): SnapCandidate[] {
 
 export function collectElementCandidates(
   elements: ReadonlyArray<{ id: string; x: number; y: number; width: number; height: number }>,
-  movingId: string
+  movingIds: string | ReadonlyArray<string>
 ): SnapCandidate[] {
+  const excluded = new Set(typeof movingIds === 'string' ? [movingIds] : movingIds)
   const result: SnapCandidate[] = []
   for (const el of elements) {
-    if (el.id === movingId) continue
+    if (excluded.has(el.id)) continue
     result.push({
       id: el.id,
       bounds: { x: el.x, y: el.y, width: el.width, height: el.height }
@@ -32,7 +33,7 @@ export function collectElementCandidates(
 export function collectSnapCandidates(
   slide: SlideBounds,
   siblingElements: ReadonlyArray<{ id: string; x: number; y: number; width: number; height: number }>,
-  movingId: string
+  movingIds: string | ReadonlyArray<string>
 ): SnapCandidate[] {
-  return [...collectSlideCandidates(slide), ...collectElementCandidates(siblingElements, movingId)]
+  return [...collectSlideCandidates(slide), ...collectElementCandidates(siblingElements, movingIds)]
 }
