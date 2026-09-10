@@ -53,6 +53,7 @@
   - 挂起确认绑定 `document_epoch` + `expected_revision`；导入 / PPTSpec 生成 / 检查点恢复会轮换 epoch 并清空挂起确认。
 - **锁粒度**：`session.mutation_lock` 仅由 MutationGateway 在实际写入时短暂持有；LLM 规划/评审期间不持锁，GUI 拖拽、撤销、直编不被慢模型阻塞。
 - **质量入口统一**：所有布局质量调用走 `backend/quality/`（`QualityService` + `QualityIssue`/`QualityReport`）；底层 `eval/`（SlideIR）与 `evaluation/`（LayoutSpec）保持独立实现。
+- **生成真实性门控**：数据型聊天请求无来源时先追问（`backend/agent/grounding.py`）；有来源时生成数字必须可回溯，禁止编造。
 - **CORS 白名单**：仅允许 `CORS_ORIGINS` 配置的来源（默认本地 Vite/Tauri）；`"*"` 需显式配置且自动关闭 credentials。
 
 ---

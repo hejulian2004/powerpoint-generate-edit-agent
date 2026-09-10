@@ -70,6 +70,8 @@ class PPTAgentState(TypedDict, total=False):
     confirmed_tool_ids: List[str]
     subagent_memories: Dict[str, Any]
     changed_slide_ids: List[str]
+    grounding: Optional[Dict[str, Any]]
+    grounding_clarification: Optional[str]
 
 
 # =====================================================================
@@ -190,9 +192,22 @@ async def router_node(state: PPTAgentState, config: RunnableConfig) -> Dict[str,
         # Default action-oriented queries to modify or generate
         intent = "modify_elements" if (pres and len(pres.slides) > 0) else "generate_presentation"
 
+    # Grounding gate: factual deck requests without source material must ask first.
+    grounding: Optional[Dict[str, Any]] = None
+    grounding_clarification: Optional[str] = None
+    if intent == "generate_presentation":
+        from .grounding import assess_generation_request
+
+        assessment = assess_generation_request(user_query, state.get("messages"))
+        grounding = assessment.to_dict()
+        if assessment.requires_source:
+            grounding_clarification = assessment.question
+
     return {
         "intent": intent,
-        "iteration": state.get("iteration", 0) + 1
+        "iteration": state.get("iteration", 0) + 1,
+        "grounding": grounding,
+        "grounding_clarification": grounding_clarification,
     }
 
 
@@ -308,7 +323,8 @@ async def executor_node(state: PPTAgentState, config: RunnableConfig) -> Dict[st
         session=session,
         on_event=on_event,
         conversation_context=state.get("messages"),
-        rework_directive=state.get("rework_directive")
+        rework_directive=state.get("rework_directive"),
+        grounding=state.get("grounding")
     )
 
     # Sync active slide id
@@ -630,6 +646,38 @@ async def mutation_node(state: PPTAgentState, config: RunnableConfig) -> Dict[st
 
     from .mutation_gateway import MutationGateway
     from .subagents.executor import ExecutorSubagent
+    from .grounding import collect_generation_text, unsupported_numbers
+
+    # Grounded generation: block planned content whose numbers are absent from
+    # the user-provided source instead of fabricating facts.
+    grounding = state.get("grounding") or {}
+    source_text = grounding.get("source_text", "")
+    blocked_results: List[Dict[str, Any]] = []
+    unsupported_seen: List[str] = []
+    if grounding.get("enforce_numeric_grounding"):
+        executable_calls = []
+        for call in tool_calls:
+            fn_name = str(call.get("name") or call.get("tool") or "")
+            if fn_name in ("generate_presentation", "generate_slide_layout"):
+                call_text = collect_generation_text(dict(call.get("arguments") or {}))
+                unsupported = unsupported_numbers(call_text, source_text)
+                if unsupported:
+                    for token in unsupported:
+                        if token not in unsupported_seen:
+                            unsupported_seen.append(token)
+                    blocked_results.append({
+                        "tool": fn_name,
+                        "arguments": call.get("arguments"),
+                        "result": {
+                            "success": False,
+                            "error": "unsupported_facts",
+                            "unsupported_numbers": unsupported,
+                            "message": "生成内容包含资料中不存在的数字，已阻止写入以避免编造事实。",
+                        },
+                    })
+                    continue
+            executable_calls.append(call)
+        tool_calls = executable_calls
 
     before_signatures = _slide_signatures(pres)
     batch = await MutationGateway.execute_tool_calls(
@@ -655,14 +703,20 @@ async def mutation_node(state: PPTAgentState, config: RunnableConfig) -> Dict[st
             pres.active_slide_id = pres.slides[0].id
         active_slide_id = pres.active_slide_id
 
-    return {
-        "tool_results": batch.results,
+    result: Dict[str, Any] = {
+        "tool_results": list(batch.results) + blocked_results,
         "execution_plan": [],
         "presentation_version": batch.version,
         "last_target_id": batch.last_target_id,
         "active_slide_id": active_slide_id,
         "changed_slide_ids": changed_slide_ids,
     }
+    if unsupported_seen:
+        result["grounding_clarification"] = (
+            "生成已暂停：以下数字在您提供的资料中没有依据：" + "、".join(unsupported_seen) +
+            "。请补充来源，或明确说明可使用示例/占位数据。"
+        )
+    return result
 
 
 async def content_critic_node(state: PPTAgentState, config: RunnableConfig) -> Dict[str, Any]:
@@ -803,37 +857,50 @@ async def auto_correct_node(state: PPTAgentState, config: RunnableConfig) -> Dic
     from .remediation_runner import RemediationRunner
     from ..eval.remediation import RemediationPlan, FixAction, FixActionType, DefectCategory
 
-    # Reconstruct RemediationPlan from review dict
-    plan_dict = visual_review.get("remediation_plan", {})
-    actions = []
-    for a in plan_dict.get("actions", []):
-        try:
-            actions.append(FixAction(
-                action_type=FixActionType(a["action_type"]),
-                category=DefectCategory(a["category"]),
-                target_ids=a.get("target_ids", []),
-                parameters=a.get("parameters", {}),
-                reason=a.get("reason", ""),
-                priority=a.get("priority", 1),
-                confidence=a.get("confidence", 1.0),
-                source=a.get("source", "geometry_rule")
-            ))
-        except Exception:
-            pass
+    def _plan_from_review(review: Dict[str, Any]) -> RemediationPlan:
+        """Reconstruct a RemediationPlan from a reviewed slide dict."""
+        plan_dict = review.get("remediation_plan", {})
+        actions = []
+        for a in plan_dict.get("actions", []):
+            try:
+                actions.append(FixAction(
+                    action_type=FixActionType(a["action_type"]),
+                    category=DefectCategory(a["category"]),
+                    target_ids=a.get("target_ids", []),
+                    parameters=a.get("parameters", {}),
+                    reason=a.get("reason", ""),
+                    priority=a.get("priority", 1),
+                    confidence=a.get("confidence", 1.0),
+                    source=a.get("source", "geometry_rule")
+                ))
+            except Exception:
+                pass
+        return RemediationPlan(
+            actions=actions,
+            has_critical=plan_dict.get("has_critical", False),
+            summary=plan_dict.get("summary", "")
+        )
 
-    plan = RemediationPlan(
-        actions=actions,
-        has_critical=plan_dict.get("has_critical", False),
-        summary=plan_dict.get("summary", "")
-    )
+    # Deck-level reviews carry per-slide plans; remediate every failed slide.
+    slide_reviews = visual_review.get("slides") or {}
+    targets: List[tuple] = [
+        (slide_id, review)
+        for slide_id, review in slide_reviews.items()
+        if review.get("needs_auto_correction") or review.get("has_critical_defects")
+    ]
+    if not targets and visual_review.get("remediation_plan"):
+        targets = [(visual_review.get("slide_id"), visual_review)]
 
     session = configurable.get("session")
-    # Deck-level reviews aggregate per-slide plans; remediation must target the
-    # slide the aggregated plan actually came from.
-    target_slide_id = visual_review.get("slide_id") or state.get("active_slide_id")
     lock = getattr(session, "mutation_lock", None) if session else None
-    if lock is not None and not lock.locked():
-        async with lock:
+
+    async def _run_remediations() -> List[Dict[str, Any]]:
+        runs: List[Dict[str, Any]] = []
+        for slide_id, review in targets:
+            plan = _plan_from_review(review)
+            if not plan.actions:
+                continue
+            target_slide_id = slide_id or state.get("active_slide_id")
             runner_res = RemediationRunner.apply_plan(
                 pres=pres,
                 history=history,
@@ -842,38 +909,40 @@ async def auto_correct_node(state: PPTAgentState, config: RunnableConfig) -> Dic
                 only_critical=True,
                 on_event=on_event
             )
+            runs.append({"slide_id": target_slide_id, **runner_res})
+        return runs
+
+    if pres is None:
+        runs = []
+    elif lock is not None and not lock.locked():
+        async with lock:
+            runs = await _run_remediations()
     else:
-        runner_res = RemediationRunner.apply_plan(
-            pres=pres,
-            history=history,
-            plan=plan,
-            slide_id=target_slide_id,
-            only_critical=True,
-            on_event=on_event
-        )
+        runs = await _run_remediations()
 
-    for rec in runner_res.get("applied_records", []):
-        tool_results.append({
-            "tool": rec["tool"],
-            "args": rec["args"],
-            "result": rec["result"],
-            "auto_correct": True,
-            "reason": rec["reason"]
-        })
-        if on_event:
-            await _safe_emit(on_event,{
-                "type": "tool_completed",
+    for run in runs:
+        for rec in run.get("applied_records", []):
+            tool_results.append({
                 "tool": rec["tool"],
+                "args": rec["args"],
                 "result": rec["result"],
-                "presentation_version": pres.version if pres else 1
+                "auto_correct": True,
+                "reason": rec["reason"]
             })
+            if on_event:
+                await _safe_emit(on_event,{
+                    "type": "tool_completed",
+                    "tool": rec["tool"],
+                    "result": rec["result"],
+                    "presentation_version": pres.version if pres else 1
+                })
 
-    if runner_res.get("rolled_back") and on_event:
-        await _safe_emit(on_event,{
-            "type": "vision_loop",
-            "status": "rolled_back",
-            "text": runner_res.get("message", "自愈因质量未达标已安全回滚")
-        })
+        if run.get("rolled_back") and on_event:
+            await _safe_emit(on_event,{
+                "type": "vision_loop",
+                "status": "rolled_back",
+                "text": run.get("message", "自愈因质量未达标已安全回滚")
+            })
 
     return {
         "tool_results": tool_results,
@@ -895,8 +964,11 @@ async def summary_node(state: PPTAgentState, config: RunnableConfig) -> Dict[str
     visual_review = state.get("visual_review")
     correction_count = state.get("correction_count", 0)
     user_query = state.get("user_query", "")
+    grounding_clarification = state.get("grounding_clarification")
 
-    if intent == "undo":
+    if grounding_clarification:
+        final_text = grounding_clarification
+    elif intent == "undo":
         final_text = "已为您成功撤销上一步修改，画布已恢复至先前的状态快照。"
     elif intent == "chat" and not tool_results:
         final_text = "你好！我是你的 PPT 协同设计架构师。我支持通过自然语言一键生成多页精美演示文稿、自动排版时间线/指标卡/对比栏、智能调色与图元微调。请告诉我你的设计需求！"
@@ -1039,6 +1111,8 @@ def _build_llm_system_prompt(pres: Optional[PresentationIR], memory: Optional[Ag
 # =====================================================================
 
 def should_route_planner(state: PPTAgentState) -> str:
+    if state.get("grounding_clarification"):
+        return "summary_node"
     if state.get("intent") == "chat":
         return "summary_node"
     return "planner_node"

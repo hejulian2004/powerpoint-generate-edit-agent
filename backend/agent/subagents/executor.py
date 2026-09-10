@@ -130,7 +130,8 @@ class ExecutorSubagent:
         session: Optional[Any] = None,
         on_event: Optional[Callable] = None,
         conversation_context: Optional[List[Dict[str, Any]]] = None,
-        rework_directive: Optional[Dict[str, Any]] = None
+        rework_directive: Optional[Dict[str, Any]] = None,
+        grounding: Optional[Dict[str, Any]] = None
     ) -> ExecutorPlan:
         """Builds an execution plan (tool calls) without mutating the presentation."""
         # 1. Broadcast lifecycle start: Main agent pauses waiting for executor subagent
@@ -162,6 +163,15 @@ class ExecutorSubagent:
             )
             if anchor_text:
                 system_prompt += f"\n\n【历史会话压缩摘要】:\n{anchor_text}"
+            if grounding and grounding.get("enforce_numeric_grounding"):
+                source_excerpt = (grounding.get("source_text") or "").strip()[:2000]
+                system_prompt += (
+                    "\n\n【真实性约束 (硬性)】: 只允许使用用户在对话中提供的数字与事实，"
+                    "严禁编造、外推或自行补充任何数值、指标、百分比、时间与专有名词；"
+                    "资料不足时改用定性表述，不要调用包含臆造数字的工具参数。"
+                )
+                if source_excerpt:
+                    system_prompt += f"\n【用户资料原文】:\n{source_excerpt}"
             # Combine plan and query into concise execution directive
             exec_prompt = f"任务意图: {intent}\n规划要求: {plan_desc}\n用户输入: {user_query}{rework_desc}"
             messages = [{"role": "system", "content": system_prompt}]

@@ -69,7 +69,7 @@ plan_critic_node (PlanCriticSubagent blind audit)
                 │
                 ▼
           vision_critic_node (VisualCriticSubagent 5-dimension aesthetic critique)
-                ├── Critical Defects ──> auto_correct_node (Safe layout auto-repair)
+                ├── Critical Defects ──> auto_correct_node (repairs every failed slide)
                 └── Healthy / Max Iterations
                       │
                       ▼
@@ -110,6 +110,10 @@ plan_critic_node (PlanCriticSubagent blind audit)
 7. **Deck-Level Review & Rework Directives**:
    - `mutation_node` reports `changed_slide_ids` (content fingerprints); critics audit every changed non-empty slide, aggregating a deck review with per-slide results.
    - A Content Critic rejection emits `rework_directive` (slide_id, target_ids, defects, recommendations); the Executor must perform precise text edits and must never regenerate the whole deck.
+   - `auto_correct_node` re-runs remediation for **every** failed slide in the deck review (not just the aggregated primary slide).
+8. **Grounded Generation (Truthfulness Gate)**:
+   - Data-heavy chat requests (财报/数据/指标/报告 etc.) without user-provided source material must ask for the source first (`backend/agent/grounding.py`); no deck is generated and no facts are invented.
+   - When sources are supplied, the Executor receives a hard no-fabrication directive plus the raw source. `mutation_node` blocks any `generate_presentation` / `generate_slide_layout` call whose numeric claims are absent from the source, returning a clarification listing the unsupported numbers.
 
 ---
 
