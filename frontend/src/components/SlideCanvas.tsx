@@ -15,18 +15,71 @@ import {
 import { snapMove, snapResize, clampResizeAxis, SNAP_SCREEN_PX, RELEASE_SCREEN_PX } from '../editor/snapping/snapEngine'
 import { collectSnapCandidates } from '../editor/snapping/candidates'
 import type { Bounds, SnapCandidate, SnapGuide, SnapSession, SnapThresholds, ResizeHandle } from '../editor/snapping/types'
+import type { ElementIR } from '../types/ppt'
+import {
+  cloneElement,
+  findElementPath,
+  getBounds,
+  resizeElement,
+  translateElement,
+  unionBounds
+} from '../editor/geometry/adapter'
 
 const MIN_SIZE = 24
 
+interface DragItem {
+  id: string
+  initial: ElementIR
+}
+
 interface DragState {
   mode: 'move' | 'resize'
-  elemId: string
   startX: number
   startY: number
-  initialElem: Bounds
+  union: Bounds
+  items: DragItem[]
   handle?: ResizeHandle
   snapCandidates: SnapCandidate[]
 }
+
+const collectElements = (elements: ElementIR[], ids: Set<string>): ElementIR[] => {
+  const result: ElementIR[] = []
+  for (const el of elements) {
+    if (ids.has(el.id)) result.push(el)
+    if (el.type === 'group' && el.children) {
+      result.push(...collectElements(el.children, ids))
+    }
+  }
+  return result
+}
+
+const resolveScopeElements = (elements: ElementIR[], scope: string[]): ElementIR[] => {
+  let current = elements
+  for (const groupId of scope) {
+    const group = current.find((el) => el.id === groupId)
+    if (!group || group.type !== 'group') return current
+    current = group.children
+  }
+  return current
+}
+
+const geometryPayload = (draft: ElementIR): Record<string, number> => {
+  if (draft.type === 'connector') {
+    return {
+      start_x: draft.start_x,
+      start_y: draft.start_y,
+      end_x: draft.end_x,
+      end_y: draft.end_y
+    }
+  }
+  return { x: draft.x, y: draft.y, width: draft.width, height: draft.height }
+}
+
+const boundsChanged = (before: Bounds, after: Bounds): boolean =>
+  Math.abs(after.x - before.x) > 0.5 ||
+  Math.abs(after.y - before.y) > 0.5 ||
+  Math.abs(after.width - before.width) > 0.5 ||
+  Math.abs(after.height - before.height) > 0.5
 
 const safeHexColor = (col?: string, fallback = '#0F172A') => {
   if (!col) return fallback
@@ -40,12 +93,11 @@ const safeHexColor = (col?: string, fallback = '#0F172A') => {
 export const SlideCanvas: React.FC = () => {
   const {
     getActiveSlide,
+    getSelectedElement,
     zoom,
     setZoom,
-    selectedElementId,
     selectedElementIds,
-    setSelectedElementId,
-    setSelectedElementIds,
+    selectionScope,
     clearSelection,
     deleteSelectedElement,
     deleteSelectedElements,
@@ -58,24 +110,30 @@ export const SlideCanvas: React.FC = () => {
     snapEnabled,
     showSmartGuides,
     updateElementDirect,
+    updateElementsDirect,
     editingElementId,
-    setEditingElementId
+    setEditingElementId,
+    enterGroup
   } = usePPTStore()
 
   const slide = getActiveSlide()
   const canvasRef = useRef<HTMLDivElement>(null)
   const [dragState, setDragState] = useState<DragState | null>(null)
   const [alignmentGuides, setAlignmentGuides] = useState<SnapGuide[]>([])
+  const [draftMap, setDraftMap] = useState<Map<string, ElementIR> | null>(null)
+  const draftMapRef = useRef<Map<string, ElementIR> | null>(null)
   const snapSessionRef = useRef<SnapSession>({})
-  const [, setTick] = useState(0) // Force local re-render during smooth drag
 
   const isMultiSelected = selectedElementIds.length > 1
-  const selectedElement = !isMultiSelected && slide
-    ? slide.elements.find((e) => e.id === selectedElementId) || null
-    : null
+  const selectedElement = isMultiSelected ? null : getSelectedElement()
   const selectedGroup = selectedElementIds.length === 1 && selectedElement?.type === 'group'
     ? selectedElement
     : null
+
+  const applyDrafts = useCallback((drafts: Map<string, ElementIR> | null) => {
+    draftMapRef.current = drafts
+    setDraftMap(drafts)
+  }, [])
 
   // Box (marquee) selection in slide coordinates
   const boxSelectRef = useRef<{ startX: number; startY: number; curX: number; curY: number; additive: boolean } | null>(null)
@@ -109,10 +167,12 @@ export const SlideCanvas: React.FC = () => {
       const h = Math.abs(s.curY - s.startY)
       if (w < 5 && h < 5) return
 
-      const hits = slide.elements
-        .filter(
-          (el) => el.x < x1 + w && el.x + el.width > x1 && el.y < y1 + h && el.y + el.height > y1
-        )
+      const candidates = resolveScopeElements(slide.elements, selectionScope)
+      const hits = candidates
+        .filter((el) => {
+          const b = getBounds(el)
+          return b.x < x1 + w && b.x + b.width > x1 && b.y < y1 + h && b.y + b.height > y1
+        })
         .map((el) => el.id)
 
       const base = s.additive ? usePPTStore.getState().selectedElementIds : []
@@ -128,7 +188,7 @@ export const SlideCanvas: React.FC = () => {
       window.removeEventListener('mousemove', onMouseMove)
       window.removeEventListener('mouseup', onMouseUp)
     }
-  }, [slide])
+  }, [slide, selectionScope])
 
   const handleBackgroundMouseDown = useCallback((e: React.MouseEvent) => {
     if (!slide || !canvasRef.current || e.button !== 0) return
@@ -136,7 +196,7 @@ export const SlideCanvas: React.FC = () => {
     const p = screenToSlidePoint(e.clientX, e.clientY, rect, slide)
     setEditingElementId(null)
     if (!e.shiftKey) {
-      setSelectedElementIds([])
+      clearSelection()
     }
     boxSelectRef.current = {
       startX: p.x,
@@ -146,23 +206,26 @@ export const SlideCanvas: React.FC = () => {
       additive: e.shiftKey
     }
     setSelectionBox({ x: p.x, y: p.y, width: 0, height: 0 })
-  }, [slide, setEditingElementId, setSelectedElementIds])
+  }, [slide, clearSelection, setEditingElementId])
 
   const handleDeleteSelected = () => {
     deleteSelectedElement()
     setEditingElementId(null)
   }
 
-  // Double click to trigger inline canvas editing
+  // Double click: enter a group scope, or start inline text editing.
   const handleElementDoubleClick = useCallback((elemId: string) => {
     if (!slide) return
-    const elem = slide.elements.find((el) => el.id === elemId)
-    if (!elem) return
-    setSelectedElementId(elemId)
-    if (elem.type === 'text' || elem.type === 'shape') {
+    const path = findElementPath(slide.elements, elemId)
+    if (!path) return
+    if (path.element.type === 'group') {
+      enterGroup(path.element.id)
+      return
+    }
+    if (path.element.type === 'text' || path.element.type === 'shape') {
       setEditingElementId(elemId)
     }
-  }, [slide, setSelectedElementId, setEditingElementId])
+  }, [slide, enterGroup, setEditingElementId])
 
   const handleCommitInlineEdit = useCallback((elemId: string, text: string) => {
     updateElementDirect(elemId, { text })
@@ -173,52 +236,64 @@ export const SlideCanvas: React.FC = () => {
     setEditingElementId(null)
   }, [setEditingElementId])
 
-  // 1. Mouse down on any element -> Select & Start Dragging Move
+  // 1. Mouse down on any element -> move the whole active selection.
   const handleElementMouseDown = useCallback((elemId: string, e: React.MouseEvent) => {
     if (!slide) return
-    const elem = slide.elements.find((el) => el.id === elemId)
-    if (!elem) return
+    const state = usePPTStore.getState()
+    const selectedIds = state.selectedElementIds.includes(elemId)
+      ? state.selectedElementIds
+      : [elemId]
 
-    const siblings = slide.elements
-    const snapCandidates = collectSnapCandidates(slide, siblings, elemId)
+    const movingElements = collectElements(slide.elements, new Set(selectedIds)).filter(
+      (el) => !el.locked
+    )
+    if (movingElements.length === 0) return
 
-    setSelectedElementId(elemId)
+    const initialUnion = unionBounds(movingElements)
+    if (!initialUnion) return
+
+    const snapCandidates = collectSnapCandidates(
+      slide,
+      slide.elements.map((el) => ({ id: el.id, ...getBounds(el) })),
+      selectedIds
+    )
+
     snapSessionRef.current = {}
+    applyDrafts(null)
     setDragState({
       mode: 'move',
-      elemId,
       startX: e.clientX,
       startY: e.clientY,
-      initialElem: {
-        x: elem.x,
-        y: elem.y,
-        width: elem.width,
-        height: elem.height
-      },
+      union: initialUnion,
+      items: movingElements.map((el) => ({ id: el.id, initial: cloneElement(el) })),
       snapCandidates
     })
-  }, [slide, setSelectedElementId, setDragState])
+  }, [slide, applyDrafts])
 
   // 2. Mouse down on 8-direction resize handle
   const handleResizeHandleMouseDown = useCallback((handle: ResizeHandle, e: React.MouseEvent) => {
-    if (!selectedElement) return
-    const snapCandidates = slide ? collectSnapCandidates(slide, slide.elements, selectedElement.id) : []
+    if (!slide) return
+    const selected = usePPTStore.getState().getSelectedElement()
+    if (!selected || selected.locked) return
+
+    const snapCandidates = collectSnapCandidates(
+      slide,
+      slide.elements.map((el) => ({ id: el.id, ...getBounds(el) })),
+      [selected.id]
+    )
+
     snapSessionRef.current = {}
+    applyDrafts(null)
     setDragState({
       mode: 'resize',
-      elemId: selectedElement.id,
       startX: e.clientX,
       startY: e.clientY,
-      initialElem: {
-        x: selectedElement.x,
-        y: selectedElement.y,
-        width: selectedElement.width,
-        height: selectedElement.height
-      },
+      union: getBounds(selected),
+      items: [{ id: selected.id, initial: cloneElement(selected) }],
       handle,
       snapCandidates
     })
-  }, [selectedElement, slide, setDragState])
+  }, [slide, applyDrafts])
 
   // 3. Global Window MouseMove & MouseUp during active Drag or Resize
   useEffect(() => {
@@ -247,18 +322,14 @@ export const SlideCanvas: React.FC = () => {
         slide
       )
 
-      const target = slide.elements.find((el) => el.id === dragState.elemId)
-      if (!target) return
-
       if (dragState.mode === 'move') {
         const rawBounds: Bounds = {
-          x: dragState.initialElem.x + delta.dx,
-          y: dragState.initialElem.y + delta.dy,
-          width: dragState.initialElem.width,
-          height: dragState.initialElem.height
+          x: dragState.union.x + delta.dx,
+          y: dragState.union.y + delta.dy,
+          width: dragState.union.width,
+          height: dragState.union.height
         }
-        // pre-clamp -> snap -> (snapMove only returns in-bounds geometry;
-        // out-of-bounds snap options are ignored so guides stay truthful)
+        // pre-clamp -> snap -> clamp; snapping is based on the selection union
         const preClamped = clampBoundsToSlide(rawBounds, slide)
         const snapped = snapMove(
           preClamped,
@@ -268,40 +339,49 @@ export const SlideCanvas: React.FC = () => {
           thresholds,
           snappingEnabled
         )
-
-        // Clamp after snapping. Geometry stays fractional so the committed
-        // IR coordinate matches the guide position exactly (rounding happens
-        // only in display formatting, never in geometry).
         const finalMove = clampBoundsToSlide(
-          { x: snapped.x, y: snapped.y, width: target.width, height: target.height },
+          {
+            x: snapped.x,
+            y: snapped.y,
+            width: dragState.union.width,
+            height: dragState.union.height
+          },
           slide
         )
-        target.x = finalMove.x
-        target.y = finalMove.y
+        const moveX = finalMove.x - dragState.union.x
+        const moveY = finalMove.y - dragState.union.y
+
+        const drafts = new Map<string, ElementIR>()
+        for (const item of dragState.items) {
+          const draft = cloneElement(item.initial)
+          translateElement(draft, moveX, moveY)
+          drafts.set(item.id, draft)
+        }
+        applyDrafts(drafts)
         setAlignmentGuides(snappingEnabled && showSmartGuides ? snapped.guides : [])
       } else if (dragState.mode === 'resize' && dragState.handle) {
-        const { initialElem, handle } = dragState
+        const { union: initialBounds, handle } = dragState
 
-        let rawX = initialElem.x
-        let rawY = initialElem.y
-        let rawW = initialElem.width
-        let rawH = initialElem.height
+        let rawX = initialBounds.x
+        let rawY = initialBounds.y
+        let rawW = initialBounds.width
+        let rawH = initialBounds.height
 
         if (handle.includes('e')) {
-          rawW = Math.max(MIN_SIZE, initialElem.width + delta.dx)
+          rawW = Math.max(MIN_SIZE, initialBounds.width + delta.dx)
         }
         if (handle.includes('s')) {
-          rawH = Math.max(MIN_SIZE, initialElem.height + delta.dy)
+          rawH = Math.max(MIN_SIZE, initialBounds.height + delta.dy)
         }
         if (handle.includes('w')) {
-          const clamped = Math.min(initialElem.width - MIN_SIZE, delta.dx)
-          rawW = initialElem.width - clamped
-          rawX = initialElem.x + clamped
+          const clamped = Math.min(initialBounds.width - MIN_SIZE, delta.dx)
+          rawW = initialBounds.width - clamped
+          rawX = initialBounds.x + clamped
         }
         if (handle.includes('n')) {
-          const clamped = Math.min(initialElem.height - MIN_SIZE, delta.dy)
-          rawH = initialElem.height - clamped
-          rawY = initialElem.y + clamped
+          const clamped = Math.min(initialBounds.height - MIN_SIZE, delta.dy)
+          rawH = initialBounds.height - clamped
+          rawY = initialBounds.y + clamped
         }
 
         const snapped = snapResize(
@@ -315,9 +395,6 @@ export const SlideCanvas: React.FC = () => {
           MIN_SIZE
         )
 
-        // Clamp snapped geometry using edge-aware clamping so the element
-        // never overflows the slide or shifts its fixed edge. Geometry stays
-        // fractional to match the guide position exactly.
         const isLeft = handle.includes('w')
         const isTop = handle.includes('n')
         const cx = clampResizeAxis(
@@ -334,36 +411,37 @@ export const SlideCanvas: React.FC = () => {
           MIN_SIZE,
           isTop ? 'min' : 'max'
         )
-        target.x = cx.pos
-        target.y = cy.pos
-        target.width = cx.size
-        target.height = cy.size
+
+        const item = dragState.items[0]
+        const draft = cloneElement(item.initial)
+        resizeElement(
+          draft,
+          { x: cx.pos, y: cy.pos, width: cx.size, height: cy.size },
+          handle,
+          MIN_SIZE
+        )
+        applyDrafts(new Map([[item.id, draft]]))
         setAlignmentGuides(snappingEnabled && showSmartGuides ? snapped.guides : [])
       }
-      setTick((t) => t + 1)
     }
 
     const onMouseUp = () => {
-      if (slide) {
-        const target = slide.elements.find((el) => el.id === dragState.elemId)
-        if (target) {
-          const hasMoved =
-            Math.abs(target.x - dragState.initialElem.x) > 0.5 ||
-            Math.abs(target.y - dragState.initialElem.y) > 0.5 ||
-            Math.abs(target.width - dragState.initialElem.width) > 0.5 ||
-            Math.abs(target.height - dragState.initialElem.height) > 0.5
-
-          if (hasMoved) {
-            // Single backend mutation per actual drag/resize; pure clicks never commit to history.
-            updateElementDirect(dragState.elemId, {
-              x: target.x,
-              y: target.y,
-              width: target.width,
-              height: target.height
-            })
+      const drafts = draftMapRef.current
+      if (drafts && drafts.size > 0) {
+        const entries: Array<{ id: string; updates: Record<string, number> }> = []
+        for (const item of dragState.items) {
+          const draft = drafts.get(item.id)
+          if (!draft) continue
+          if (boundsChanged(getBounds(item.initial), getBounds(draft))) {
+            entries.push({ id: item.id, updates: geometryPayload(draft) })
           }
         }
+        if (entries.length > 0) {
+          // Single committed mutation per drag gesture; mouse moves never touch history.
+          updateElementsDirect(entries)
+        }
       }
+      applyDrafts(null)
       snapSessionRef.current = {}
       setAlignmentGuides([])
       setDragState(null)
@@ -376,7 +454,7 @@ export const SlideCanvas: React.FC = () => {
       window.removeEventListener('mousemove', onMouseMove)
       window.removeEventListener('mouseup', onMouseUp)
     }
-  }, [dragState, slide, updateElementDirect, snapEnabled, showSmartGuides])
+  }, [dragState, slide, updateElementsDirect, applyDrafts, snapEnabled, showSmartGuides])
 
   // 4. Drag and Drop from Toolbar onto Canvas
   const handleDragOver = (e: React.DragEvent) => {
@@ -416,7 +494,7 @@ export const SlideCanvas: React.FC = () => {
       className="flex-1 bg-canvas relative flex flex-col items-center justify-center p-8 overflow-hidden select-none"
       onClick={(e) => {
         if (e.target === e.currentTarget) {
-          setSelectedElementId(null)
+          clearSelection()
           setEditingElementId(null)
         }
       }}
@@ -473,6 +551,7 @@ export const SlideCanvas: React.FC = () => {
           editingElementId={editingElementId}
           onCommitInlineEdit={handleCommitInlineEdit}
           onCancelInlineEdit={handleCancelInlineEdit}
+          draftMap={draftMap}
         />
       </div>
 

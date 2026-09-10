@@ -7,6 +7,7 @@ import { usePPTStore } from '../store/usePPTStore'
 import { themeColors } from '../theme/tokens'
 import { AlignmentGuides } from './AlignmentGuides'
 import type { SnapGuide } from '../editor/snapping/types'
+import { canResize, getBounds, unionBounds } from '../editor/geometry/adapter'
 
 interface Props {
   slide: SlideIR
@@ -20,6 +21,7 @@ interface Props {
   editingElementId?: string | null
   onCommitInlineEdit?: (elemId: string, text: string) => void
   onCancelInlineEdit?: () => void
+  draftMap?: Map<string, ElementIR> | null
 }
 
 interface InlineTextEditorProps {
@@ -146,9 +148,10 @@ export const SVGRendererComponent: React.FC<Props> = ({
   selectionBox = null,
   editingElementId = null,
   onCommitInlineEdit,
-  onCancelInlineEdit
+  onCancelInlineEdit,
+  draftMap = null
 }) => {
-  const { selectedElementIds, setSelectedElementId, toggleElementSelection } = usePPTStore()
+  const { selectedElementIds, selectionScope, setSelectedElementId, toggleElementSelection } = usePPTStore()
 
   // Generate unique gradient IDs for this slide
   const renderDefs = () => {
@@ -420,11 +423,32 @@ export const SVGRendererComponent: React.FC<Props> = ({
     )
   }
 
-  const renderElementNode = (elem: ElementIR) => {
+  const renderElementNode = (elem: ElementIR, ancestors: string[]) => {
+    elem = draftMap?.get(elem.id) ?? elem
+    const isInteractive = !isThumbnail &&
+      ancestors.length === selectionScope.length &&
+      ancestors.every((ancestor, index) => ancestor === selectionScope[index])
+    const isScopeGroup = elem.type === 'group' && selectionScope[ancestors.length] === elem.id
     const isSelected = !isThumbnail && selectedElementIds.includes(elem.id)
     const isPrimary = !isThumbnail && selectedElementIds.length === 1 && selectedElementIds[0] === elem.id
     const isEditing = !isThumbnail && editingElementId === elem.id
     const transform = elem.rotation ? `rotate(${elem.rotation} ${elem.x + elem.width / 2} ${elem.y + elem.height / 2})` : undefined
+
+    const handleMouseDown = (e: React.MouseEvent) => {
+      if (isThumbnail) return
+      if (isEditing) {
+        e.stopPropagation()
+        return
+      }
+      if (!isInteractive) return
+      e.stopPropagation()
+      if (e.shiftKey) {
+        toggleElementSelection(elem.id)
+        return
+      }
+      setSelectedElementId(elem.id)
+      onElementMouseDown?.(elem.id, e)
+    }
 
     return (
       <g
@@ -432,39 +456,13 @@ export const SVGRendererComponent: React.FC<Props> = ({
         id={elem.id}
         transform={transform}
         opacity={elem.style.opacity ?? 1.0}
-        className={!isThumbnail ? (isEditing ? 'cursor-text' : 'cursor-move') : undefined}
-        onMouseDown={(e) => {
-          if (!isThumbnail) {
-            if (isEditing) {
-              e.stopPropagation()
-              return
-            }
-            e.stopPropagation()
-            if (e.shiftKey) {
-              toggleElementSelection(elem.id)
-              return
-            }
-            setSelectedElementId(elem.id)
-            onElementMouseDown?.(elem.id, e)
-          }
-        }}
-        onClick={(e) => {
-          if (!isThumbnail) {
-            e.stopPropagation()
-            if (e.shiftKey) return
-            if (isPrimary && (elem.type === 'text' || elem.type === 'shape')) {
-              onElementDoubleClick?.(elem.id, e)
-            } else {
-              setSelectedElementId(elem.id)
-            }
-          }
-        }}
+        className={!isThumbnail ? (isEditing ? 'cursor-text' : isInteractive ? 'cursor-move' : undefined) : undefined}
+        onMouseDown={handleMouseDown}
         onDoubleClick={(e) => {
-          if (!isThumbnail) {
-            e.stopPropagation()
-            setSelectedElementId(elem.id)
-            onElementDoubleClick?.(elem.id, e)
-          }
+          if (isThumbnail || !isInteractive) return
+          e.stopPropagation()
+          setSelectedElementId(elem.id)
+          onElementDoubleClick?.(elem.id, e)
         }}
       >
         {elem.type === 'connector' && renderConnector(elem as ConnectorElementIR)}
@@ -595,101 +593,128 @@ export const SVGRendererComponent: React.FC<Props> = ({
         )}
 
         {elem.type === 'group' && (
-          <g id={`group-content-${elem.id}`} className="group-container">
-            {(elem as GroupElementIR).children?.map((child) => renderElementNode(child))}
-          </g>
+          <>
+            <g
+              id={`group-content-${elem.id}`}
+              className="group-container"
+              style={isScopeGroup ? undefined : { pointerEvents: 'none' }}
+            >
+              {(elem as GroupElementIR).children?.map((child) =>
+                renderElementNode(child, [...ancestors, elem.id])
+              )}
+            </g>
+            {isInteractive && !isScopeGroup && (
+              <rect
+                x={elem.x}
+                y={elem.y}
+                width={elem.width}
+                height={elem.height}
+                fill="transparent"
+                pointerEvents="all"
+              />
+            )}
+          </>
         )}
 
         {/* Precision Architectural Selection Frame & Interactive Resize Handles */}
-        {isSelected && !isThumbnail && (
-          <g>
-            {/* Continuous Hairline Bounding Stroke */}
-            <rect
-              x={elem.x - 1.5}
-              y={elem.y - 1.5}
-              width={elem.width + 3}
-              height={elem.height + 3}
-              fill="none"
-              stroke={isPrimary ? themeColors.content.primary : '#2563EB'}
-              strokeWidth="1.2"
-              strokeDasharray="4,2"
-              pointerEvents="none"
-            />
+        {isSelected && !isThumbnail && (() => {
+          const bounds = getBounds(elem)
+          const showHandles = isPrimary && canResize(elem)
+          return (
+            <g>
+              {/* Continuous Hairline Bounding Stroke */}
+              <rect
+                x={bounds.x - 1.5}
+                y={bounds.y - 1.5}
+                width={bounds.width + 3}
+                height={bounds.height + 3}
+                fill="none"
+                stroke={isPrimary ? themeColors.content.primary : '#2563EB'}
+                strokeWidth="1.2"
+                strokeDasharray="4,2"
+                pointerEvents="none"
+              />
 
-            {/* 8 Interactive Resize Handles (single selection only) */}
-            {isPrimary &&
-              [
-                { id: 'nw', cx: elem.x, cy: elem.y, cursor: 'nwse-resize' },
-                { id: 'n', cx: elem.x + elem.width / 2, cy: elem.y, cursor: 'ns-resize' },
-                { id: 'ne', cx: elem.x + elem.width, cy: elem.y, cursor: 'nesw-resize' },
-                { id: 'e', cx: elem.x + elem.width, cy: elem.y + elem.height / 2, cursor: 'ew-resize' },
-                { id: 'se', cx: elem.x + elem.width, cy: elem.y + elem.height, cursor: 'nwse-resize' },
-                { id: 's', cx: elem.x + elem.width / 2, cy: elem.y + elem.height, cursor: 'ns-resize' },
-                { id: 'sw', cx: elem.x, cy: elem.y + elem.height, cursor: 'nesw-resize' },
-                { id: 'w', cx: elem.x, cy: elem.y + elem.height / 2, cursor: 'ew-resize' },
-              ].map((h) => (
-                <rect
-                  key={h.id}
-                  x={h.cx - 4.5}
-                  y={h.cy - 4.5}
-                  width={9}
-                  height={9}
-                  rx={2}
-                  fill={themeColors.surface.panel}
-                  stroke={themeColors.content.primary}
-                  strokeWidth={1.5}
-                  style={{ cursor: h.cursor }}
-                  onMouseDown={(e) => {
-                    e.stopPropagation()
-                    onResizeHandleMouseDown?.(h.id as any, e)
-                  }}
-                  onClick={(e) => {
-                    e.stopPropagation()
-                  }}
-                />
-              ))}
+              {/* 8 Interactive Resize Handles (single selection only) */}
+              {showHandles &&
+                [
+                  { id: 'nw', cx: bounds.x, cy: bounds.y, cursor: 'nwse-resize' },
+                  { id: 'n', cx: bounds.x + bounds.width / 2, cy: bounds.y, cursor: 'ns-resize' },
+                  { id: 'ne', cx: bounds.x + bounds.width, cy: bounds.y, cursor: 'nesw-resize' },
+                  { id: 'e', cx: bounds.x + bounds.width, cy: bounds.y + bounds.height / 2, cursor: 'ew-resize' },
+                  { id: 'se', cx: bounds.x + bounds.width, cy: bounds.y + bounds.height, cursor: 'nwse-resize' },
+                  { id: 's', cx: bounds.x + bounds.width / 2, cy: bounds.y + bounds.height, cursor: 'ns-resize' },
+                  { id: 'sw', cx: bounds.x, cy: bounds.y + bounds.height, cursor: 'nesw-resize' },
+                  { id: 'w', cx: bounds.x, cy: bounds.y + bounds.height / 2, cursor: 'ew-resize' },
+                ].map((h) => (
+                  <rect
+                    key={h.id}
+                    x={h.cx - 4.5}
+                    y={h.cy - 4.5}
+                    width={9}
+                    height={9}
+                    rx={2}
+                    fill={themeColors.surface.panel}
+                    stroke={themeColors.content.primary}
+                    strokeWidth={1.5}
+                    style={{ cursor: h.cursor }}
+                    onMouseDown={(e) => {
+                      e.stopPropagation()
+                      onResizeHandleMouseDown?.(h.id as any, e)
+                    }}
+                    onClick={(e) => {
+                      e.stopPropagation()
+                    }}
+                  />
+                ))}
 
-            {/* Dimension & Coordinates Tooltip Pill */}
-            {isPrimary && (
-              <g pointerEvents="none">
-                <rect
-                  x={elem.x}
-                  y={elem.y - 24}
-                  width={112}
-                  height={18}
-                  rx={4}
-                  fill={themeColors.surface.inverted}
-                  stroke={themeColors.surface.invertedHover}
-                  strokeWidth={1}
-                />
-                <text
-                  x={elem.x + 56}
-                  y={elem.y - 11}
-                  textAnchor="middle"
-                  fill={themeColors.content.inverted}
-                  fontSize="10px"
-                  fontFamily="'JetBrains Mono', 'SF Mono', Consolas, monospace"
-                  fontWeight="500"
-                >
-                  {Math.round(elem.width)} × {Math.round(elem.height)} px
-                </text>
-              </g>
-            )}
-          </g>
-        )}
+              {/* Dimension & Coordinates Tooltip Pill */}
+              {isPrimary && (
+                <g pointerEvents="none">
+                  <rect
+                    x={bounds.x}
+                    y={bounds.y - 24}
+                    width={112}
+                    height={18}
+                    rx={4}
+                    fill={themeColors.surface.inverted}
+                    stroke={themeColors.surface.invertedHover}
+                    strokeWidth={1}
+                  />
+                  <text
+                    x={bounds.x + 56}
+                    y={bounds.y - 11}
+                    textAnchor="middle"
+                    fill={themeColors.content.inverted}
+                    fontSize="10px"
+                    fontFamily="'JetBrains Mono', 'SF Mono', Consolas, monospace"
+                    fontWeight="500"
+                  >
+                    {Math.round(bounds.width)} × {Math.round(bounds.height)} px
+                  </text>
+                </g>
+              )}
+            </g>
+          )
+        })()}
       </g>
     )
   }
 
+  const collectSelected = (elements: ElementIR[]): ElementIR[] => {
+    const result: ElementIR[] = []
+    for (const element of elements) {
+      if (selectedElementIds.includes(element.id)) result.push(element)
+      if (element.type === 'group') result.push(...collectSelected(element.children))
+    }
+    return result
+  }
+
   const multiBounds = (() => {
     if (isThumbnail || selectedElementIds.length < 2) return null
-    const selected = slide.elements.filter((e) => selectedElementIds.includes(e.id))
+    const selected = collectSelected(slide.elements).map((el) => draftMap?.get(el.id) ?? el)
     if (selected.length < 2) return null
-    const minX = Math.min(...selected.map((e) => e.x))
-    const minY = Math.min(...selected.map((e) => e.y))
-    const maxX = Math.max(...selected.map((e) => e.x + e.width))
-    const maxY = Math.max(...selected.map((e) => e.y + e.height))
-    return { x: minX, y: minY, width: maxX - minX, height: maxY - minY }
+    return unionBounds(selected)
   })()
 
   return (
@@ -718,7 +743,7 @@ export const SVGRendererComponent: React.FC<Props> = ({
       />
 
       {/* Elements in z-index order */}
-      {slide.elements.map((elem) => renderElementNode(elem))}
+      {slide.elements.map((elem) => renderElementNode(elem, []))}
 
       {/* Multi-selection union bounding frame (pointer-events none) */}
       {!isThumbnail && multiBounds && (

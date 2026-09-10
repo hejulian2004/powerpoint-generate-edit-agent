@@ -268,3 +268,160 @@ def test_websocket_generate_slide_layout_direct_action():
         slide2 = next(s for s in ev["presentation"]["slides"] if s["id"] == "slide_02")
         assert len(slide2["elements"]) > 0
         assert slide2["title"] == "发展历程"
+
+
+def test_websocket_direct_update_echoes_mutation_id_and_version():
+    """Verify mutation_id / version ack so the client can retire pending optimistic patches."""
+    client = TestClient(app)
+    _seed_demo_session("ws_mutation_ack")
+    with client.websocket_connect("/ws?session_id=ws_mutation_ack") as ws:
+        ws.receive_json()  # presentation_loaded
+        ws.receive_json()  # preview_update
+
+        ws.send_json({
+            "type": "direct_update_element",
+            "mutation_id": "mut_ack_1",
+            "payload": {
+                "slide_id": "slide_01",
+                "element_id": "title_main",
+                "x": 260.0
+            }
+        })
+
+        ev = ws.receive_json()
+        assert ev["type"] == "presentation_updated"
+        assert ev["last_mutation_id"] == "mut_ack_1"
+        assert isinstance(ev["version"], int) and ev["version"] > 0
+        ws.receive_json()  # preview_update
+
+
+def test_websocket_batch_mutation_is_one_undo_step():
+    """Verify batch_mutation applies every operation and undoes them atomically."""
+    client = TestClient(app)
+    _seed_demo_session("ws_batch_mutation")
+    with client.websocket_connect("/ws?session_id=ws_batch_mutation") as ws:
+        loaded = ws.receive_json()
+        ws.receive_json()  # preview_update
+
+        slide1 = next(s for s in loaded["presentation"]["slides"] if s["id"] == "slide_01")
+        title = next(e for e in slide1["elements"] if e["id"] == "title_main")
+        card = next(e for e in slide1["elements"] if e["id"] == "card_ir")
+
+        ws.send_json({
+            "type": "batch_mutation",
+            "mutation_id": "mut_batch_1",
+            "description": "多选整体移动",
+            "mutations": [
+                {
+                    "name": "update_element",
+                    "payload": {"slide_id": "slide_01", "element_id": "title_main", "x": title["x"] + 30}
+                },
+                {
+                    "name": "update_element",
+                    "payload": {"slide_id": "slide_01", "element_id": "card_ir", "x": card["x"] + 30}
+                }
+            ]
+        })
+
+        ev = ws.receive_json()
+        assert ev["type"] == "presentation_updated"
+        assert ev["last_mutation_id"] == "mut_batch_1"
+        ws.receive_json()  # preview_update
+
+        slide1 = next(s for s in ev["presentation"]["slides"] if s["id"] == "slide_01")
+        moved_title = next(e for e in slide1["elements"] if e["id"] == "title_main")
+        moved_card = next(e for e in slide1["elements"] if e["id"] == "card_ir")
+        assert abs(moved_title["x"] - (title["x"] + 30)) < 0.01
+        assert abs(moved_card["x"] - (card["x"] + 30)) < 0.01
+
+        ws.send_json({"type": "undo"})
+        ev_undo = ws.receive_json()
+        assert ev_undo["type"] == "presentation_updated"
+        ws.receive_json()  # preview_update
+
+        slide1 = next(s for s in ev_undo["presentation"]["slides"] if s["id"] == "slide_01")
+        restored_title = next(e for e in slide1["elements"] if e["id"] == "title_main")
+        restored_card = next(e for e in slide1["elements"] if e["id"] == "card_ir")
+        assert abs(restored_title["x"] - title["x"]) < 0.01
+        assert abs(restored_card["x"] - card["x"]) < 0.01
+
+
+def test_websocket_batch_mutation_rolls_back_on_failure():
+    """Verify a failing batch op rolls back earlier ops and reports mutation_rejected."""
+    client = TestClient(app)
+    _seed_demo_session("ws_batch_reject")
+    with client.websocket_connect("/ws?session_id=ws_batch_reject") as ws:
+        loaded = ws.receive_json()
+        ws.receive_json()  # preview_update
+
+        slide1 = next(s for s in loaded["presentation"]["slides"] if s["id"] == "slide_01")
+        title = next(e for e in slide1["elements"] if e["id"] == "title_main")
+
+        ws.send_json({
+            "type": "batch_mutation",
+            "mutation_id": "mut_batch_fail",
+            "mutations": [
+                {
+                    "name": "update_element",
+                    "payload": {"slide_id": "slide_01", "element_id": "title_main", "x": title["x"] + 77}
+                },
+                {
+                    "name": "update_element",
+                    "payload": {"slide_id": "slide_01", "element_id": "missing_element", "x": 10}
+                }
+            ]
+        })
+
+        rejected = ws.receive_json()
+        assert rejected["type"] == "mutation_rejected"
+        assert rejected["mutation_id"] == "mut_batch_fail"
+
+        ws.send_json({"type": "preview_request", "slide_id": "slide_01"})
+        state = ws.receive_json()
+        assert state["type"] == "preview_update"
+
+
+def test_websocket_direct_update_rejects_unknown_element():
+    """Verify unknown element updates are rejected instead of silently broadcasting success."""
+    client = TestClient(app)
+    _seed_demo_session("ws_update_reject")
+    with client.websocket_connect("/ws?session_id=ws_update_reject") as ws:
+        ws.receive_json()  # presentation_loaded
+        ws.receive_json()  # preview_update
+
+        ws.send_json({
+            "type": "direct_update_element",
+            "mutation_id": "mut_missing",
+            "payload": {
+                "slide_id": "slide_01",
+                "element_id": "does_not_exist",
+                "x": 100.0
+            }
+        })
+
+        rejected = ws.receive_json()
+        assert rejected["type"] == "mutation_rejected"
+        assert rejected["mutation_id"] == "mut_missing"
+        assert "not found" in rejected["error"].lower()
+
+
+def test_websocket_duplicate_element_reports_new_target():
+    """Verify element duplication echoes the freshly created element as last_target_id."""
+    client = TestClient(app)
+    _seed_demo_session("ws_dup_target")
+    with client.websocket_connect("/ws?session_id=ws_dup_target") as ws:
+        ws.receive_json()  # presentation_loaded
+        ws.receive_json()  # preview_update
+
+        ws.send_json({
+            "type": "direct_action",
+            "action": "duplicate_element",
+            "mutation_id": "mut_dup_1",
+            "payload": {"slide_id": "slide_01", "element_id": "title_main"}
+        })
+
+        ev = ws.receive_json()
+        assert ev["type"] == "presentation_updated"
+        assert ev["last_mutation_id"] == "mut_dup_1"
+        assert ev["last_target_id"] and ev["last_target_id"] != "title_main"
+        ws.receive_json()  # preview_update

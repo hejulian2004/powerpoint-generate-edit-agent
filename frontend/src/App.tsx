@@ -26,6 +26,9 @@ export const App: React.FC = () => {
       const key = e.key.toLowerCase()
       const store = usePPTStore.getState()
 
+      // Editable targets keep their native editing shortcuts (undo, select-all, delete...).
+      if (isEditable) return
+
       if (mod && key === 'z') {
         e.preventDefault()
         if (e.shiftKey) {
@@ -44,18 +47,22 @@ export const App: React.FC = () => {
           store.groupSelectedElements()
         }
       } else if (mod && key === 'a') {
-        if (isEditable) return
         e.preventDefault()
         store.selectAllElements()
       } else if (mod && key === 'd') {
-        if (isEditable) return
         e.preventDefault()
         store.duplicateSelectedElements()
-      } else if ((e.key === 'Delete' || e.key === 'Backspace') && !isEditable) {
+      } else if (e.key === 'Delete' || e.key === 'Backspace') {
         e.preventDefault()
         store.deleteSelectedElements()
-      } else if (e.key === 'Escape' && !isEditable) {
-        store.clearSelection()
+      } else if (e.key === 'Escape') {
+        if (store.editingElementId) {
+          store.setEditingElementId(null)
+        } else if (store.selectionScope.length > 0) {
+          store.exitGroup()
+        } else {
+          store.clearSelection()
+        }
       }
     }
 

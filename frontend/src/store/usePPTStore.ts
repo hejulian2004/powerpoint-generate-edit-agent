@@ -3,6 +3,7 @@ import type {
   PresentationIR,
   SlideIR,
   ElementIR,
+  GroupElementIR,
   ChatMessage,
   VisualRemediationEvent,
   VisualQualityScore,
@@ -11,18 +12,240 @@ import type {
   MutationStatus,
   ContextUsageData
 } from '../types/ppt'
+import {
+  cloneElement,
+  isConnector,
+  isGroup,
+  recomputeGroupBounds,
+  scaleElement,
+  syncConnectorBounds,
+  syncTransform,
+  translateElement
+} from '../editor/geometry/adapter'
 
 export type AlignMode =
   | 'left' | 'center' | 'right'
   | 'top' | 'middle' | 'bottom'
   | 'distribute_h' | 'distribute_v'
 
+export interface MutationOperation {
+  name: string
+  payload: Record<string, any>
+}
+
+export interface PendingMutation {
+  mutationId: string
+  operations: MutationOperation[]
+  description?: string
+}
+
+interface OutboxEntry {
+  message: Record<string, any>
+  mutation: PendingMutation
+}
+
+const GEOMETRY_KEYS = ['x', 'y', 'width', 'height', 'start_x', 'start_y', 'end_x', 'end_y']
+
+let mutationCounter = 0
+
+const selectTargetOnAck = new Set<string>()
+
+const newMutationId = () =>
+  `mut_${Date.now().toString(36)}_${(mutationCounter += 1).toString(36)}`
+
+const existsInElements = (elements: ElementIR[], id: string | null | undefined): boolean => {
+  if (!id) return false
+  for (const el of elements) {
+    if (el.id === id) return true
+    if (isGroup(el) && existsInElements(el.children, id)) return true
+  }
+  return false
+}
+
+const removeElementsById = (elements: ElementIR[], ids: Set<string>): ElementIR[] => {
+  const result: ElementIR[] = []
+  for (const el of elements) {
+    if (ids.has(el.id)) continue
+    if (isGroup(el)) {
+      const children = removeElementsById(el.children, ids)
+      const changed =
+        children.length !== el.children.length ||
+        children.some((child, index) => child !== el.children[index])
+      if (changed) {
+        const nextGroup: GroupElementIR = { ...el, children }
+        recomputeGroupBounds(nextGroup)
+        result.push(nextGroup)
+      } else {
+        result.push(el)
+      }
+    } else {
+      result.push(el)
+    }
+  }
+  return result
+}
+
+const applyElementUpdate = (
+  el: ElementIR,
+  targetId: string,
+  updates: Record<string, any>
+): ElementIR => {
+  if (el.id !== targetId) {
+    if (isGroup(el)) {
+      let changed = false
+      const children = el.children.map((child) => {
+        const next = applyElementUpdate(child, targetId, updates)
+        if (next !== child) changed = true
+        return next
+      })
+      if (!changed) return el
+      const nextGroup: GroupElementIR = { ...el, children }
+      recomputeGroupBounds(nextGroup)
+      return nextGroup
+    }
+    return el
+  }
+
+  const updated = cloneElement(el)
+  const hasGeometry = GEOMETRY_KEYS.some((key) => updates[key] !== undefined)
+
+  if (hasGeometry) {
+    const hasEndpoints =
+      updates.start_x !== undefined ||
+      updates.start_y !== undefined ||
+      updates.end_x !== undefined ||
+      updates.end_y !== undefined
+
+    if (isConnector(updated)) {
+      if (hasEndpoints) {
+        if (updates.start_x !== undefined) updated.start_x = updates.start_x
+        if (updates.start_y !== undefined) updated.start_y = updates.start_y
+        if (updates.end_x !== undefined) updated.end_x = updates.end_x
+        if (updates.end_y !== undefined) updated.end_y = updates.end_y
+        syncConnectorBounds(updated)
+      } else {
+        const sx = updates.width !== undefined && updated.width > 0 ? updates.width / updated.width : 1
+        const sy = updates.height !== undefined && updated.height > 0 ? updates.height / updated.height : 1
+        const dx = updates.x !== undefined ? updates.x - updated.x : 0
+        const dy = updates.y !== undefined ? updates.y - updated.y : 0
+        if (sx !== 1 || sy !== 1) scaleElement(updated, sx, sy)
+        if (dx !== 0 || dy !== 0) translateElement(updated, dx, dy)
+      }
+    } else if (isGroup(updated)) {
+      const sx = updates.width !== undefined && updated.width > 0 ? updates.width / updated.width : 1
+      const sy = updates.height !== undefined && updated.height > 0 ? updates.height / updated.height : 1
+      const dx = updates.x !== undefined ? updates.x - updated.x : 0
+      const dy = updates.y !== undefined ? updates.y - updated.y : 0
+      if (sx !== 1 || sy !== 1) scaleElement(updated, sx, sy)
+      if (dx !== 0 || dy !== 0) translateElement(updated, dx, dy)
+    } else {
+      if (updates.x !== undefined) updated.x = updates.x
+      if (updates.y !== undefined) updated.y = updates.y
+      if (updates.width !== undefined) updated.width = updates.width
+      if (updates.height !== undefined) updated.height = updates.height
+      syncTransform(updated)
+    }
+  }
+
+  if (updates.fill_color !== undefined) {
+    updated.style = {
+      ...updated.style,
+      fill: updates.fill_color
+        ? { type: 'solid', color: updates.fill_color, alpha: 1.0 }
+        : { type: 'none', alpha: 0 }
+    }
+  }
+  if (updates.border_color !== undefined || updates.border_width !== undefined) {
+    updated.style = {
+      ...updated.style,
+      border: {
+        ...updated.style?.border,
+        color: updates.border_color ?? updated.style?.border?.color ?? '#2D303F',
+        width: updates.border_width ?? updated.style?.border?.width ?? 1.0,
+        style: 'solid',
+        alpha: 1.0
+      }
+    }
+  }
+  if (updates.radius !== undefined) {
+    updated.style = { ...updated.style, radius: updates.radius }
+  }
+  if (updates.opacity !== undefined) {
+    updated.style = { ...updated.style, opacity: updates.opacity }
+  }
+
+  if (!('text_content' in updated)) return updated
+
+  const typographyRequested =
+    updates.text !== undefined ||
+    updates.font_family !== undefined ||
+    updates.font_size !== undefined ||
+    updates.font_color !== undefined ||
+    updates.bold !== undefined ||
+    updates.italic !== undefined ||
+    updates.align !== undefined
+
+  if (!typographyRequested) return updated
+
+  let tc = (updated as any).text_content
+    ? JSON.parse(JSON.stringify((updated as any).text_content))
+    : null
+
+  if (!tc || !tc.paragraphs || tc.paragraphs.length === 0) {
+    tc = {
+      plain_text: updates.text ?? '点击输入文本',
+      paragraphs: [
+        {
+          align: updates.align || 'left',
+          line_spacing: 1.25,
+          runs: [
+            {
+              text: updates.text ?? '点击输入文本',
+              font: {
+                name: updates.font_family ?? 'Segoe UI',
+                size: updates.font_size ?? 18,
+                color: updates.font_color ?? '#1E293B',
+                bold: updates.bold ?? false,
+                italic: updates.italic ?? false
+              }
+            }
+          ]
+        }
+      ]
+    }
+  }
+
+  if (updates.text !== undefined) {
+    tc.plain_text = updates.text
+    if (tc.paragraphs && tc.paragraphs[0] && tc.paragraphs[0].runs && tc.paragraphs[0].runs[0]) {
+      tc.paragraphs[0].runs[0].text = updates.text
+    }
+  }
+  if (tc.paragraphs) {
+    tc.paragraphs.forEach((p: any) => {
+      if (updates.align) p.align = updates.align
+      p.runs?.forEach((r: any) => {
+        if (!r.font) r.font = {}
+        if (updates.font_family !== undefined) r.font.name = updates.font_family
+        if (updates.font_size !== undefined) r.font.size = updates.font_size
+        if (updates.font_color !== undefined) r.font.color = updates.font_color
+        if (updates.bold !== undefined) r.font.bold = updates.bold
+        if (updates.italic !== undefined) r.font.italic = updates.italic
+      })
+    })
+  }
+  ;(updated as any).text_content = tc
+  return updated
+}
+
 interface PPTState {
   sessionId: string
   presentation: PresentationIR | null
+  confirmedPresentation: PresentationIR | null
   activeSlideId: string | null
   selectedElementId: string | null
   selectedElementIds: string[]
+  selectionScope: string[]
   activeRightTab: 'copilot' | 'inspector'
   editingElementId: string | null
   messages: ChatMessage[]
@@ -43,6 +266,8 @@ interface PPTState {
   qualityScore: VisualQualityScore | null
   history: PatchRecord[]
   mutationStatus: MutationStatus
+  pendingMutations: PendingMutation[]
+  outbox: OutboxEntry[]
   contextUsage: ContextUsageData | null
   setContextUsage: (usage: ContextUsageData | null) => void
 
@@ -55,6 +280,8 @@ interface PPTState {
   toggleElementSelection: (id: string) => void
   selectAllElements: () => void
   clearSelection: () => void
+  enterGroup: (groupId: string) => void
+  exitGroup: () => void
   setEditingElementId: (id: string | null) => void
   setActiveRightTab: (tab: 'copilot' | 'inspector') => void
   setSettingsOpen: (open: boolean) => void
@@ -74,7 +301,14 @@ interface PPTState {
   addConnectorQuick: () => void
 
   // Direct GUI Actions (decoupled from chat dialogue)
-  executeDirectAction: (action: string, payload?: Record<string, any>) => void
+  executeDirectAction: (
+    action: string,
+    payload?: Record<string, any>,
+    options?: { selectTargetOnAck?: boolean }
+  ) => void
+  sendMutationBatch: (operations: MutationOperation[], description?: string) => void
+  sendOrQueueMutation: (message: Record<string, any>, mutation: PendingMutation) => void
+  flushOutbox: () => void
   addNewSlide: (backgroundColor?: string) => void
   deleteSlide: (slideIdOrNum: string | number) => void
   duplicateSlide: (slideId: string) => void
@@ -97,6 +331,7 @@ interface PPTState {
   triggerUndo: () => void
   triggerRedo: () => void
   updateElementDirect: (elemId: string, updates: Record<string, any>) => void
+  updateElementsDirect: (entries: Array<{ id: string; updates: Record<string, any> }>) => void
   getActiveSlide: () => SlideIR | null
   getSelectedElement: () => ElementIR | null
   getEditorState: () => PPTEditorState
@@ -105,9 +340,11 @@ interface PPTState {
 export const usePPTStore = create<PPTState>((set, get) => ({
   sessionId: 'sess_default',
   presentation: null,
+  confirmedPresentation: null,
   activeSlideId: null,
   selectedElementId: null,
   selectedElementIds: [],
+  selectionScope: [],
   editingElementId: null,
   activeRightTab: 'copilot',
   messages: [
@@ -135,6 +372,8 @@ export const usePPTStore = create<PPTState>((set, get) => ({
   qualityScore: null,
   history: [],
   mutationStatus: 'idle',
+  pendingMutations: [],
+  outbox: [],
   contextUsage: {
     current_tokens: 1200,
     max_tokens: 256 * 1024,
@@ -153,11 +392,18 @@ export const usePPTStore = create<PPTState>((set, get) => ({
 
   setPresentation: (pres) => set({
     presentation: pres,
+    confirmedPresentation: pres,
     activeSlideId: pres.active_slide_id || (pres.slides[0] ? pres.slides[0].id : null)
   }),
 
   setActiveSlideId: (id) => {
-    set({ activeSlideId: id, selectedElementId: null, selectedElementIds: [], editingElementId: null })
+    set({
+      activeSlideId: id,
+      selectedElementId: null,
+      selectedElementIds: [],
+      selectionScope: [],
+      editingElementId: null
+    })
     const { ws, sessionId } = get()
     if (ws && ws.readyState === WebSocket.OPEN) {
       ws.send(JSON.stringify({ type: 'select_slide', slide_id: id, session_id: sessionId }))
@@ -165,12 +411,20 @@ export const usePPTStore = create<PPTState>((set, get) => ({
   },
 
   setSelectedElementId: (id) => {
-    set((state) => ({
-      selectedElementId: id,
-      selectedElementIds: id ? [id] : [],
-      editingElementId: id === null ? null : state.editingElementId,
-      activeRightTab: id ? 'inspector' : state.activeRightTab
-    }))
+    set((state) => {
+      if (id && state.selectedElementIds.includes(id)) {
+        return {
+          selectedElementId: id,
+          activeRightTab: 'inspector'
+        }
+      }
+      return {
+        selectedElementId: id,
+        selectedElementIds: id ? [id] : [],
+        editingElementId: id === null ? null : state.editingElementId,
+        activeRightTab: id ? 'inspector' : state.activeRightTab
+      }
+    })
   },
 
   setSelectedElementIds: (ids) => {
@@ -204,7 +458,34 @@ export const usePPTStore = create<PPTState>((set, get) => ({
   },
 
   clearSelection: () => {
-    set({ selectedElementId: null, selectedElementIds: [], editingElementId: null })
+    set({
+      selectedElementId: null,
+      selectedElementIds: [],
+      selectionScope: [],
+      editingElementId: null
+    })
+  },
+
+  enterGroup: (groupId) => {
+    set((state) => (
+      state.selectionScope.includes(groupId)
+        ? state
+        : { selectionScope: [...state.selectionScope, groupId] }
+    ))
+  },
+
+  exitGroup: () => {
+    set((state) => {
+      if (state.selectionScope.length === 0) return state
+      const scope = state.selectionScope.slice(0, -1)
+      const groupId = state.selectionScope[state.selectionScope.length - 1]
+      return {
+        selectionScope: scope,
+        selectedElementId: groupId,
+        selectedElementIds: [groupId],
+        editingElementId: null
+      }
+    })
   },
 
   setEditingElementId: (id) => {
@@ -238,17 +519,79 @@ export const usePPTStore = create<PPTState>((set, get) => ({
     thinkingStatus: status
   }),
 
-  executeDirectAction: (action: string, payload: Record<string, any> = {}) => {
-    const { ws, sessionId, activeSlideId } = get()
-    const finalPayload = { slide_id: activeSlideId, ...payload }
+  sendOrQueueMutation: (message, mutation) => {
+    const { ws } = get()
+    const enriched = { ...message, mutation_id: mutation.mutationId }
     if (ws && ws.readyState === WebSocket.OPEN) {
-      ws.send(JSON.stringify({
+      set((state) => ({
+        pendingMutations: [...state.pendingMutations, mutation],
+        mutationStatus: 'pending'
+      }))
+      ws.send(JSON.stringify(enriched))
+      return
+    }
+    set((state) => ({
+      pendingMutations: [...state.pendingMutations, mutation],
+      outbox: [...state.outbox, { message: enriched, mutation }],
+      mutationStatus: 'offline'
+    }))
+  },
+
+  flushOutbox: () => {
+    const { ws, outbox } = get()
+    if (!ws || ws.readyState !== WebSocket.OPEN || outbox.length === 0) return
+    const queued = [...outbox]
+    set({ outbox: [] })
+    for (let i = 0; i < queued.length; i += 1) {
+      if (ws.readyState !== WebSocket.OPEN) {
+        set((state) => ({ outbox: [...queued.slice(i), ...state.outbox] }))
+        return
+      }
+      ws.send(JSON.stringify(queued[i].message))
+    }
+  },
+
+  sendMutationBatch: (operations, description) => {
+    if (operations.length === 0) return
+    if (operations.length === 1) {
+      const operation = operations[0]
+      get().executeDirectAction(operation.name, operation.payload)
+      return
+    }
+    const { sessionId } = get()
+    const mutationId = newMutationId()
+    const mutation: PendingMutation = { mutationId, operations, description }
+    get().sendOrQueueMutation(
+      {
+        type: 'batch_mutation',
+        mutations: operations,
+        session_id: sessionId,
+        mutation_id: mutationId,
+        description
+      },
+      mutation
+    )
+  },
+
+  executeDirectAction: (action: string, payload: Record<string, any> = {}, options) => {
+    const { sessionId, activeSlideId } = get()
+    const mutationId = newMutationId()
+    if (options?.selectTargetOnAck) selectTargetOnAck.add(mutationId)
+    const finalPayload = { slide_id: activeSlideId, ...payload }
+    const mutation: PendingMutation = {
+      mutationId,
+      operations: [{ name: action, payload: finalPayload }]
+    }
+    get().sendOrQueueMutation(
+      {
         type: 'direct_action',
         action,
         payload: finalPayload,
-        session_id: sessionId
-      }))
-    }
+        session_id: sessionId,
+        mutation_id: mutationId
+      },
+      mutation
+    )
   },
 
   addNewSlide: (backgroundColor = '#FFFFFF') => {
@@ -286,38 +629,64 @@ export const usePPTStore = create<PPTState>((set, get) => ({
   },
 
   deleteSelectedElements: () => {
-    const { selectedElementIds } = get()
+    const { selectedElementIds, activeSlideId, presentation } = get()
     if (selectedElementIds.length === 0) return
-    selectedElementIds.forEach((id) => {
-      get().executeDirectAction('delete_element', { element_id: id })
-    })
+
+    if (presentation) {
+      const slideId = activeSlideId || presentation.slides[0]?.id
+      const ids = new Set(selectedElementIds)
+      const updatedSlides = presentation.slides.map((s) =>
+        s.id === slideId ? { ...s, elements: removeElementsById(s.elements, ids) } : s
+      )
+      set({ presentation: { ...presentation, slides: updatedSlides } })
+    }
+
+    get().sendMutationBatch(
+      selectedElementIds.map((id) => ({
+        name: 'delete_element',
+        payload: { slide_id: activeSlideId, element_id: id }
+      })),
+      '批量删除图元'
+    )
     set({ selectedElementId: null, selectedElementIds: [], editingElementId: null })
   },
 
   duplicateSelectedElement: () => {
     const { selectedElementId, activeSlideId } = get()
     if (!selectedElementId) return
-    get().executeDirectAction('duplicate_element', {
-      element_id: selectedElementId,
-      slide_id: activeSlideId
-    })
+    get().executeDirectAction(
+      'duplicate_element',
+      {
+        element_id: selectedElementId,
+        slide_id: activeSlideId
+      },
+      { selectTargetOnAck: true }
+    )
   },
 
   duplicateSelectedElements: () => {
-    const { selectedElementIds } = get()
+    const { selectedElementIds, activeSlideId } = get()
     if (selectedElementIds.length === 0) return
-    selectedElementIds.forEach((id) => {
-      get().executeDirectAction('duplicate_element', { element_id: id })
-    })
+    get().sendMutationBatch(
+      selectedElementIds.map((id) => ({
+        name: 'duplicate_element',
+        payload: { slide_id: activeSlideId, element_id: id }
+      })),
+      '批量复制图元'
+    )
   },
 
   groupSelectedElements: (groupName = '组合') => {
     const { selectedElementIds } = get()
     if (selectedElementIds.length < 2) return
-    get().executeDirectAction('group_elements', {
-      element_ids: selectedElementIds,
-      group_name: groupName
-    })
+    get().executeDirectAction(
+      'group_elements',
+      {
+        element_ids: selectedElementIds,
+        group_name: groupName
+      },
+      { selectTargetOnAck: true }
+    )
     set({ selectedElementId: null, selectedElementIds: [], editingElementId: null })
   },
 
@@ -361,43 +730,55 @@ export const usePPTStore = create<PPTState>((set, get) => ({
   addShapeQuick: (shapeType = 'roundRect', x = 200, y = 200) => {
     const slide = get().getActiveSlide()
     if (!slide) return
-    get().executeDirectAction('add_shape', {
-      shape_type: shapeType,
-      x,
-      y,
-      width: 280,
-      height: 160,
-      fill_color: '#F8FAFC',
-      border_color: '#CBD5E1',
-      text: ''
-    })
+    get().executeDirectAction(
+      'add_shape',
+      {
+        shape_type: shapeType,
+        x,
+        y,
+        width: 280,
+        height: 160,
+        fill_color: '#F8FAFC',
+        border_color: '#CBD5E1',
+        text: ''
+      },
+      { selectTargetOnAck: true }
+    )
   },
 
   addTextQuick: (x = 200, y = 200) => {
     const slide = get().getActiveSlide()
     if (!slide) return
-    get().executeDirectAction('add_text', {
-      text: '点击输入文本',
-      x,
-      y,
-      width: 360,
-      height: 60,
-      font_size: 24,
-      font_color: '#0F172A',
-      bold: true
-    })
+    get().executeDirectAction(
+      'add_text',
+      {
+        text: '点击输入文本',
+        x,
+        y,
+        width: 360,
+        height: 60,
+        font_size: 24,
+        font_color: '#0F172A',
+        bold: true
+      },
+      { selectTargetOnAck: true }
+    )
   },
 
   addConnectorQuick: () => {
     const slide = get().getActiveSlide()
     if (!slide) return
-    get().executeDirectAction('add_connector', {
-      start_x: 200,
-      start_y: 260,
-      end_x: 440,
-      end_y: 260,
-      border_color: '#94A3B8'
-    })
+    get().executeDirectAction(
+      'add_connector',
+      {
+        start_x: 200,
+        start_y: 260,
+        end_x: 440,
+        end_y: 260,
+        border_color: '#94A3B8'
+      },
+      { selectTargetOnAck: true }
+    )
   },
 
   initWebSocket: () => {
@@ -414,10 +795,16 @@ export const usePPTStore = create<PPTState>((set, get) => ({
 
     ws.onopen = () => {
       set({ wsConnected: true, ws })
+      get().flushOutbox()
     }
 
     ws.onclose = () => {
-      set({ wsConnected: false, ws: null })
+      const { outbox, pendingMutations } = get()
+      set({
+        wsConnected: false,
+        ws: null,
+        mutationStatus: outbox.length > 0 || pendingMutations.length > 0 ? 'offline' : 'idle'
+      })
       setTimeout(() => {
         get().initWebSocket()
       }, 3000)
@@ -433,58 +820,105 @@ export const usePPTStore = create<PPTState>((set, get) => ({
         const type = data.type
 
         if (type === 'presentation_loaded') {
-          set({
-            sessionId: data.session_id || get().sessionId,
-            presentation: data.presentation,
+          const hasPending = get().pendingMutations.length > 0
+          set((state) => ({
+            sessionId: data.session_id || state.sessionId,
+            presentation: hasPending ? state.presentation : data.presentation,
+            confirmedPresentation: data.presentation,
             activeSlideId: data.active_slide_id || data.presentation.slides[0]?.id,
             canUndo: data.can_undo ?? false,
             canRedo: data.can_redo ?? false,
-            selectedElementId: null,
-            selectedElementIds: [],
+            selectedElementId: hasPending ? state.selectedElementId : null,
+            selectedElementIds: hasPending ? state.selectedElementIds : [],
+            selectionScope: hasPending ? state.selectionScope : [],
             editingElementId: null
-          })
+          }))
+          get().flushOutbox()
         } else if (type === 'preview_update') {
           set({
             previewSvg: data.svg,
             previewScore: data.score,
-            qualityScore: data.quality_score,
-            mutationStatus: 'committed'
+            qualityScore: data.quality_score
           })
         } else if (type === 'presentation_updated') {
-          const activeSid = data.active_slide_id || get().activeSlideId || data.presentation?.slides?.[0]?.id
-          const currentSlide = data.presentation?.slides?.find((s: any) => s.id === activeSid)
-          const existsInSlide = (id: string | null | undefined) =>
-            !!id && (currentSlide?.elements?.some((e: any) => e.id === id) ?? false)
-
-          let newSelectedIds = get().selectedElementIds.filter((id) => existsInSlide(id))
-          let newSelectedId: string | null =
-            newSelectedIds.length > 0 ? newSelectedIds[newSelectedIds.length - 1] : get().selectedElementId
-          let newEditingId = get().editingElementId
-
-          if (data.last_target_id && existsInSlide(data.last_target_id)) {
-            const matched = currentSlide?.elements?.find((e: any) => e.id === data.last_target_id)
-            newSelectedId = data.last_target_id
-            newSelectedIds = [data.last_target_id]
-            if (matched?.type === 'text' && !get().editingElementId) {
-              newEditingId = data.last_target_id
+          const serverPres: PresentationIR = data.presentation
+          const ackId: string | undefined = data.last_mutation_id
+          const shouldSelectTarget = !!ackId && selectTargetOnAck.has(ackId)
+          if (ackId) selectTargetOnAck.delete(ackId)
+          set((state) => {
+            let pending = state.pendingMutations
+            if (ackId) {
+              const idx = pending.findIndex((p) => p.mutationId === ackId)
+              pending = idx >= 0 ? pending.slice(idx + 1) : pending.filter((p) => p.mutationId !== ackId)
             }
-          } else if (!existsInSlide(newSelectedId)) {
-            newSelectedId = newSelectedIds.length > 0 ? newSelectedIds[newSelectedIds.length - 1] : null
-            newEditingId = newSelectedId ? newEditingId : null
-          }
+            const activeSid = data.active_slide_id || state.activeSlideId || serverPres?.slides?.[0]?.id
+            const serverSlide = serverPres?.slides?.find((s) => s.id === activeSid)
+            const adopting = pending.length === 0
+            const presentation = adopting ? serverPres : state.presentation
 
-          set((state) => ({
-            sessionId: data.session_id || state.sessionId,
-            presentation: data.presentation,
-            activeSlideId: activeSid,
-            canUndo: data.can_undo ?? state.canUndo,
-            canRedo: data.can_redo ?? state.canRedo,
-            mutationStatus: 'committed',
-            selectedElementId: newSelectedId,
-            selectedElementIds: newSelectedIds,
-            editingElementId: newEditingId,
-            activeRightTab: newSelectedId ? 'inspector' : state.activeRightTab
-          }))
+            const currentSlide = adopting
+              ? serverSlide
+              : state.presentation?.slides?.find((s) => s.id === activeSid)
+
+            let selectedIds = state.selectedElementIds.filter((id) =>
+              existsInElements(currentSlide?.elements ?? [], id)
+            )
+            let selectedId = state.selectedElementId
+            if (selectedId && !selectedIds.includes(selectedId)) {
+              selectedId = selectedIds.length ? selectedIds[selectedIds.length - 1] : null
+            }
+            if (!selectedId && selectedIds.length) {
+              selectedId = selectedIds[selectedIds.length - 1]
+            }
+            const targetId: string | undefined = data.last_target_id
+            if (
+              shouldSelectTarget &&
+              targetId &&
+              existsInElements(currentSlide?.elements ?? [], targetId)
+            ) {
+              selectedIds = [targetId]
+              selectedId = targetId
+            }
+            const editingId = state.editingElementId && existsInElements(
+              currentSlide?.elements ?? [],
+              state.editingElementId
+            )
+              ? state.editingElementId
+              : null
+
+            return {
+              sessionId: data.session_id || state.sessionId,
+              presentation,
+              confirmedPresentation: serverPres,
+              activeSlideId: activeSid,
+              canUndo: data.can_undo ?? state.canUndo,
+              canRedo: data.can_redo ?? state.canRedo,
+              mutationStatus: pending.length === 0 ? 'committed' : 'pending',
+              pendingMutations: pending,
+              selectedElementIds: selectedIds,
+              selectedElementId: selectedId,
+              editingElementId: editingId,
+              activeRightTab: selectedId ? 'inspector' : state.activeRightTab
+            }
+          })
+        } else if (type === 'mutation_rejected') {
+          const rejectedId: string | undefined = data.mutation_id
+          if (rejectedId) selectTargetOnAck.delete(rejectedId)
+          set((state) => {
+            const pending = rejectedId
+              ? state.pendingMutations.filter((p) => p.mutationId !== rejectedId)
+              : state.pendingMutations
+            const outbox = rejectedId
+              ? state.outbox.filter((entry) => entry.mutation.mutationId !== rejectedId)
+              : state.outbox
+            const rollback = pending.length === 0 && state.confirmedPresentation
+            return {
+              pendingMutations: pending,
+              outbox,
+              presentation: rollback ? state.confirmedPresentation : state.presentation,
+              mutationStatus: rollback ? 'rolled_back' : 'pending'
+            }
+          })
         } else if (type === 'active_slide_changed') {
           set({ activeSlideId: data.active_slide_id })
         } else if (type === 'context_usage') {
@@ -598,7 +1032,7 @@ export const usePPTStore = create<PPTState>((set, get) => ({
           if (data.success) {
             fetch(`/api/presentation?session_id=${encodeURIComponent(sessionId)}`)
               .then((r) => r.json())
-              .then((p) => set({ presentation: p }))
+              .then((p) => set({ presentation: p, confirmedPresentation: p }))
           }
         })
     }
@@ -619,127 +1053,23 @@ export const usePPTStore = create<PPTState>((set, get) => ({
           if (data.success) {
             fetch(`/api/presentation?session_id=${encodeURIComponent(sessionId)}`)
               .then((r) => r.json())
-              .then((p) => set({ presentation: p }))
+              .then((p) => set({ presentation: p, confirmedPresentation: p }))
           }
         })
     }
   },
 
   updateElementDirect: (elemId, updates) => {
-    const { ws, activeSlideId, presentation } = get()
+    const { activeSlideId, presentation, sessionId } = get()
 
-    // Optimistic local update for instantaneous smooth feedback
     if (presentation) {
-      const updateElInArray = (elements: ElementIR[]): ElementIR[] => {
-        return elements.map((el) => {
-          if (el.id === elemId) {
-            const updatedEl: any = { ...el, ...updates }
-
-            // Style adjustments
-            if (updates.fill_color !== undefined) {
-              updatedEl.style = {
-                ...updatedEl.style,
-                fill: updates.fill_color ? { type: 'solid', color: updates.fill_color, alpha: 1.0 } : { type: 'none', alpha: 0 }
-              }
-            }
-            if (updates.border_color !== undefined || updates.border_width !== undefined) {
-              updatedEl.style = {
-                ...updatedEl.style,
-                border: {
-                  ...updatedEl.style?.border,
-                  color: updates.border_color ?? updatedEl.style?.border?.color ?? '#2D303F',
-                  width: updates.border_width ?? updatedEl.style?.border?.width ?? 1.0,
-                  style: 'solid',
-                  alpha: 1.0
-                }
-              }
-            }
-            if (updates.radius !== undefined) {
-              updatedEl.style = { ...updatedEl.style, radius: updates.radius }
-            }
-            if (updates.opacity !== undefined) {
-              updatedEl.style = { ...updatedEl.style, opacity: updates.opacity }
-            }
-
-            // Typography adjustments on text_content
-            const hasTextContent = 'text_content' in updatedEl
-            const typographyRequested =
-              updates.text !== undefined ||
-              updates.font_family !== undefined ||
-              updates.font_size !== undefined ||
-              updates.font_color !== undefined ||
-              updates.bold !== undefined ||
-              updates.italic !== undefined ||
-              updates.align !== undefined
-            if (hasTextContent && typographyRequested) {
-              let tc = updatedEl.text_content
-                ? JSON.parse(JSON.stringify(updatedEl.text_content))
-                : null
-
-              // Seed a placeholder text structure when a text/card element has
-              // no content yet but the user is styling it via the panel.
-              if (!tc || !tc.paragraphs || tc.paragraphs.length === 0) {
-                tc = {
-                  plain_text: updates.text ?? '点击输入文本',
-                  paragraphs: [
-                    {
-                      align: updates.align || 'left',
-                      line_spacing: 1.25,
-                      runs: [
-                        {
-                          text: updates.text ?? '点击输入文本',
-                          font: {
-                            name: updates.font_family ?? 'Segoe UI',
-                            size: updates.font_size ?? 18,
-                            color: updates.font_color ?? '#1E293B',
-                            bold: updates.bold ?? false,
-                            italic: updates.italic ?? false
-                          }
-                        }
-                      ]
-                    }
-                  ]
-                }
-              }
-
-              if (updates.text !== undefined) {
-                tc.plain_text = updates.text
-                if (tc.paragraphs && tc.paragraphs[0] && tc.paragraphs[0].runs && tc.paragraphs[0].runs[0]) {
-                  tc.paragraphs[0].runs[0].text = updates.text
-                }
-              }
-              if (tc.paragraphs) {
-                tc.paragraphs.forEach((p: any) => {
-                  if (updates.align) p.align = updates.align
-                  p.runs?.forEach((r: any) => {
-                    if (!r.font) r.font = {}
-                    if (updates.font_family !== undefined) r.font.name = updates.font_family
-                    if (updates.font_size !== undefined) r.font.size = updates.font_size
-                    if (updates.font_color !== undefined) r.font.color = updates.font_color
-                    if (updates.bold !== undefined) r.font.bold = updates.bold
-                    if (updates.italic !== undefined) r.font.italic = updates.italic
-                  })
-                })
-              }
-              updatedEl.text_content = tc
-            }
-            return updatedEl
-          }
-          if (el.type === 'group' && (el as any).children) {
-            return {
-              ...el,
-              children: updateElInArray((el as any).children)
-            }
-          }
-          return el
-        })
-      }
-
-      const updatedSlides = presentation.slides.map((s) => {
-        if (s.id !== (activeSlideId || presentation.slides[0]?.id)) return s
-        return { ...s, elements: updateElInArray(s.elements) }
-      })
-      set({ presentation: { ...presentation, slides: updatedSlides }, mutationStatus: 'pending' })
+      const slideId = activeSlideId || presentation.slides[0]?.id
+      const updatedSlides = presentation.slides.map((s) =>
+        s.id === slideId
+          ? { ...s, elements: s.elements.map((el) => applyElementUpdate(el, elemId, updates)) }
+          : s
+      )
+      set({ presentation: { ...presentation, slides: updatedSlides } })
     }
 
     const payload = {
@@ -747,10 +1077,64 @@ export const usePPTStore = create<PPTState>((set, get) => ({
       element_id: elemId,
       ...updates
     }
-    const { sessionId } = get()
-    if (ws && ws.readyState === WebSocket.OPEN) {
-      ws.send(JSON.stringify({ type: 'direct_update_element', payload, session_id: sessionId }))
+    const mutationId = newMutationId()
+    const mutation: PendingMutation = {
+      mutationId,
+      operations: [{ name: 'update_element', payload }]
     }
+    get().sendOrQueueMutation(
+      {
+        type: 'direct_update_element',
+        payload,
+        session_id: sessionId,
+        mutation_id: mutationId
+      },
+      mutation
+    )
+  },
+
+  updateElementsDirect: (entries) => {
+    if (entries.length === 0) return
+    const { activeSlideId, presentation, sessionId } = get()
+
+    if (presentation) {
+      const slideId = activeSlideId || presentation.slides[0]?.id
+      const updatedSlides = presentation.slides.map((s) => {
+        if (s.id !== slideId) return s
+        let elements = s.elements
+        for (const entry of entries) {
+          elements = elements.map((el) => applyElementUpdate(el, entry.id, entry.updates))
+        }
+        return { ...s, elements }
+      })
+      set({ presentation: { ...presentation, slides: updatedSlides } })
+    }
+
+    if (entries.length === 1) {
+      const entry = entries[0]
+      const payload = { slide_id: activeSlideId, element_id: entry.id, ...entry.updates }
+      const mutationId = newMutationId()
+      const mutation: PendingMutation = {
+        mutationId,
+        operations: [{ name: 'update_element', payload }]
+      }
+      get().sendOrQueueMutation(
+        {
+          type: 'direct_update_element',
+          payload,
+          session_id: sessionId,
+          mutation_id: mutationId
+        },
+        mutation
+      )
+      return
+    }
+
+    const operations: MutationOperation[] = entries.map((entry) => ({
+      name: 'update_element',
+      payload: { slide_id: activeSlideId, element_id: entry.id, ...entry.updates }
+    }))
+    get().sendMutationBatch(operations, '批量更新图元几何')
   },
 
   getActiveSlide: () => {
