@@ -150,18 +150,30 @@ class FidelityEvaluator:
 
     @classmethod
     def _iou_target(cls, o_el: Any) -> float:
-        """The IoU that a 2px-drift element can still achieve, capped at the 0.98 bar.
+        """Worst-case IoU still achievable by an element within the 2px drift ball.
 
-        A flat 0.98 IoU requirement is mathematically unreachable for small elements:
-        a 2px translation on a 50x50 box already yields IoU ~0.92. The acceptance
-        target is therefore min(0.98, best-achievable-under-2px-drift), which keeps
-        the 0.98 bar for large elements while staying honest for small ones.
+        The drift gate accepts `max(dx, dy, dw, dh) <= 2`, so a reconstructed box may
+        legally be shifted by +/-2px on both axes AND grown by +2px on both
+        dimensions. Under that recon, the intersection is always (w-2)(h-2) while
+        the union is maximized by the grown box, giving the worst-case:
+
+            inter = (w - 2)(h - 2)
+            union = w*h + (w + 2)(h + 2) - inter
+            target = min(0.98, inter / union)
+
+        This is the only size-aware bar that cannot penalize a geometry which
+        satisfies `max_drift <= 2` (e.g. same-size translation-only IoU for a 50x50
+        box is ~0.855, higher than the 0.794 target, because translation does not
+        inflate the union). Large elements stay capped at the 0.98 bar.
         """
         w, h = max(1.0, o_el.width), max(1.0, o_el.height)
         if w <= 2.0 or h <= 2.0:
             return 0.0
-        achievable = ((w - 2.0) * (h - 2.0)) / (w * h)
-        return min(0.98, achievable)
+        inter = (w - 2.0) * (h - 2.0)
+        union = (w * h) + ((w + 2.0) * (h + 2.0)) - inter
+        if union <= 0.0:
+            return 0.0
+        return min(0.98, inter / union)
 
     @classmethod
     def _evaluate_geometry(
