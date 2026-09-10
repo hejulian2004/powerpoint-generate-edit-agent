@@ -26,3 +26,5 @@ Thumbs.db
 *.log
 scratch/
 artifacts/
+*.pptx
+*.pdf

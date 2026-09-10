@@ -2,7 +2,9 @@ import React from 'react'
 import {
   Type, Square, Circle as CircleIcon,
   ArrowUpRight, Grid, AlignCenterHorizontal, Magnet,
-  RectangleHorizontal, Triangle, Diamond, GripVertical
+  RectangleHorizontal, Triangle, Diamond, GripVertical,
+  Layers, Ungroup, AlignStartVertical, AlignEndVertical,
+  AlignHorizontalDistributeCenter
 } from 'lucide-react'
 import { usePPTStore } from '../store/usePPTStore'
 
@@ -17,8 +19,17 @@ export const CanvasToolbar: React.FC = () => {
     snapEnabled,
     setSnapEnabled,
     showSmartGuides,
-    setShowSmartGuides
+    setShowSmartGuides,
+    selectedElementIds,
+    getSelectedElement,
+    groupSelectedElements,
+    ungroupSelectedElement,
+    alignSelectedElements
   } = usePPTStore()
+
+  const isMulti = selectedElementIds.length > 1
+  const selectedElement = getSelectedElement()
+  const isGroup = !isMulti && selectedElement?.type === 'group'
 
   const handleDragStart = (e: React.DragEvent, shapeType: string) => {
     e.dataTransfer.setData('application/ppt-shape', shapeType)
@@ -120,6 +131,57 @@ export const CanvasToolbar: React.FC = () => {
         <AlignCenterHorizontal className="w-3.5 h-3.5 text-muted" />
         <span>智能对齐</span>
       </button>
+
+      {/* 8b. Contextual Multi-Selection: Align / Distribute / Group */}
+      {isMulti && (
+        <>
+          <div className="w-[1px] h-4 bg-line mx-1" />
+          <button
+            onClick={() => alignSelectedElements('left')}
+            title="左对齐选中图元"
+            className="p-1.5 rounded-lg hover:bg-elevated text-muted hover:text-main transition-colors"
+          >
+            <AlignStartVertical className="w-3.5 h-3.5" />
+          </button>
+          <button
+            onClick={() => alignSelectedElements('right')}
+            title="右对齐选中图元"
+            className="p-1.5 rounded-lg hover:bg-elevated text-muted hover:text-main transition-colors"
+          >
+            <AlignEndVertical className="w-3.5 h-3.5" />
+          </button>
+          <button
+            onClick={() => alignSelectedElements('distribute_h')}
+            title="水平等距分布"
+            className="p-1.5 rounded-lg hover:bg-elevated text-muted hover:text-main transition-colors"
+          >
+            <AlignHorizontalDistributeCenter className="w-3.5 h-3.5" />
+          </button>
+          <button
+            onClick={() => groupSelectedElements()}
+            title={`组合选中的 ${selectedElementIds.length} 个图元 (Ctrl+G)`}
+            className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-inverted hover:bg-inverted-hover text-inverted-text text-xs font-medium transition-all shadow-xs"
+          >
+            <Layers className="w-3.5 h-3.5" />
+            <span>组合</span>
+          </button>
+        </>
+      )}
+
+      {/* 8c. Contextual Single Group: Ungroup */}
+      {isGroup && (
+        <>
+          <div className="w-[1px] h-4 bg-line mx-1" />
+          <button
+            onClick={() => ungroupSelectedElement()}
+            title="解散当前组合 (Ctrl+Shift+G)"
+            className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-amber-50 hover:bg-amber-100 text-amber-700 border border-amber-200 text-xs font-medium transition-all"
+          >
+            <Ungroup className="w-3.5 h-3.5" />
+            <span>解散组合</span>
+          </button>
+        </>
+      )}
 
       <div className="w-[1px] h-4 bg-line mx-1" />
 

@@ -1,3 +1,4 @@
+import React, { useState, useRef, useEffect } from 'react'
 import type {
   SlideIR, ElementIR, ShapeElementIR, TextElementIR,
   ConnectorElementIR, ImageElementIR, GroupElementIR, FillStyle, BorderStyle
@@ -11,18 +12,143 @@ interface Props {
   slide: SlideIR
   isThumbnail?: boolean
   onElementMouseDown?: (elemId: string, e: React.MouseEvent) => void
+  onElementDoubleClick?: (elemId: string, e: React.MouseEvent) => void
   onResizeHandleMouseDown?: (handle: 'nw' | 'n' | 'ne' | 'e' | 'se' | 's' | 'sw' | 'w', e: React.MouseEvent) => void
+  onBackgroundMouseDown?: (e: React.MouseEvent) => void
   alignmentGuides?: SnapGuide[]
+  selectionBox?: { x: number; y: number; width: number; height: number } | null
+  editingElementId?: string | null
+  onCommitInlineEdit?: (elemId: string, text: string) => void
+  onCancelInlineEdit?: () => void
+}
+
+interface InlineTextEditorProps {
+  element: ElementIR
+  onCommit: (text: string) => void
+  onCancel: () => void
+}
+
+export const getPlainText = (tc: any): string => {
+  if (!tc) return ''
+  if (typeof tc.plain_text === 'string' && tc.plain_text) return tc.plain_text
+  if (Array.isArray(tc.paragraphs)) {
+    return tc.paragraphs
+      .map((p: any) =>
+        Array.isArray(p.runs)
+          ? p.runs.map((r: any) => (r && typeof r.text === 'string' ? r.text : '')).join('')
+          : ''
+      )
+      .join('\n')
+  }
+  return ''
+}
+
+const InlineTextEditor: React.FC<InlineTextEditorProps> = ({ element, onCommit, onCancel }) => {
+  const tc = (element as any).text_content
+  const initialText = getPlainText(tc)
+  const [val, setVal] = useState(initialText)
+  const textareaRef = useRef<HTMLTextAreaElement>(null)
+
+  const firstPara = tc?.paragraphs?.[0]
+  const firstRun = firstPara?.runs?.[0]
+  const fontSize = firstRun?.font?.size ?? (element.type === 'text' ? 24 : 16)
+  const fontColor = firstRun?.font?.color ?? themeColors.content.primary
+  const fontFamily = firstRun?.font?.name ?? 'Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif'
+  const isBold = firstRun?.font?.bold ?? false
+  const isItalic = firstRun?.font?.italic ?? false
+  const align = firstPara?.align ?? 'left'
+
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      if (textareaRef.current) {
+        textareaRef.current.focus()
+        textareaRef.current.select()
+      }
+    }, 20)
+    return () => clearTimeout(timer)
+  }, [])
+
+  const handleBlur = () => {
+    onCommit(val)
+  }
+
+  const handleKeyDown = (e: React.KeyboardEvent) => {
+    e.stopPropagation()
+    if (e.key === 'Escape') {
+      onCancel()
+    } else if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault()
+      onCommit(val)
+    }
+  }
+
+  return (
+    <div
+      style={{
+        width: '100%',
+        height: '100%',
+        display: 'flex',
+        alignItems: 'flex-start',
+        boxSizing: 'border-box',
+        padding: `${element.style?.padding ?? 6}px`,
+        pointerEvents: 'auto'
+      }}
+      onClick={(e) => {
+        e.stopPropagation()
+        textareaRef.current?.focus()
+      }}
+      onMouseDown={(e) => e.stopPropagation()}
+      onDoubleClick={(e) => e.stopPropagation()}
+    >
+      <textarea
+        ref={textareaRef}
+        value={val}
+        autoFocus
+        tabIndex={0}
+        onChange={(e) => setVal(e.target.value)}
+        onBlur={handleBlur}
+        onKeyDown={handleKeyDown}
+        placeholder="输入文本内容..."
+        style={{
+          width: '100%',
+          height: '100%',
+          resize: 'none',
+          outline: 'none',
+          border: '1.5px solid #3B82F6',
+          borderRadius: `${typeof element.style?.radius === 'number' ? Math.max(0, element.style.radius - 2) : 2}px`,
+          backgroundColor: 'rgba(255, 255, 255, 0.96)',
+          color: fontColor,
+          fontFamily: fontFamily,
+          fontSize: `${fontSize}px`,
+          fontWeight: isBold ? 600 : 400,
+          fontStyle: isItalic ? 'italic' : 'normal',
+          textAlign: align as any,
+          lineHeight: 1.25,
+          boxShadow: '0 0 0 3px rgba(59, 130, 246, 0.25)',
+          padding: '4px',
+          pointerEvents: 'auto',
+          userSelect: 'text',
+          cursor: 'text'
+        }}
+      />
+    </div>
+  )
 }
 
 export const SVGRendererComponent: React.FC<Props> = ({
   slide,
   isThumbnail = false,
   onElementMouseDown,
+  onElementDoubleClick,
   onResizeHandleMouseDown,
-  alignmentGuides = []
+  onBackgroundMouseDown,
+  alignmentGuides = [],
+  selectionBox = null,
+  editingElementId = null,
+  onCommitInlineEdit,
+  onCancelInlineEdit
 }) => {
-  const { selectedElementId, setSelectedElementId } = usePPTStore()
+  const { selectedElementIds, setSelectedElementId, toggleElementSelection } = usePPTStore()
 
   // Generate unique gradient IDs for this slide
   const renderDefs = () => {
@@ -83,6 +209,23 @@ export const SVGRendererComponent: React.FC<Props> = ({
       })
     }
     collectGradients(slide.elements)
+
+    const collectClipPaths = (elements: ElementIR[]) => {
+      elements.forEach((elem) => {
+        if (elem.type === 'image') {
+          const rx = typeof elem.style?.radius === 'number' ? elem.style.radius : 0
+          defs.push(
+            <clipPath key={`clip-${elem.id}`} id={`clip-${elem.id}`}>
+              <rect x={elem.x} y={elem.y} width={elem.width} height={elem.height} rx={rx} ry={rx} />
+            </clipPath>
+          )
+        }
+        if (elem.type === 'group' && (elem as GroupElementIR).children) {
+          collectClipPaths((elem as GroupElementIR).children)
+        }
+      })
+    }
+    collectClipPaths(slide.elements)
 
     return <defs>{defs}</defs>
   }
@@ -213,7 +356,7 @@ export const SVGRendererComponent: React.FC<Props> = ({
     const filter = style.shadow?.enabled ? `url(#shadow-${slide.id})` : undefined
 
     if (shape_type === 'roundRect' || shape_type === 'rounded_rectangle') {
-      const rx = style.radius && style.radius > 0 ? style.radius : 12
+      const rx = typeof style.radius === 'number' ? style.radius : 12
       return <rect x={x} y={y} width={w} height={h} rx={rx} ry={rx} fill={fill} filter={filter} {...strokeProps} />
     }
     if (shape_type === 'ellipse' || shape_type === 'circle') {
@@ -250,8 +393,9 @@ export const SVGRendererComponent: React.FC<Props> = ({
       return <polygon points={points} fill={fill} filter={filter} {...strokeProps} />
     }
 
-    // Default rectangle
-    return <rect x={x} y={y} width={w} height={h} fill={fill} filter={filter} {...strokeProps} />
+    // Default rectangle (supports custom radius too)
+    const rx = typeof style.radius === 'number' ? style.radius : 0
+    return <rect x={x} y={y} width={w} height={h} rx={rx} ry={rx} fill={fill} filter={filter} {...strokeProps} />
   }
 
   const renderConnector = (conn: ConnectorElementIR) => {
@@ -277,7 +421,9 @@ export const SVGRendererComponent: React.FC<Props> = ({
   }
 
   const renderElementNode = (elem: ElementIR) => {
-    const isSelected = !isThumbnail && selectedElementId === elem.id
+    const isSelected = !isThumbnail && selectedElementIds.includes(elem.id)
+    const isPrimary = !isThumbnail && selectedElementIds.length === 1 && selectedElementIds[0] === elem.id
+    const isEditing = !isThumbnail && editingElementId === elem.id
     const transform = elem.rotation ? `rotate(${elem.rotation} ${elem.x + elem.width / 2} ${elem.y + elem.height / 2})` : undefined
 
     return (
@@ -286,63 +432,142 @@ export const SVGRendererComponent: React.FC<Props> = ({
         id={elem.id}
         transform={transform}
         opacity={elem.style.opacity ?? 1.0}
-        className={!isThumbnail ? 'cursor-move' : undefined}
+        className={!isThumbnail ? (isEditing ? 'cursor-text' : 'cursor-move') : undefined}
         onMouseDown={(e) => {
+          if (!isThumbnail) {
+            if (isEditing) {
+              e.stopPropagation()
+              return
+            }
+            e.stopPropagation()
+            if (e.shiftKey) {
+              toggleElementSelection(elem.id)
+              return
+            }
+            setSelectedElementId(elem.id)
+            onElementMouseDown?.(elem.id, e)
+          }
+        }}
+        onClick={(e) => {
+          if (!isThumbnail) {
+            e.stopPropagation()
+            if (e.shiftKey) return
+            if (isPrimary && (elem.type === 'text' || elem.type === 'shape')) {
+              onElementDoubleClick?.(elem.id, e)
+            } else {
+              setSelectedElementId(elem.id)
+            }
+          }
+        }}
+        onDoubleClick={(e) => {
           if (!isThumbnail) {
             e.stopPropagation()
             setSelectedElementId(elem.id)
-            onElementMouseDown?.(elem.id, e)
+            onElementDoubleClick?.(elem.id, e)
           }
         }}
       >
         {elem.type === 'connector' && renderConnector(elem as ConnectorElementIR)}
 
         {elem.type === 'image' && (
-          <image
-            href={(elem as ImageElementIR).src}
-            x={elem.x}
-            y={elem.y}
-            width={elem.width}
-            height={elem.height}
-            preserveAspectRatio="xMidYMid meet"
-          />
-        )}
-
-        {elem.type === 'shape' && (
-          <>
-            {renderShapeGeometry(elem as ShapeElementIR)}
-            {(elem as ShapeElementIR).text_content &&
-              renderTextContent(
-                (elem as ShapeElementIR).text_content,
-                elem.x,
-                elem.y,
-                elem.width,
-                elem.height,
-                elem.style.padding
-              )}
-          </>
-        )}
-
-        {elem.type === 'text' && (
-          <>
-            {/* Background / border for text box */}
-            {(elem.style.fill?.type !== 'none' || elem.style.border?.style !== 'none') && (
+          <g>
+            <image
+              href={(elem as ImageElementIR).src}
+              x={elem.x}
+              y={elem.y}
+              width={elem.width}
+              height={elem.height}
+              preserveAspectRatio="xMidYMid meet"
+              clipPath={`url(#clip-${elem.id})`}
+              onDragStart={(e) => e.preventDefault()}
+              style={{ userSelect: 'none', pointerEvents: 'auto' }}
+            />
+            {elem.style?.border && elem.style.border.style !== 'none' && elem.style.border.width > 0 && (
               <rect
                 x={elem.x}
                 y={elem.y}
                 width={elem.width}
                 height={elem.height}
-                fill={getFillValue(elem.style.fill, elem.id)}
+                rx={typeof elem.style?.radius === 'number' ? elem.style.radius : 0}
+                ry={typeof elem.style?.radius === 'number' ? elem.style.radius : 0}
+                fill="none"
+                pointerEvents="none"
                 {...getStrokeProps(elem.style.border)}
               />
             )}
-            {renderTextContent(
-              (elem as TextElementIR).text_content,
-              elem.x,
-              elem.y,
-              elem.width,
-              elem.height,
-              elem.style.padding
+          </g>
+        )}
+
+        {elem.type === 'shape' && (
+          <>
+            {renderShapeGeometry(elem as ShapeElementIR)}
+            {isEditing ? (
+              <foreignObject
+                x={elem.x}
+                y={elem.y}
+                width={elem.width}
+                height={elem.height}
+                className="overflow-visible"
+                style={{ pointerEvents: 'auto', overflow: 'visible' }}
+              >
+                <InlineTextEditor
+                  element={elem}
+                  onCommit={(text) => onCommitInlineEdit?.(elem.id, text)}
+                  onCancel={() => onCancelInlineEdit?.()}
+                />
+              </foreignObject>
+            ) : (
+              (elem as ShapeElementIR).text_content &&
+                renderTextContent(
+                  (elem as ShapeElementIR).text_content,
+                  elem.x,
+                  elem.y,
+                  elem.width,
+                  elem.height,
+                  elem.style.padding
+                )
+            )}
+          </>
+        )}
+
+        {elem.type === 'text' && (
+          <>
+            {/* Always render an interactive hit-testing and background surface */}
+            <rect
+              x={elem.x}
+              y={elem.y}
+              width={elem.width}
+              height={elem.height}
+              rx={typeof elem.style?.radius === 'number' ? elem.style.radius : 0}
+              ry={typeof elem.style?.radius === 'number' ? elem.style.radius : 0}
+              fill={elem.style.fill?.type !== 'none' ? getFillValue(elem.style.fill, elem.id) : 'transparent'}
+              pointerEvents="all"
+              {...getStrokeProps(elem.style.border)}
+            />
+            {isEditing ? (
+              <foreignObject
+                x={elem.x}
+                y={elem.y}
+                width={elem.width}
+                height={elem.height}
+                className="overflow-visible"
+                style={{ pointerEvents: 'auto', overflow: 'visible' }}
+              >
+                <InlineTextEditor
+                  element={elem}
+                  onCommit={(text) => onCommitInlineEdit?.(elem.id, text)}
+                  onCancel={() => onCancelInlineEdit?.()}
+                />
+              </foreignObject>
+            ) : (
+              renderTextContent(
+                (elem as TextElementIR).text_content,
+                elem.x,
+                elem.y,
+                elem.width,
+                elem.height,
+                elem.style.padding
+              )
             )}
           </>
         )}
@@ -385,79 +610,93 @@ export const SVGRendererComponent: React.FC<Props> = ({
               width={elem.width + 3}
               height={elem.height + 3}
               fill="none"
-              stroke={themeColors.content.primary}
+              stroke={isPrimary ? themeColors.content.primary : '#2563EB'}
               strokeWidth="1.2"
               strokeDasharray="4,2"
               pointerEvents="none"
             />
 
-            {/* 8 Interactive Resize Handles */}
-            {[
-              { id: 'nw', cx: elem.x, cy: elem.y, cursor: 'nwse-resize' },
-              { id: 'n', cx: elem.x + elem.width / 2, cy: elem.y, cursor: 'ns-resize' },
-              { id: 'ne', cx: elem.x + elem.width, cy: elem.y, cursor: 'nesw-resize' },
-              { id: 'e', cx: elem.x + elem.width, cy: elem.y + elem.height / 2, cursor: 'ew-resize' },
-              { id: 'se', cx: elem.x + elem.width, cy: elem.y + elem.height, cursor: 'nwse-resize' },
-              { id: 's', cx: elem.x + elem.width / 2, cy: elem.y + elem.height, cursor: 'ns-resize' },
-              { id: 'sw', cx: elem.x, cy: elem.y + elem.height, cursor: 'nesw-resize' },
-              { id: 'w', cx: elem.x, cy: elem.y + elem.height / 2, cursor: 'ew-resize' },
-            ].map((h) => (
-              <rect
-                key={h.id}
-                x={h.cx - 4.5}
-                y={h.cy - 4.5}
-                width={9}
-                height={9}
-                rx={2}
-                fill={themeColors.surface.panel}
-                stroke={themeColors.content.primary}
-                strokeWidth={1.5}
-                style={{ cursor: h.cursor }}
-                onMouseDown={(e) => {
-                  e.stopPropagation()
-                  onResizeHandleMouseDown?.(h.id as any, e)
-                }}
-              />
-            ))}
+            {/* 8 Interactive Resize Handles (single selection only) */}
+            {isPrimary &&
+              [
+                { id: 'nw', cx: elem.x, cy: elem.y, cursor: 'nwse-resize' },
+                { id: 'n', cx: elem.x + elem.width / 2, cy: elem.y, cursor: 'ns-resize' },
+                { id: 'ne', cx: elem.x + elem.width, cy: elem.y, cursor: 'nesw-resize' },
+                { id: 'e', cx: elem.x + elem.width, cy: elem.y + elem.height / 2, cursor: 'ew-resize' },
+                { id: 'se', cx: elem.x + elem.width, cy: elem.y + elem.height, cursor: 'nwse-resize' },
+                { id: 's', cx: elem.x + elem.width / 2, cy: elem.y + elem.height, cursor: 'ns-resize' },
+                { id: 'sw', cx: elem.x, cy: elem.y + elem.height, cursor: 'nesw-resize' },
+                { id: 'w', cx: elem.x, cy: elem.y + elem.height / 2, cursor: 'ew-resize' },
+              ].map((h) => (
+                <rect
+                  key={h.id}
+                  x={h.cx - 4.5}
+                  y={h.cy - 4.5}
+                  width={9}
+                  height={9}
+                  rx={2}
+                  fill={themeColors.surface.panel}
+                  stroke={themeColors.content.primary}
+                  strokeWidth={1.5}
+                  style={{ cursor: h.cursor }}
+                  onMouseDown={(e) => {
+                    e.stopPropagation()
+                    onResizeHandleMouseDown?.(h.id as any, e)
+                  }}
+                  onClick={(e) => {
+                    e.stopPropagation()
+                  }}
+                />
+              ))}
 
             {/* Dimension & Coordinates Tooltip Pill */}
-            <g pointerEvents="none">
-              <rect
-                x={elem.x}
-                y={elem.y - 24}
-                width={112}
-                height={18}
-                rx={4}
-                fill={themeColors.surface.inverted}
-                stroke={themeColors.surface.invertedHover}
-                strokeWidth={1}
-              />
-              <text
-                x={elem.x + 56}
-                y={elem.y - 11}
-                textAnchor="middle"
-                fill={themeColors.content.inverted}
-                fontSize="10px"
-                fontFamily="'JetBrains Mono', 'SF Mono', Consolas, monospace"
-                fontWeight="500"
-              >
-                {Math.round(elem.width)} × {Math.round(elem.height)} px
-              </text>
-            </g>
+            {isPrimary && (
+              <g pointerEvents="none">
+                <rect
+                  x={elem.x}
+                  y={elem.y - 24}
+                  width={112}
+                  height={18}
+                  rx={4}
+                  fill={themeColors.surface.inverted}
+                  stroke={themeColors.surface.invertedHover}
+                  strokeWidth={1}
+                />
+                <text
+                  x={elem.x + 56}
+                  y={elem.y - 11}
+                  textAnchor="middle"
+                  fill={themeColors.content.inverted}
+                  fontSize="10px"
+                  fontFamily="'JetBrains Mono', 'SF Mono', Consolas, monospace"
+                  fontWeight="500"
+                >
+                  {Math.round(elem.width)} × {Math.round(elem.height)} px
+                </text>
+              </g>
+            )}
           </g>
         )}
       </g>
     )
   }
 
+  const multiBounds = (() => {
+    if (isThumbnail || selectedElementIds.length < 2) return null
+    const selected = slide.elements.filter((e) => selectedElementIds.includes(e.id))
+    if (selected.length < 2) return null
+    const minX = Math.min(...selected.map((e) => e.x))
+    const minY = Math.min(...selected.map((e) => e.y))
+    const maxX = Math.max(...selected.map((e) => e.x + e.width))
+    const maxY = Math.max(...selected.map((e) => e.y + e.height))
+    return { x: minX, y: minY, width: maxX - minX, height: maxY - minY }
+  })()
+
   return (
     <svg
       viewBox={`0 0 ${slide.width} ${slide.height}`}
       className="w-full h-full block"
       xmlns="http://www.w3.org/2000/svg"
-      onClick={() => {
-        if (!isThumbnail) setSelectedElementId(null)
-      }}
     >
       {renderDefs()}
 
@@ -466,10 +705,51 @@ export const SVGRendererComponent: React.FC<Props> = ({
         width={slide.width}
         height={slide.height}
         fill={getFillValue(slide.background)}
+        onMouseDown={(e) => {
+          if (!isThumbnail) {
+            e.stopPropagation()
+            if (onBackgroundMouseDown) {
+              onBackgroundMouseDown(e)
+            } else {
+              setSelectedElementId(null)
+            }
+          }
+        }}
       />
 
       {/* Elements in z-index order */}
       {slide.elements.map((elem) => renderElementNode(elem))}
+
+      {/* Multi-selection union bounding frame (pointer-events none) */}
+      {!isThumbnail && multiBounds && (
+        <g pointerEvents="none">
+          <rect
+            x={multiBounds.x}
+            y={multiBounds.y}
+            width={multiBounds.width}
+            height={multiBounds.height}
+            fill="none"
+            stroke="#2563EB"
+            strokeWidth="1.2"
+            strokeDasharray="6,3"
+          />
+        </g>
+      )}
+
+      {/* Drag box-selection marquee (pointer-events none) */}
+      {!isThumbnail && selectionBox && (
+        <rect
+          x={selectionBox.x}
+          y={selectionBox.y}
+          width={selectionBox.width}
+          height={selectionBox.height}
+          fill="rgba(59,130,246,0.10)"
+          stroke="#3B82F6"
+          strokeWidth="1"
+          strokeDasharray="4,3"
+          pointerEvents="none"
+        />
+      )}
 
       {/* Active snapping smart guides (slide-coordinate overlay, pointer-events none) */}
       {!isThumbnail && <AlignmentGuides guides={alignmentGuides} />}

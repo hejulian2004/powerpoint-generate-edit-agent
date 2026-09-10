@@ -8,15 +8,23 @@ import type {
   VisualQualityScore,
   PPTEditorState,
   PatchRecord,
-  MutationStatus
+  MutationStatus,
+  ContextUsageData
 } from '../types/ppt'
+
+export type AlignMode =
+  | 'left' | 'center' | 'right'
+  | 'top' | 'middle' | 'bottom'
+  | 'distribute_h' | 'distribute_v'
 
 interface PPTState {
   sessionId: string
   presentation: PresentationIR | null
   activeSlideId: string | null
   selectedElementId: string | null
+  selectedElementIds: string[]
   activeRightTab: 'copilot' | 'inspector'
+  editingElementId: string | null
   messages: ChatMessage[]
   wsConnected: boolean
   isAgentThinking: boolean
@@ -35,12 +43,19 @@ interface PPTState {
   qualityScore: VisualQualityScore | null
   history: PatchRecord[]
   mutationStatus: MutationStatus
+  contextUsage: ContextUsageData | null
+  setContextUsage: (usage: ContextUsageData | null) => void
 
   // Actions
   setSessionId: (id: string) => void
   setPresentation: (pres: PresentationIR) => void
   setActiveSlideId: (id: string) => void
   setSelectedElementId: (id: string | null) => void
+  setSelectedElementIds: (ids: string[]) => void
+  toggleElementSelection: (id: string) => void
+  selectAllElements: () => void
+  clearSelection: () => void
+  setEditingElementId: (id: string | null) => void
   setActiveRightTab: (tab: 'copilot' | 'inspector') => void
   setSettingsOpen: (open: boolean) => void
   setPptspecModalOpen: (open: boolean) => void
@@ -62,8 +77,15 @@ interface PPTState {
   executeDirectAction: (action: string, payload?: Record<string, any>) => void
   addNewSlide: (backgroundColor?: string) => void
   deleteSlide: (slideIdOrNum: string | number) => void
+  duplicateSlide: (slideId: string) => void
+  clearSlideElements: (slideId?: string, keepTitle?: boolean) => void
   deleteSelectedElement: () => void
+  deleteSelectedElements: () => void
   duplicateSelectedElement: () => void
+  duplicateSelectedElements: () => void
+  groupSelectedElements: (groupName?: string) => void
+  ungroupSelectedElement: () => void
+  alignSelectedElements: (alignment: AlignMode) => void
   setSlideBackgroundDirect: (color: string) => void
   optimizeLayoutDirect: () => void
   applyThemeDirect: (themePreset: string) => void
@@ -85,6 +107,8 @@ export const usePPTStore = create<PPTState>((set, get) => ({
   presentation: null,
   activeSlideId: null,
   selectedElementId: null,
+  selectedElementIds: [],
+  editingElementId: null,
   activeRightTab: 'copilot',
   messages: [
     {
@@ -111,6 +135,17 @@ export const usePPTStore = create<PPTState>((set, get) => ({
   qualityScore: null,
   history: [],
   mutationStatus: 'idle',
+  contextUsage: {
+    current_tokens: 1200,
+    max_tokens: 256 * 1024,
+    usage_percent: 0.46,
+    is_compressed: false,
+    compression_ratio: 1.0,
+    tokens_saved: 0,
+    context_limit_key: '256k',
+    threshold_reached: false
+  },
+  setContextUsage: (usage) => set({ contextUsage: usage }),
   ws: null,
 
   setSessionId: (id: string) => set({ sessionId: id }),
@@ -122,7 +157,7 @@ export const usePPTStore = create<PPTState>((set, get) => ({
   }),
 
   setActiveSlideId: (id) => {
-    set({ activeSlideId: id, selectedElementId: null })
+    set({ activeSlideId: id, selectedElementId: null, selectedElementIds: [], editingElementId: null })
     const { ws, sessionId } = get()
     if (ws && ws.readyState === WebSocket.OPEN) {
       ws.send(JSON.stringify({ type: 'select_slide', slide_id: id, session_id: sessionId }))
@@ -130,8 +165,52 @@ export const usePPTStore = create<PPTState>((set, get) => ({
   },
 
   setSelectedElementId: (id) => {
-    set({
+    set((state) => ({
       selectedElementId: id,
+      selectedElementIds: id ? [id] : [],
+      editingElementId: id === null ? null : state.editingElementId,
+      activeRightTab: id ? 'inspector' : state.activeRightTab
+    }))
+  },
+
+  setSelectedElementIds: (ids) => {
+    set((state) => ({
+      selectedElementIds: ids,
+      selectedElementId: ids.length ? ids[ids.length - 1] : null,
+      editingElementId: null,
+      activeRightTab: ids.length ? 'inspector' : state.activeRightTab
+    }))
+  },
+
+  toggleElementSelection: (id) => {
+    set((state) => {
+      const exists = state.selectedElementIds.includes(id)
+      const ids = exists
+        ? state.selectedElementIds.filter((x) => x !== id)
+        : [...state.selectedElementIds, id]
+      return {
+        selectedElementIds: ids,
+        selectedElementId: ids.length ? ids[ids.length - 1] : null,
+        editingElementId: null,
+        activeRightTab: ids.length ? 'inspector' : state.activeRightTab
+      }
+    })
+  },
+
+  selectAllElements: () => {
+    const slide = get().getActiveSlide()
+    if (!slide) return
+    get().setSelectedElementIds(slide.elements.map((e) => e.id))
+  },
+
+  clearSelection: () => {
+    set({ selectedElementId: null, selectedElementIds: [], editingElementId: null })
+  },
+
+  setEditingElementId: (id) => {
+    set({
+      editingElementId: id,
+      selectedElementId: id ?? get().selectedElementId,
       activeRightTab: id ? 'inspector' : get().activeRightTab
     })
   },
@@ -185,6 +264,17 @@ export const usePPTStore = create<PPTState>((set, get) => ({
     })
   },
 
+  duplicateSlide: (slideId: string) => {
+    get().executeDirectAction('duplicate_slide', { slide_id: slideId })
+  },
+
+  clearSlideElements: (slideId?: string, keepTitle = true) => {
+    get().executeDirectAction('clear_slide_elements', {
+      slide_id: slideId ?? get().activeSlideId,
+      keep_title: keepTitle
+    })
+  },
+
   deleteSelectedElement: () => {
     const { selectedElementId, activeSlideId } = get()
     if (!selectedElementId) return
@@ -192,7 +282,16 @@ export const usePPTStore = create<PPTState>((set, get) => ({
       element_id: selectedElementId,
       slide_id: activeSlideId
     })
-    set({ selectedElementId: null })
+    set({ selectedElementId: null, selectedElementIds: [], editingElementId: null })
+  },
+
+  deleteSelectedElements: () => {
+    const { selectedElementIds } = get()
+    if (selectedElementIds.length === 0) return
+    selectedElementIds.forEach((id) => {
+      get().executeDirectAction('delete_element', { element_id: id })
+    })
+    set({ selectedElementId: null, selectedElementIds: [], editingElementId: null })
   },
 
   duplicateSelectedElement: () => {
@@ -201,6 +300,39 @@ export const usePPTStore = create<PPTState>((set, get) => ({
     get().executeDirectAction('duplicate_element', {
       element_id: selectedElementId,
       slide_id: activeSlideId
+    })
+  },
+
+  duplicateSelectedElements: () => {
+    const { selectedElementIds } = get()
+    if (selectedElementIds.length === 0) return
+    selectedElementIds.forEach((id) => {
+      get().executeDirectAction('duplicate_element', { element_id: id })
+    })
+  },
+
+  groupSelectedElements: (groupName = '组合') => {
+    const { selectedElementIds } = get()
+    if (selectedElementIds.length < 2) return
+    get().executeDirectAction('group_elements', {
+      element_ids: selectedElementIds,
+      group_name: groupName
+    })
+    set({ selectedElementId: null, selectedElementIds: [], editingElementId: null })
+  },
+
+  ungroupSelectedElement: () => {
+    const elem = get().getSelectedElement()
+    if (!elem || elem.type !== 'group') return
+    get().executeDirectAction('ungroup_elements', { group_id: elem.id })
+  },
+
+  alignSelectedElements: (alignment: AlignMode) => {
+    const { selectedElementIds } = get()
+    if (selectedElementIds.length < 2) return
+    get().executeDirectAction('align_elements', {
+      alignment,
+      element_ids: selectedElementIds
     })
   },
 
@@ -306,7 +438,10 @@ export const usePPTStore = create<PPTState>((set, get) => ({
             presentation: data.presentation,
             activeSlideId: data.active_slide_id || data.presentation.slides[0]?.id,
             canUndo: data.can_undo ?? false,
-            canRedo: data.can_redo ?? false
+            canRedo: data.can_redo ?? false,
+            selectedElementId: null,
+            selectedElementIds: [],
+            editingElementId: null
           })
         } else if (type === 'preview_update') {
           set({
@@ -316,18 +451,52 @@ export const usePPTStore = create<PPTState>((set, get) => ({
             mutationStatus: 'committed'
           })
         } else if (type === 'presentation_updated') {
+          const activeSid = data.active_slide_id || get().activeSlideId || data.presentation?.slides?.[0]?.id
+          const currentSlide = data.presentation?.slides?.find((s: any) => s.id === activeSid)
+          const existsInSlide = (id: string | null | undefined) =>
+            !!id && (currentSlide?.elements?.some((e: any) => e.id === id) ?? false)
+
+          let newSelectedIds = get().selectedElementIds.filter((id) => existsInSlide(id))
+          let newSelectedId: string | null =
+            newSelectedIds.length > 0 ? newSelectedIds[newSelectedIds.length - 1] : get().selectedElementId
+          let newEditingId = get().editingElementId
+
+          if (data.last_target_id && existsInSlide(data.last_target_id)) {
+            const matched = currentSlide?.elements?.find((e: any) => e.id === data.last_target_id)
+            newSelectedId = data.last_target_id
+            newSelectedIds = [data.last_target_id]
+            if (matched?.type === 'text' && !get().editingElementId) {
+              newEditingId = data.last_target_id
+            }
+          } else if (!existsInSlide(newSelectedId)) {
+            newSelectedId = newSelectedIds.length > 0 ? newSelectedIds[newSelectedIds.length - 1] : null
+            newEditingId = newSelectedId ? newEditingId : null
+          }
+
           set((state) => ({
             sessionId: data.session_id || state.sessionId,
             presentation: data.presentation,
-            activeSlideId: data.active_slide_id || state.activeSlideId || data.presentation.slides[0]?.id,
+            activeSlideId: activeSid,
             canUndo: data.can_undo ?? state.canUndo,
             canRedo: data.can_redo ?? state.canRedo,
-            mutationStatus: 'committed'
+            mutationStatus: 'committed',
+            selectedElementId: newSelectedId,
+            selectedElementIds: newSelectedIds,
+            editingElementId: newEditingId,
+            activeRightTab: newSelectedId ? 'inspector' : state.activeRightTab
           }))
         } else if (type === 'active_slide_changed') {
           set({ activeSlideId: data.active_slide_id })
+        } else if (type === 'context_usage') {
+          if (data.usage) {
+            set({ contextUsage: data.usage })
+          }
         } else if (type === 'agent_thinking') {
           set({ isAgentThinking: true, thinkingStatus: data.text || 'Agent 正在规划方案...' })
+        } else if (type === 'subagent_lifecycle') {
+          set({ isAgentThinking: true, thinkingStatus: data.text || '独立 Subagent 盲审中...' })
+        } else if (type === 'plan_critique') {
+          set({ isAgentThinking: true, thinkingStatus: data.text || '方案结构盲审中...' })
         } else if (type === 'tool_executing') {
           set({ isAgentThinking: true, thinkingStatus: `执行工具: ${data.tool}...` })
         } else if (type === 'tool_completed') {
@@ -493,8 +662,46 @@ export const usePPTStore = create<PPTState>((set, get) => ({
             }
 
             // Typography adjustments on text_content
-            if (updatedEl.text_content) {
-              const tc = JSON.parse(JSON.stringify(updatedEl.text_content))
+            const hasTextContent = 'text_content' in updatedEl
+            const typographyRequested =
+              updates.text !== undefined ||
+              updates.font_family !== undefined ||
+              updates.font_size !== undefined ||
+              updates.font_color !== undefined ||
+              updates.bold !== undefined ||
+              updates.italic !== undefined ||
+              updates.align !== undefined
+            if (hasTextContent && typographyRequested) {
+              let tc = updatedEl.text_content
+                ? JSON.parse(JSON.stringify(updatedEl.text_content))
+                : null
+
+              // Seed a placeholder text structure when a text/card element has
+              // no content yet but the user is styling it via the panel.
+              if (!tc || !tc.paragraphs || tc.paragraphs.length === 0) {
+                tc = {
+                  plain_text: updates.text ?? '点击输入文本',
+                  paragraphs: [
+                    {
+                      align: updates.align || 'left',
+                      line_spacing: 1.25,
+                      runs: [
+                        {
+                          text: updates.text ?? '点击输入文本',
+                          font: {
+                            name: updates.font_family ?? 'Segoe UI',
+                            size: updates.font_size ?? 18,
+                            color: updates.font_color ?? '#1E293B',
+                            bold: updates.bold ?? false,
+                            italic: updates.italic ?? false
+                          }
+                        }
+                      ]
+                    }
+                  ]
+                }
+              }
+
               if (updates.text !== undefined) {
                 tc.plain_text = updates.text
                 if (tc.paragraphs && tc.paragraphs[0] && tc.paragraphs[0].runs && tc.paragraphs[0].runs[0]) {

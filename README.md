@@ -6,6 +6,8 @@
 
 ## 📖 项目定位与核心思想
 
+> 💡 **架构与记忆地图导航**：系统拓扑、多子代理闭环编排与核心约束详见 [`MEMORY_MAP.md`](./MEMORY_MAP.md)。
+
 **PPT-Agent-Studio** 突破了传统单一提示词生成简单 PPT 的局限，构建了一套以 **PPT-IR (Presentation Intermediate Representation)** 为核心的 Agent Runtime 智能平台。
 
 > **核心架构理念：PPTX 不是核心数据格式，PPT-IR 才是系统状态核心。**
@@ -148,21 +150,31 @@ npm run build
 cd ..
 ```
 
-### 2. 启动服务
+### 2. 一键启动服务
 
-运行根目录启动脚本：
+直接运行根目录的一键启动脚本：
 
 ```bash
-python run_studio.py
+# 统一生产模式 (FastAPI 托管完整前后端与 WebSocket，自动唤起浏览器)
+python main.py
+
+# 或开启前端热重载开发模式 (FastAPI 8000 + Vite 5173 同步热重载)
+python main.py --dev
 ```
 
 终端将输出：
 ```text
-[Ready] Production frontend is built and mounted at http://127.0.0.1:8000
-🚀 Starting PPT-Agent-Studio on http://127.0.0.1:8000 ...
+================================================================
+  🎨 PPT-Agent-Studio 协同制作平台 一键启动成功
+================================================================
+  👉 Web 访问入口: http://127.0.0.1:8000
+  📖 API 接口文档: http://127.0.0.1:8000/docs
+  ⚙️ 运行工作模式: 统一生产模式 (FastAPI 托管前后端与 WS)
+  💡 按 Ctrl+C 可安全终止所有服务
+================================================================
 ```
 
-在浏览器中打开 `http://127.0.0.1:8000`，即可立即使用完整的 **PPT-Agent-Studio** 平台！
+在浏览器中打开 `http://127.0.0.1:8000`（开发模式访问 `http://localhost:5173`），即可立即使用完整的 **PPT-Agent-Studio** 平台！
 
 ---
 

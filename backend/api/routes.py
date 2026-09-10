@@ -210,6 +210,42 @@ async def export_pptx(
         raise HTTPException(status_code=500, detail=f"Failed to export PPTX: {str(e)}")
 
 
+@router.post("/models")
+async def list_models(payload: Dict[str, Any] = Body(default={})):
+    """Fetches the model list from the OpenAI-compatible endpoint.
+
+    Accepts optional base_url / api_key overrides so the UI can probe
+    unsaved settings before persisting them.
+    """
+    import httpx
+
+    base_url = payload.get("base_url") or settings.openai_base_url
+    api_key = payload.get("api_key") or settings.openai_api_key
+
+    if not base_url:
+        raise HTTPException(status_code=400, detail="Base URL is required")
+
+    url = f"{base_url.rstrip('/')}/models"
+    headers = {"Content-Type": "application/json"}
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            resp = await client.get(url, headers=headers)
+            resp.raise_for_status()
+            data = resp.json()
+    except httpx.HTTPStatusError as e:
+        raise HTTPException(status_code=502, detail=f"端点返回错误 ({e.response.status_code}): {e.response.text[:300]}")
+    except httpx.HTTPError as e:
+        raise HTTPException(status_code=502, detail=f"无法连接端点: {e}")
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"获取模型列表失败: {e}")
+
+    models = [m.get("id") for m in data.get("data", []) if m.get("id")]
+    return {"models": models, "base_url": base_url}
+
+
 @router.get("/settings")
 async def get_settings():
     return {
@@ -220,6 +256,7 @@ async def get_settings():
         "vision_model": settings.vision_model,
         "fast_model": settings.fast_model,
         "enable_vision_loop": settings.enable_vision_loop,
+        "context_limit": settings.context_limit,
     }
 
 
@@ -239,6 +276,8 @@ async def update_settings(payload: Dict[str, Any] = Body(...)):
         settings.fast_model = payload["fast_model"]
     if "enable_vision_loop" in payload:
         settings.enable_vision_loop = bool(payload["enable_vision_loop"])
+    if "context_limit" in payload and payload["context_limit"]:
+        settings.context_limit = str(payload["context_limit"]).lower()
 
     # Update runtime client
     store.agent_runtime.llm.base_url = settings.openai_base_url

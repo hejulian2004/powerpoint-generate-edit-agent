@@ -8,23 +8,54 @@ import { PPTSpecImportModal } from './components/PPTSpecImportModal'
 import { usePPTStore } from './store/usePPTStore'
 
 export const App: React.FC = () => {
-  const { initWebSocket, triggerUndo, triggerRedo } = usePPTStore()
+  const { initWebSocket } = usePPTStore()
 
   useEffect(() => {
     initWebSocket()
 
-    // Global keyboard shortcuts for Undo / Redo
+    // Global keyboard shortcuts for power-user editing
     const handleKeyDown = (e: KeyboardEvent) => {
-      if ((e.ctrlKey || e.metaKey) && e.key === 'z') {
+      const target = e.target as HTMLElement | null
+      const isEditable = !!target && (
+        target.tagName === 'INPUT' ||
+        target.tagName === 'TEXTAREA' ||
+        target.tagName === 'SELECT' ||
+        target.isContentEditable
+      )
+      const mod = e.ctrlKey || e.metaKey
+      const key = e.key.toLowerCase()
+      const store = usePPTStore.getState()
+
+      if (mod && key === 'z') {
         e.preventDefault()
         if (e.shiftKey) {
-          triggerRedo()
+          store.triggerRedo()
         } else {
-          triggerUndo()
+          store.triggerUndo()
         }
-      } else if ((e.ctrlKey || e.metaKey) && e.key === 'y') {
+      } else if (mod && key === 'y') {
         e.preventDefault()
-        triggerRedo()
+        store.triggerRedo()
+      } else if (mod && key === 'g') {
+        e.preventDefault()
+        if (e.shiftKey) {
+          store.ungroupSelectedElement()
+        } else {
+          store.groupSelectedElements()
+        }
+      } else if (mod && key === 'a') {
+        if (isEditable) return
+        e.preventDefault()
+        store.selectAllElements()
+      } else if (mod && key === 'd') {
+        if (isEditable) return
+        e.preventDefault()
+        store.duplicateSelectedElements()
+      } else if ((e.key === 'Delete' || e.key === 'Backspace') && !isEditable) {
+        e.preventDefault()
+        store.deleteSelectedElements()
+      } else if (e.key === 'Escape' && !isEditable) {
+        store.clearSelection()
       }
     }
 
@@ -33,7 +64,7 @@ export const App: React.FC = () => {
   }, [])
 
   return (
-    <div className="flex flex-col w-screen h-screen bg-canvas text-main antialiased overflow-hidden select-none">
+    <div className="flex flex-col w-screen h-screen bg-canvas text-main antialiased overflow-hidden">
       <Header />
       <div className="flex flex-1 overflow-hidden">
         <Sidebar />

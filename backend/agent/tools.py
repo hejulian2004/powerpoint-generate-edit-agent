@@ -12,7 +12,8 @@ from typing import Dict, Any, List, Optional, Callable
 from ..ir.models import (
     PresentationIR, SlideIR, ElementIR, ShapeElementIR, TextElementIR,
     ConnectorElementIR, ImageElementIR, TableElementIR, GroupElementIR, ElementStyleIR,
-    FillStyle, BorderStyle, ShadowStyle, TextContentIR, ParagraphIR, RunIR, FontIR
+    FillStyle, BorderStyle, ShadowStyle, TextContentIR, ParagraphIR, RunIR, FontIR,
+    GradientFill, GradientStop
 )
 from ..ir.patch import HistoryManager
 
@@ -80,6 +81,7 @@ def create_slide(
     position: Optional[int] = None
 ) -> Dict[str, Any]:
     slide_num = len(pres.slides) + 1 if position is None else position
+    prev_active_slide_id = pres.active_slide_id
     new_slide = SlideIR(
         id=f"slide_{uuid.uuid4().hex[:6]}",
         slide_num=slide_num,
@@ -88,12 +90,15 @@ def create_slide(
     )
 
     if position is not None and 1 <= position <= len(pres.slides):
-        pres.slides.insert(position - 1, new_slide)
+        insert_idx = position - 1
+        pres.slides.insert(insert_idx, new_slide)
         # renumber
         for idx, s in enumerate(pres.slides):
             s.slide_num = idx + 1
     else:
+        insert_idx = len(pres.slides)
         pres.slides.append(new_slide)
+        new_slide.slide_num = insert_idx + 1
 
     pres.active_slide_id = new_slide.id
     pres.version += 1
@@ -102,7 +107,10 @@ def create_slide(
         action="create_slide",
         description=f"创建幻灯片: {title}",
         slide_id=new_slide.id,
-        after=new_slide.model_dump()
+        before={"active_slide_id": prev_active_slide_id},
+        after=new_slide.model_dump(),
+        position=insert_idx,
+        prev_active_slide_id=prev_active_slide_id
     )
 
     return {
@@ -149,13 +157,16 @@ def delete_slide(pres: PresentationIR, history: HistoryManager, slide_id_or_num:
         s.slide_num = idx + 1
 
     pres.active_slide_id = pres.slides[min(target_idx, len(pres.slides) - 1)].id
+    active_after_delete = pres.active_slide_id
     pres.version += 1
 
     history.record(
         action="delete_slide",
         description=f"删除幻灯片 #{target_slide.slide_num}",
         slide_id=target_slide.id,
-        before=target_slide.model_dump()
+        before=target_slide.model_dump(),
+        position=target_idx,
+        active_after_delete=active_after_delete
     )
 
     return {"success": True, "message": f"已删除幻灯片 #{target_slide.slide_num}"}
@@ -250,7 +261,7 @@ def add_text(
                 "fill_color": {"type": "string", "description": "Hex fill color like #2563EB or #F8FAFC", "default": "#2563EB"},
                 "border_color": {"type": "string", "description": "Hex border color", "default": ""},
                 "border_width": {"type": "number", "description": "Border width in px", "default": 1.0},
-                "radius": {"type": "number", "description": "Corner radius for roundRect (e.g. 8.0, 16.0)", "default": 12.0},
+                "radius": {"type": "number", "description": "Corner radius in px for roundRect (0 = square; use small values like 0-3 for sharp editorial cards)", "default": 2.0},
                 "shadow": {"type": "boolean", "description": "Enable subtle drop shadow", "default": True},
                 "text": {"type": "string", "description": "Text inside the shape (supports multi-line)", "default": ""},
                 "text_color": {"type": "string", "description": "Text hex color", "default": "#FFFFFF"},
@@ -272,7 +283,7 @@ def add_shape(
     fill_color: str = "#2563EB",
     border_color: str = "",
     border_width: float = 1.0,
-    radius: float = 12.0,
+    radius: float = 2.0,
     shadow: bool = True,
     text: str = "",
     text_color: str = "#FFFFFF",
@@ -496,36 +507,67 @@ def update_element(
     # Text update
     if text is not None:
         if isinstance(elem, TextElementIR) or isinstance(elem, ShapeElementIR):
-            f_color = font_color or "#1E293B"
-            f_size = font_size or 18.0
-            f_family = font_family or "Segoe UI"
-            b = bold if bold is not None else False
-            it = italic if italic is not None else False
-            a = align or "left"
+            existing_font = None
+            existing_align = "left"
+            if elem.text_content and elem.text_content.paragraphs:
+                p0 = elem.text_content.paragraphs[0]
+                existing_align = p0.align
+                if p0.runs and p0.runs[0].font:
+                    existing_font = p0.runs[0].font
+
+            f_color = font_color or (existing_font.color if existing_font else "#1E293B")
+            f_size = font_size or (existing_font.size if existing_font else (28.0 if isinstance(elem, TextElementIR) else 18.0))
+            f_family = font_family or (existing_font.name if existing_font else "Segoe UI")
+            b = bold if bold is not None else (existing_font.bold if existing_font else False)
+            it = italic if italic is not None else (existing_font.italic if existing_font else False)
+            a = align or existing_align
+
             elem.text_content = TextContentIR.from_plain_text(
                 text,
                 font=FontIR(name=f_family, size=f_size, color=f_color, bold=b, italic=it),
                 align=a if a in ["left", "center", "right"] else "left"
             )
     else:
-        # In-place typography update on existing text_content
-        if hasattr(elem, "text_content") and elem.text_content:
-            for p in elem.text_content.paragraphs:
-                if align and align in ["left", "center", "right"]:
-                    p.align = align
-                for r in p.runs:
-                    if not r.font:
-                        r.font = FontIR()
-                    if font_family is not None:
-                        r.font.name = font_family
-                    if font_size is not None:
-                        r.font.size = font_size
-                    if font_color is not None:
-                        r.font.color = font_color
-                    if bold is not None:
-                        r.font.bold = bold
-                    if italic is not None:
-                        r.font.italic = italic
+        # In-place typography update on existing text_content.
+        # If text_content is empty but typography (color/size/bold/italic) was
+        # requested, lazily seed a single placeholder run so that font styling
+        # can be applied to a freshly created text/card element.
+        if hasattr(elem, "text_content"):
+            if not elem.text_content:
+                any_typography = any(
+                    v is not None
+                    for v in (font_family, font_size, font_color, bold, italic, align)
+                )
+                if any_typography:
+                    placeholder = "点击输入文本"
+                    elem.text_content = TextContentIR.from_plain_text(
+                        placeholder,
+                        font=FontIR(
+                            name=font_family or "Segoe UI",
+                            size=font_size or 18.0,
+                            color=font_color or "#1E293B",
+                            bold=bold if bold is not None else False,
+                            italic=italic if italic is not None else False,
+                        ),
+                        align=align if align in ["left", "center", "right"] else "left",
+                    )
+            if elem.text_content:
+                for p in elem.text_content.paragraphs:
+                    if align and align in ["left", "center", "right"]:
+                        p.align = align
+                    for r in p.runs:
+                        if not r.font:
+                            r.font = FontIR()
+                        if font_family is not None:
+                            r.font.name = font_family
+                        if font_size is not None:
+                            r.font.size = font_size
+                        if font_color is not None:
+                            r.font.color = font_color
+                        if bold is not None:
+                            r.font.bold = bold
+                        if italic is not None:
+                            r.font.italic = italic
 
     pres.version += 1
     after_state = elem.model_dump()
@@ -858,6 +900,68 @@ def optimize_layout(
     return {"success": True, "message": f"已按 {layout_mode} 规整排列 {len(cards)} 个模块"}
 
 
+DESIGN_TOKENS: Dict[str, Dict[str, str]] = {
+    # Light, technical-editorial: precision instrument / inspection-sheet aesthetic.
+    "monochrome_studio": {
+        "bg": "#F6F7F8", "surface": "#FFFFFF", "ink": "#16181D",
+        "muted": "#5A6472", "hairline": "#DFE3E8", "accent": "#C2410C",
+        "accent_soft": "#F6E7E0", "dark": "0",
+    },
+    "editorial_technical": {
+        "bg": "#F4F5F7", "surface": "#FFFFFF", "ink": "#101418",
+        "muted": "#5B6470", "hairline": "#D9DEE3", "accent": "#C2410C",
+        "accent_soft": "#F7E8E4", "dark": "0",
+    },
+    "tech_blue": {
+        "bg": "#F6F8FB", "surface": "#FFFFFF", "ink": "#0F172A",
+        "muted": "#5B6470", "hairline": "#DCE3EC", "accent": "#0E7490",
+        "accent_soft": "#E1F1F5", "dark": "0",
+    },
+    "emerald_nature": {
+        "bg": "#F2F7F3", "surface": "#FFFFFF", "ink": "#0E2A1E",
+        "muted": "#4E6B5A", "hairline": "#D6E4DA", "accent": "#047857",
+        "accent_soft": "#E0F2E8", "dark": "0",
+    },
+    "warm_corporate": {
+        "bg": "#FAF6EF", "surface": "#FFFFFF", "ink": "#3B2A14",
+        "muted": "#7A6A4E", "hairline": "#E7DECD", "accent": "#B45309",
+        "accent_soft": "#F7E8D5", "dark": "0",
+    },
+    "stark_white": {
+        "bg": "#FFFFFF", "surface": "#FFFFFF", "ink": "#14161A",
+        "muted": "#62666B", "hairline": "#E3E4E6", "accent": "#111318",
+        "accent_soft": "#ECECEE", "dark": "0",
+    },
+    # Dark, engineering-console: measurement readout / inspection terminal.
+    "dark_minimal": {
+        "bg": "#101318", "surface": "#1A1E25", "ink": "#ECEFF2",
+        "muted": "#8B93A0", "hairline": "#2A2F38", "accent": "#38BDF8",
+        "accent_soft": "#12283A", "dark": "1",
+    },
+    "engineering_dark": {
+        "bg": "#111418", "surface": "#191D22", "ink": "#E8ECEF",
+        "muted": "#8A929C", "hairline": "#262C33", "accent": "#E8A33D",
+        "accent_soft": "#2B2415", "dark": "1",
+    },
+    "slate_silver": {
+        "bg": "#0E1014", "surface": "#181B21", "ink": "#F1F2F6",
+        "muted": "#949AA4", "hairline": "#2B2F37", "accent": "#E2E8F0",
+        "accent_soft": "#1E2128", "dark": "1",
+    },
+    "matte_graphite": {
+        "bg": "#1E2733", "surface": "#2B3542", "ink": "#F6F8FA",
+        "muted": "#A6B0BC", "hairline": "#3A4656", "accent": "#F8FAFC",
+        "accent_soft": "#29313D", "dark": "1",
+    },
+}
+
+
+def _theme_tokens(pres: PresentationIR) -> Dict[str, str]:
+    """Resolves the active semantic design tokens for a presentation."""
+    name = (pres.theme or {}).get("name", "editorial_technical")
+    return dict(DESIGN_TOKENS.get(name, DESIGN_TOKENS["editorial_technical"]))
+
+
 @tools.register({
     "type": "function",
     "function": {
@@ -868,94 +972,59 @@ def optimize_layout(
             "properties": {
                 "theme_preset": {
                     "type": "string",
-                    "enum": ["tech_blue", "dark_minimal", "emerald_nature", "warm_corporate"],
-                    "default": "tech_blue"
+                    "enum": ["editorial_technical", "monochrome_studio", "tech_blue", "engineering_dark", "dark_minimal", "emerald_nature", "warm_corporate", "stark_white", "slate_silver", "matte_graphite"],
+                    "default": "editorial_technical"
                 }
             },
             "required": ["theme_preset"]
         }
     }
 })
-def apply_theme(pres: PresentationIR, history: HistoryManager, theme_preset: str = "tech_blue") -> Dict[str, Any]:
-    presets = {
-        "tech_blue": {
-            "bg": "#F8FAFC",
-            "card_fill": "#FFFFFF",
-            "primary": "#2563EB",
-            "text": "#0F172A",
-            "border": "#E2E8F0"
-        },
-        "dark_minimal": {
-            "bg": "#0B0F19",
-            "card_fill": "#1E293B",
-            "primary": "#38BDF8",
-            "text": "#F8FAFC",
-            "border": "#334155"
-        },
-        "emerald_nature": {
-            "bg": "#F0FDF4",
-            "card_fill": "#FFFFFF",
-            "primary": "#059669",
-            "text": "#064E3B",
-            "border": "#A7F3D0"
-        },
-        "warm_corporate": {
-            "bg": "#FFFBEB",
-            "card_fill": "#FFFFFF",
-            "primary": "#D97706",
-            "text": "#78350F",
-            "border": "#FDE68A"
-        },
-        "monochrome_studio": {
-            "bg": "#FFFFFF",
-            "card_fill": "#F8FAFC",
-            "primary": "#0F172A",
-            "text": "#0F172A",
-            "border": "#E2E8F0"
-        },
-        "stark_white": {
-            "bg": "#FFFFFF",
-            "card_fill": "#FFFFFF",
-            "primary": "#0F172A",
-            "text": "#0F172A",
-            "border": "#CBD5E1"
-        },
-        "slate_silver": {
-            "bg": "#0A0A0A",
-            "card_fill": "#141414",
-            "primary": "#F1F2F6",
-            "text": "#FFFFFF",
-            "border": "#2E2E2E"
-        },
-        "matte_graphite": {
-            "bg": "#1E293B",
-            "card_fill": "#334155",
-            "primary": "#F8FAFC",
-            "text": "#F8FAFC",
-            "border": "#475569"
-        }
-    }
 
-    t = presets.get(theme_preset, presets["monochrome_studio"])
+
+def apply_theme(pres: PresentationIR, history: HistoryManager, theme_preset: str = "tech_blue") -> Dict[str, Any]:
+    """Applies a semantic design palette. Recolors the existing deck so that
+    surface/in̶k/muted/hairline/accent roles are remapped — not flattened to one color.
+    """
+    if theme_preset not in DESIGN_TOKENS:
+        theme_preset = "editorial_technical"
+    t = DESIGN_TOKENS[theme_preset]
+
     pres.theme["name"] = theme_preset
-    pres.theme["primary_color"] = t["primary"]
+    pres.theme["primary_color"] = t["accent"]
     pres.theme["background_color"] = t["bg"]
 
-    # Apply background to all slides
+    # Map from the tokens the deck was built with (stored on first apply) so that
+    # semantic roles (surface/ink/muted/hairline/accent) are remapped, not flattened.
+    old = pres.theme.get("_prev_tokens") or dict(DESIGN_TOKENS["editorial_technical"])
+
+    def remap(color: str) -> str:
+        if not color:
+            return color
+        lc = color.lower()
+        for key in ("bg", "surface", "ink", "muted", "hairline", "accent", "accent_soft"):
+            if lc == old.get(key, "").lower():
+                return t[key]
+        return color
+
     for s in pres.slides:
         s.background.color = t["bg"]
         for el in s.elements:
             if isinstance(el, ShapeElementIR):
                 if el.style.fill and el.style.fill.type == "solid":
-                    el.style.fill.color = t["card_fill"]
+                    el.style.fill.color = remap(el.style.fill.color)
+                if el.style.fill and el.style.fill.type == "gradient" and el.style.fill.gradient:
+                    for st in el.style.fill.gradient.stops:
+                        st.color = remap(st.color)
                 if el.style.border:
-                    el.style.border.color = t["border"]
+                    el.style.border.color = remap(el.style.border.color)
             elif isinstance(el, TextElementIR):
                 for p in el.text_content.paragraphs:
                     for r in p.runs:
                         if r.font:
-                            r.font.color = t["text"]
+                            r.font.color = remap(r.font.color)
 
+    pres.theme["_prev_tokens"] = dict(t)
     pres.version += 1
     history.record(
         action="apply_theme",
@@ -1002,8 +1071,8 @@ def apply_theme(pres: PresentationIR, history: HistoryManager, theme_preset: str
                 },
                 "theme": {
                     "type": "string",
-                    "enum": ["monochrome_studio", "tech_blue", "dark_minimal", "emerald_nature", "warm_corporate"],
-                    "default": "monochrome_studio"
+                    "enum": ["editorial_technical", "monochrome_studio", "tech_blue", "engineering_dark", "dark_minimal", "emerald_nature", "warm_corporate", "stark_white", "slate_silver", "matte_graphite"],
+                    "default": "editorial_technical"
                 },
                 "replace": {
                     "type": "boolean",
@@ -1020,7 +1089,7 @@ def generate_presentation(
     history: HistoryManager,
     topic: str,
     slides: List[Dict[str, Any]],
-    theme: str = "monochrome_studio",
+    theme: str = "editorial_technical",
     replace: bool = True
 ) -> Dict[str, Any]:
     pres.title = topic
@@ -1077,147 +1146,130 @@ def _build_slide_elements_by_layout(
     subtitle: str = "",
     items: Optional[List[Dict[str, Any]]] = None
 ):
-    """Populates slide elements based on design archetypes."""
+    """Populates slide elements based on design archetypes.
+
+    Design language — technical editorial / inspection sheet:
+    - Sharp corners (radius <= 2) instead of large rounded cards.
+    - Hairline rules instead of heavy drop shadows on every card.
+    - A single accent used as a structural device (edge bars, rules, numerals),
+      with quiet neutral surfaces.
+    - Numbered markers only where the content is a real sequence (timeline).
+    """
     items = items or []
-    is_dark = slide.background.color in ["#0A0A0A", "#0B0F19", "#000000", "#121212"]
-    text_color = "#FFFFFF" if is_dark else "#0F172A"
-    subtext_color = "#A3A3A3" if is_dark else "#64748B"
-    card_fill = "#141414" if is_dark else "#FFFFFF"
-    card_border = "#2E2E2E" if is_dark else "#E2E8F0"
-    primary_color = "#38BDF8" if is_dark else "#2563EB"
+
+    dark = slide.background.color.lower() in ["#0a0a0a", "#0b0f19", "#000000", "#121212", "#111418", "#0e1014", "#101318", "#1e2733"]
+    ink = "#E8ECEF" if dark else "#16181D"
+    muted = "#8A929C" if dark else "#5A6472"
+    surface = "#191D22" if dark else "#FFFFFF"
+    hairline = "#262C33" if dark else "#DFE3E8"
+    accent = "#E8A33D" if dark else "#C2410C"
+    accent_soft = "#2B2415" if dark else "#F7E8E4"
+
+    def add_text(eid, name, x, y, w, h, text, size, color, bold=False, align="left"):
+        slide.elements.append(TextElementIR(
+            id=eid,
+            name=name,
+            x=x, y=y, width=w, height=h,
+            text_content=TextContentIR.from_plain_text(
+                text, font=FontIR(size=size, color=color, bold=bold), align=align
+            )
+        ))
+
+    def add_rule(eid, x, y, w, h, color, width=1.5, alpha=1.0):
+        slide.elements.append(ShapeElementIR(
+            id=eid, name="Rule",
+            shape_type="rect", x=x, y=y, width=w, height=h,
+            style=ElementStyleIR(fill=FillStyle(type="solid", color=color, alpha=alpha))
+        ))
+
+    def add_grad_bar(eid, name, x, y, w, h, c1, c2, angle=90.0, alpha=1.0):
+        """Decorative two-color gradient accent bar/rule (accent -> accent_soft)."""
+        slide.elements.append(ShapeElementIR(
+            id=eid, name=name,
+            shape_type="rect", x=x, y=y, width=w, height=h,
+            style=ElementStyleIR(fill=FillStyle(
+                type="gradient",
+                gradient=GradientFill(
+                    type="linear",
+                    angle=angle,
+                    stops=[
+                        GradientStop(position=0.0, color=c1, alpha=alpha),
+                        GradientStop(position=1.0, color=c2, alpha=alpha),
+                    ]
+                )
+            ))
+        ))
+
+    def add_panel(eid, name, x, y, w, h, fill=None, border=None, radius=1.5):
+        slide.elements.append(ShapeElementIR(
+            id=eid, name=name,
+            shape_type="roundRect", x=x, y=y, width=w, height=h,
+            style=ElementStyleIR(
+                fill=FillStyle(type="solid", color=fill or surface),
+                border=BorderStyle(color=border or hairline, width=1.0),
+                radius=radius
+            )
+        ))
+
+    def header(kicker: str = "01"):
+        """Shared editorial header: kicker + title + hairline rule."""
+        add_text(f"kick_{uuid.uuid4().hex[:6]}", "Kicker", 100, 64, 400, 22,
+                 kicker, 13.0, accent, bold=True)
+        add_text(f"title_{uuid.uuid4().hex[:6]}", "Slide Title", 100, 92, 1080, 52,
+                 title, 34.0, ink, bold=True)
+        if subtitle:
+            add_text(f"sub_{uuid.uuid4().hex[:6]}", "Slide Subtitle", 100, 148, 1080, 30,
+                     subtitle, 15.0, muted)
+        # Gradient underline sweep from accent -> transparent for a refined accent.
+        add_grad_bar(f"gbar_{uuid.uuid4().hex[:6]}", "Gradient Rule", 100, 194, 1080, 3,
+                     accent, accent_soft, angle=90.0, alpha=0.9)
 
     if layout == "title_slide":
-        # Hero Title
-        slide.elements.append(TextElementIR(
-            id=f"title_{uuid.uuid4().hex[:6]}",
-            name="Hero Title",
-            x=120,
-            y=180,
-            width=1040,
-            height=90,
-            text_content=TextContentIR.from_plain_text(
-                title,
-                font=FontIR(size=44.0, color=text_color, bold=True),
-                align="center"
-            )
-        ))
+        # Editorial hero: left-aligned kicker, oversized title, hairline, subtitle.
+        add_text(f"kick_{uuid.uuid4().hex[:6]}", "Kicker", 100, 190, 700, 24,
+                 "RESEARCH · CV · AGENTIC AI", 13.0, accent, bold=True)
+        add_text(f"title_{uuid.uuid4().hex[:6]}", "Hero Title", 100, 226, 1080, 130,
+                 title, 48.0, ink, bold=True)
+        add_rule(f"rule_{uuid.uuid4().hex[:6]}", 100, 384, 1080, 2, hairline)
         if subtitle:
-            slide.elements.append(TextElementIR(
-                id=f"sub_{uuid.uuid4().hex[:6]}",
-                name="Hero Subtitle",
-                x=160,
-                y=290,
-                width=960,
-                height=50,
-                text_content=TextContentIR.from_plain_text(
-                    subtitle,
-                    font=FontIR(size=20.0, color=subtext_color),
-                    align="center"
-                )
-            ))
-        # Top Accent Badge
-        slide.elements.append(ShapeElementIR(
-            id=f"badge_{uuid.uuid4().hex[:6]}",
-            name="Category Badge",
-            shape_type="roundRect",
-            x=540,
-            y=120,
-            width=200,
-            height=36,
-            style=ElementStyleIR(
-                fill=FillStyle(type="solid", color=card_fill),
-                border=BorderStyle(color=primary_color, width=1.5),
-                radius=18.0
-            ),
-            text_content=TextContentIR.from_plain_text(
-                "KEYNOTE PRESENTATION",
-                font=FontIR(size=12.0, color=primary_color, bold=True),
-                align="center"
-            )
-        ))
+            add_text(f"sub_{uuid.uuid4().hex[:6]}", "Hero Subtitle", 100, 410, 920, 64,
+                     subtitle, 19.0, muted)
+        # Left accent edge bar (gradient sweep for a polished look)
+        add_grad_bar(f"edge_{uuid.uuid4().hex[:6]}", "Accent Edge", 0, 0, 8, 720,
+                     accent, accent_soft, angle=180.0, alpha=1.0)
+        # Section index block (bottom-left)
+        add_text(f"idx_{uuid.uuid4().hex[:6]}", "Index", 100, 620, 300, 30,
+                 "01 / OVERVIEW", 12.0, accent, bold=True)
 
     elif layout == "card_grid":
-        # Header Title
-        slide.elements.append(TextElementIR(
-            id=f"header_{uuid.uuid4().hex[:6]}",
-            name="Slide Title",
-            x=100,
-            y=60,
-            width=1080,
-            height=50,
-            text_content=TextContentIR.from_plain_text(
-                title,
-                font=FontIR(size=32.0, color=text_color, bold=True),
-                align="left"
-            )
-        ))
-        if subtitle:
-            slide.elements.append(TextElementIR(
-                id=f"sub_{uuid.uuid4().hex[:6]}",
-                name="Slide Subtitle",
-                x=100,
-                y=115,
-                width=1080,
-                height=35,
-                text_content=TextContentIR.from_plain_text(
-                    subtitle,
-                    font=FontIR(size=16.0, color=subtext_color),
-                    align="left"
-                )
-            ))
-
+        header("02 / CONTENT")
         n = len(items) if items else 3
         margin = 100.0
-        gap = 30.0
-        start_y = 180.0
-        total_gaps = (n - 1) * gap
-        avail_w = 1280.0 - (margin * 2) - total_gaps
-        card_w = max(avail_w / n, 160.0)
-        card_h = 440.0
+        gap = 28.0
+        start_y = 230.0
+        avail_w = 1280.0 - (margin * 2) - (n - 1) * gap
+        card_w = max(avail_w / n, 150.0)
+        card_h = 400.0
 
         for idx, item in enumerate(items or [{"title": f"核心特性 {idx+1}", "description": "详细描述与架构说明"} for idx in range(3)]):
             cx = margin + idx * (card_w + gap)
             item_title = item.get("title", f"Feature {idx+1}")
             item_desc = item.get("description", "")
-            badge = item.get("badge", f"0{idx+1}")
 
-            slide.elements.append(ShapeElementIR(
-                id=f"card_{idx}_{uuid.uuid4().hex[:6]}",
-                name=f"Card {idx+1}",
-                shape_type="roundRect",
-                x=cx,
-                y=start_y,
-                width=card_w,
-                height=card_h,
-                style=ElementStyleIR(
-                    fill=FillStyle(type="solid", color=card_fill),
-                    border=BorderStyle(color=card_border, width=1.5),
-                    shadow=ShadowStyle(enabled=True, blur=6.0, alpha=0.3),
-                    radius=14.0
-                ),
-                text_content=TextContentIR.from_plain_text(
-                    f"【{badge}】 {item_title}\n\n{item_desc}",
-                    font=FontIR(size=16.0, color=text_color),
-                    align="left"
-                )
-            ))
+            # Quiet surface panel, sharp corner, hairline border, gradient accent top edge
+            add_panel(f"card_{idx}_{uuid.uuid4().hex[:6]}", f"Card {idx+1}",
+                      cx, start_y, card_w, card_h)
+            add_grad_bar(f"top_{idx}_{uuid.uuid4().hex[:6]}", "Card Accent", cx, start_y, card_w, 3,
+                         accent, accent_soft, angle=90.0, alpha=0.9)
+            add_text(f"ct_{idx}_{uuid.uuid4().hex[:6]}", f"Card Title {idx+1}",
+                     cx + 20, start_y + 22, card_w - 40, 28,
+                     item_title, 17.0, ink, bold=True)
+            add_text(f"cd_{idx}_{uuid.uuid4().hex[:6]}", f"Card Desc {idx+1}",
+                     cx + 20, start_y + 60, card_w - 40, card_h - 90,
+                     item_desc, 13.5, muted)
 
     elif layout == "timeline":
-        # Header Title
-        slide.elements.append(TextElementIR(
-            id=f"header_{uuid.uuid4().hex[:6]}",
-            name="Slide Title",
-            x=100,
-            y=60,
-            width=1080,
-            height=50,
-            text_content=TextContentIR.from_plain_text(
-                title,
-                font=FontIR(size=32.0, color=text_color, bold=True),
-                align="left"
-            )
-        ))
-
+        header("03 / TIMELINE")
         steps = items or [
             {"title": "阶段一: 需求分析", "description": "定义核心流程与目标"},
             {"title": "阶段二: 架构研发", "description": "设计中间件与工具链"},
@@ -1227,66 +1279,36 @@ def _build_slide_elements_by_layout(
         margin = 100.0
         gap = 40.0
         step_w = (1280.0 - (margin * 2) - (n - 1) * gap) / n
-        step_h = 240.0
-        cy = 240.0
+        cy = 320.0
+
+        # Connecting hairline spine
+        add_rule(f"spine_{uuid.uuid4().hex[:6]}", margin, cy + 20, 1280.0 - margin * 2, 2, hairline)
 
         for idx, st in enumerate(steps):
             cx = margin + idx * (step_w + gap)
             st_title = st.get("title", f"Step {idx+1}")
             st_desc = st.get("description", "")
 
-            # Step Card
+            # Node numeral (real sequence -> numbered marker is meaningful)
+            add_text(f"num_{idx}_{uuid.uuid4().hex[:6]}", f"Step Num {idx+1}",
+                     cx, cy - 46, step_w, 40, f"{idx+1:02d}", 30.0, accent, bold=True)
+            # Step panel below spine
+            add_panel(f"step_{idx}_{uuid.uuid4().hex[:6]}", f"Timeline Step {idx+1}",
+                      cx, cy + 56, step_w, 210)
+            add_text(f"st_{idx}_{uuid.uuid4().hex[:6]}", f"Step Title {idx+1}",
+                     cx + 20, cy + 76, step_w - 40, 30, st_title, 16.0, ink, bold=True)
+            add_text(f"sd_{idx}_{uuid.uuid4().hex[:6]}", f"Step Desc {idx+1}",
+                     cx + 20, cy + 114, step_w - 40, 120, st_desc, 13.0, muted)
+
+            # Accent node dot on the spine
             slide.elements.append(ShapeElementIR(
-                id=f"step_{idx}_{uuid.uuid4().hex[:6]}",
-                name=f"Timeline Step {idx+1}",
-                shape_type="roundRect",
-                x=cx,
-                y=cy,
-                width=step_w,
-                height=step_h,
-                style=ElementStyleIR(
-                    fill=FillStyle(type="solid", color=card_fill),
-                    border=BorderStyle(color=card_border, width=1.5),
-                    radius=12.0
-                ),
-                text_content=TextContentIR.from_plain_text(
-                    f"阶段 0{idx+1}\n\n{st_title}\n\n{st_desc}",
-                    font=FontIR(size=15.0, color=text_color),
-                    align="center"
-                )
+                id=f"dot_{idx}_{uuid.uuid4().hex[:6]}", name=f"Node {idx+1}",
+                shape_type="ellipse", x=cx + step_w / 2 - 6, y=cy + 14, width=12, height=12,
+                style=ElementStyleIR(fill=FillStyle(type="solid", color=accent))
             ))
 
-            # Connecting arrow to next step
-            if idx < n - 1:
-                arrow_start_x = cx + step_w
-                arrow_end_x = arrow_start_x + gap
-                slide.elements.append(ConnectorElementIR(
-                    id=f"arrow_{idx}_{uuid.uuid4().hex[:6]}",
-                    name=f"Arrow {idx+1}",
-                    start_x=arrow_start_x,
-                    start_y=cy + step_h / 2,
-                    end_x=arrow_end_x,
-                    end_y=cy + step_h / 2,
-                    arrow_end="triangle",
-                    style=ElementStyleIR(border=BorderStyle(color=primary_color, width=2.0))
-                ))
-
     elif layout == "kpi_metrics":
-        # Header Title
-        slide.elements.append(TextElementIR(
-            id=f"header_{uuid.uuid4().hex[:6]}",
-            name="Slide Title",
-            x=100,
-            y=60,
-            width=1080,
-            height=50,
-            text_content=TextContentIR.from_plain_text(
-                title,
-                font=FontIR(size=32.0, color=text_color, bold=True),
-                align="left"
-            )
-        ))
-
+        header("04 / METRICS")
         stats = items or [
             {"value": "99.9%", "label": "系统高可用性", "subtext": "SLA 严格达标保证"},
             {"value": "10x", "label": "PPT 制作效率提升", "subtext": "自动化秒级编排"},
@@ -1294,86 +1316,56 @@ def _build_slide_elements_by_layout(
         ]
         n = len(stats)
         margin = 100.0
-        gap = 35.0
-        card_w = (1280.0 - (margin * 2) - (n - 1) * gap) / n
-        card_h = 320.0
-        cy = 200.0
+        gap = 40.0
+        col_w = (1280.0 - (margin * 2) - (n - 1) * gap) / n
+        cy = 250.0
 
         for idx, st in enumerate(stats):
-            cx = margin + idx * (card_w + gap)
+            cx = margin + idx * (col_w + gap)
             val = st.get("value", "100%")
             lbl = st.get("label", "Metric")
             sub = st.get("subtext", "")
 
-            slide.elements.append(ShapeElementIR(
-                id=f"kpi_{idx}_{uuid.uuid4().hex[:6]}",
-                name=f"KPI Card {idx+1}",
-                shape_type="roundRect",
-                x=cx,
-                y=cy,
-                width=card_w,
-                height=card_h,
-                style=ElementStyleIR(
-                    fill=FillStyle(type="solid", color=card_fill),
-                    border=BorderStyle(color=card_border, width=1.5),
-                    radius=16.0
-                ),
-                text_content=TextContentIR.from_plain_text(
-                    f"{val}\n\n{lbl}\n\n{sub}",
-                    font=FontIR(size=22.0, color=text_color, bold=True),
-                    align="center"
-                )
-            ))
+            # Oversized numeral is the hero; hairline separator beneath.
+            add_rule(f"sep_{idx}_{uuid.uuid4().hex[:6]}", cx, cy, col_w, 2, hairline)
+            # First metric gets a gradient underline accent bar to draw the eye.
+            if idx == 0:
+                add_grad_bar(f"gv_{idx}_{uuid.uuid4().hex[:6]}", "Metric Gradient", cx, cy + 2, 64, 3,
+                             accent, accent_soft, angle=90.0, alpha=0.9)
+            add_text(f"val_{idx}_{uuid.uuid4().hex[:6]}", f"Metric Value {idx+1}",
+                     cx, cy + 20, col_w, 70, val, 48.0, accent if idx == 0 else ink, bold=True)
+            add_text(f"lbl_{idx}_{uuid.uuid4().hex[:6]}", f"Metric Label {idx+1}",
+                     cx, cy + 104, col_w, 28, lbl, 15.0, ink, bold=True)
+            add_text(f"sub_{idx}_{uuid.uuid4().hex[:6]}", f"Metric Sub {idx+1}",
+                     cx, cy + 138, col_w, 40, sub, 12.5, muted)
 
     elif layout == "comparison":
-        # Header Title
-        slide.elements.append(TextElementIR(
-            id=f"header_{uuid.uuid4().hex[:6]}",
-            name="Slide Title",
-            x=100,
-            y=60,
-            width=1080,
-            height=50,
-            text_content=TextContentIR.from_plain_text(
-                title,
-                font=FontIR(size=32.0, color=text_color, bold=True),
-                align="left"
-            )
-        ))
-
+        header("05 / COMPARISON")
         cols = items or [
             {"title": "传统设计模式", "description": "• 手动反复排版与校对\n• 耗时耗力且样式易冲突\n• 跨平台协同效率低"},
             {"title": "Agentic AI 架构", "description": "• PPT-IR 核心结构解耦\n• 自然语言驱动自动化生成\n• 实时渲染与无损 OOXML 导出"}
         ]
         col_w = 510.0
-        col_h = 460.0
-        cy = 160.0
+        col_h = 400.0
+        cy = 230.0
 
         for idx, col in enumerate(cols[:2]):
             cx = 100.0 if idx == 0 else 670.0
             c_title = col.get("title", f"Column {idx+1}")
             c_desc = col.get("description", "")
+            is_highlight = idx == 1
 
-            border_c = primary_color if idx == 1 else card_border
-            slide.elements.append(ShapeElementIR(
-                id=f"col_{idx}_{uuid.uuid4().hex[:6]}",
-                name=f"Column {idx+1}",
-                shape_type="roundRect",
-                x=cx,
-                y=cy,
-                width=col_w,
-                height=col_h,
-                style=ElementStyleIR(
-                    fill=FillStyle(type="solid", color=card_fill),
-                    border=BorderStyle(color=border_c, width=2.0),
-                    radius=14.0
-                ),
-                text_content=TextContentIR.from_plain_text(
-                    f"【{c_title}】\n\n{c_desc}",
-                    font=FontIR(size=17.0, color=text_color),
-                    align="left"
-                )
-            ))
+            add_panel(f"col_{idx}_{uuid.uuid4().hex[:6]}", f"Column {idx+1}",
+                      cx, cy, col_w, col_h,
+                      border=accent if is_highlight else hairline)
+            if is_highlight:
+                add_rule(f"cacc_{idx}_{uuid.uuid4().hex[:6]}", cx, cy, 4, col_h, accent)
+            add_text(f"ct_{idx}_{uuid.uuid4().hex[:6]}", f"Column Title {idx+1}",
+                     cx + 24, cy + 24, col_w - 48, 30,
+                     c_title, 18.0, accent if is_highlight else ink, bold=True)
+            add_text(f"cd_{idx}_{uuid.uuid4().hex[:6]}", f"Column Desc {idx+1}",
+                     cx + 24, cy + 68, col_w - 48, col_h - 96,
+                     c_desc, 14.0, muted)
 
 
 @tools.register({
@@ -1488,17 +1480,18 @@ def batch_add_cards(
     avail_w = 1280.0 - (margin * 2) - (n - 1) * gap
     card_w = max(avail_w / n, 140.0)
 
-    is_dark = slide.background.color in ["#0A0A0A", "#0B0F19", "#000000", "#121212"]
-    text_c = "#FFFFFF" if is_dark else "#0F172A"
-    card_bg = "#141414" if is_dark else "#FFFFFF"
-    border_c = "#2E2E2E" if is_dark else "#E2E8F0"
+    is_dark = slide.background.color.lower() in ["#0a0a0a", "#0b0f19", "#000000", "#121212", "#111418", "#0e1014", "#101318", "#1e2733"]
+    text_c = "#E8ECEF" if is_dark else "#16181D"
+    muted_c = "#8A929C" if is_dark else "#5A6472"
+    card_bg = "#191D22" if is_dark else "#FFFFFF"
+    border_c = "#262C33" if is_dark else "#DFE3E8"
+    accent_c = "#E8A33D" if is_dark else "#C2410C"
 
     added_ids = []
     for idx, card in enumerate(cards):
         cx = margin + idx * (card_w + gap)
         c_title = card.get("title", f"Card {idx+1}")
         c_desc = card.get("description", "")
-        c_badge = card.get("badge", f"0{idx+1}")
 
         elem = ShapeElementIR(
             id=f"card_{uuid.uuid4().hex[:6]}",
@@ -1510,17 +1503,29 @@ def batch_add_cards(
             height=card_height,
             style=ElementStyleIR(
                 fill=FillStyle(type="solid", color=card_bg),
-                border=BorderStyle(color=border_c, width=1.5),
-                radius=12.0
+                border=BorderStyle(color=border_c, width=1.0),
+                radius=1.5
             ),
             text_content=TextContentIR.from_plain_text(
-                f"[{c_badge}] {c_title}\n\n{c_desc}",
-                font=FontIR(size=16.0, color=text_c),
+                f"{c_title}\n\n{c_desc}",
+                font=FontIR(size=15.0, color=text_c),
                 align="left"
             )
         )
         slide.add_element(elem)
         added_ids.append(elem.id)
+
+        # Accent top edge as a structural device instead of a badge in the text
+        slide.add_element(ShapeElementIR(
+            id=f"edge_{uuid.uuid4().hex[:6]}",
+            name=f"Card Edge {idx+1}",
+            shape_type="rect",
+            x=cx,
+            y=start_y,
+            width=card_w,
+            height=3,
+            style=ElementStyleIR(fill=FillStyle(type="solid", color=accent_c))
+        ))
 
     pres.version += 1
     history.record(
@@ -1754,6 +1759,7 @@ def duplicate_slide(pres: PresentationIR, history: HistoryManager, slide_id: str
         return {"success": False, "error": "Slide not found"}
 
     idx = pres.slides.index(slide)
+    prev_active_slide_id = pres.active_slide_id
     new_slide_dict = copy.deepcopy(slide.model_dump())
     new_slide_dict["id"] = f"slide_{uuid.uuid4().hex[:6]}"
     new_slide_dict["slide_num"] = idx + 2
@@ -1774,7 +1780,11 @@ def duplicate_slide(pres: PresentationIR, history: HistoryManager, slide_id: str
     history.record(
         action="duplicate_slide",
         description=f"复制幻灯片 #{slide.slide_num}",
-        slide_id=new_slide.id
+        slide_id=new_slide.id,
+        before={"active_slide_id": prev_active_slide_id},
+        after=new_slide.model_dump(),
+        position=idx + 1,
+        prev_active_slide_id=prev_active_slide_id
     )
 
     return {"success": True, "new_slide_id": new_slide.id, "slide_num": new_slide.slide_num, "message": f"已成功复制幻灯片为第 {new_slide.slide_num} 页"}

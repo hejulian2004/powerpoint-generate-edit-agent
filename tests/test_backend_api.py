@@ -5,7 +5,8 @@ from pathlib import Path
 from fastapi.testclient import TestClient
 import pytest
 from backend.main import app
-from backend.state.store import store
+from backend.state.store import store, create_default_demo_presentation
+from backend.session.manager import session_manager
 from pptx_agent_converter.extractor.pptx_parser import PPTXParser
 import tempfile
 import os
@@ -15,7 +16,16 @@ client = TestClient(app)
 _FRONTEND_DIST_INDEX = Path(__file__).resolve().parents[1] / "frontend" / "dist" / "index.html"
 
 
+def _seed_default_demo():
+    """Seeds a fresh demo presentation into the default session for deterministic API tests."""
+    session = session_manager.get_or_create("default")
+    session.pres = create_default_demo_presentation()
+    session.history.clear()
+    return session
+
+
 def test_api_get_presentation():
+    _seed_default_demo()
     resp = client.get("/api/presentation")
     assert resp.status_code == 200
     data = resp.json()
@@ -24,12 +34,127 @@ def test_api_get_presentation():
 
 
 def test_api_slide_svg():
+    _seed_default_demo()
     pres = store.get_presentation()
     first_slide_id = pres.slides[0].id
     resp = client.get(f"/api/slide/{first_slide_id}/svg")
     assert resp.status_code == 200
     assert "image/svg+xml" in resp.headers["content-type"]
     assert "<svg" in resp.text
+
+
+def test_api_models_list(monkeypatch):
+    """POST /api/models proxies the provider /models endpoint and returns model ids."""
+    import httpx
+
+    class FakeResp:
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return {"data": [{"id": "gemini-3.8-flash-high"}, {"id": "gemini-3.1-flash-image"}]}
+
+    class FakeClient:
+        def __init__(self, *args, **kwargs):
+            self.headers = {}
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return False
+
+        async def get(self, url, headers=None):
+            self.called_url = url
+            self.headers = headers or {}
+            return FakeResp()
+
+    monkeypatch.setattr(httpx, "AsyncClient", FakeClient)
+
+    resp = client.post("/api/models", json={
+        "base_url": "https://txy.hejulian.org:8317/v1",
+        "api_key": "sk-test"
+    })
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["models"] == ["gemini-3.8-flash-high", "gemini-3.1-flash-image"]
+    assert data["base_url"] == "https://txy.hejulian.org:8317/v1"
+
+
+def test_api_models_empty_base_url_falls_back_to_settings(monkeypatch):
+    """Empty base_url falls back to the configured default, not a 400."""
+    import httpx
+    from backend.config import settings
+
+    monkeypatch.setattr(settings, "openai_base_url", "https://fallback.example/v1")
+
+    class FakeResp:
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return {"data": [{"id": "fallback-model"}]}
+
+    class FakeClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return False
+
+        async def get(self, url, headers=None):
+            self.called_url = url
+            return FakeResp()
+
+    monkeypatch.setattr(httpx, "AsyncClient", FakeClient)
+
+    resp = client.post("/api/models", json={"base_url": "", "api_key": ""})
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["models"] == ["fallback-model"]
+    assert data["base_url"] == "https://fallback.example/v1"
+
+
+def test_api_models_provider_error(monkeypatch):
+    """Provider HTTP errors surface as 502 with a readable message."""
+    import httpx
+
+    class FakeResp:
+        def raise_for_status(self):
+            class _Resp:
+                status_code = 401
+                text = '{"error": "unauthorized"}'
+            raise httpx.HTTPStatusError("401 Unauthorized", request=None, response=_Resp())
+
+        @property
+        def status_code(self):
+            return 401
+
+        @property
+        def text(self):
+            return '{"error": "unauthorized"}'
+
+    class FakeClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return False
+
+        async def get(self, url, headers=None):
+            return FakeResp()
+
+    monkeypatch.setattr(httpx, "AsyncClient", FakeClient)
+
+    resp = client.post("/api/models", json={"base_url": "https://invalid.example/v1"})
+    assert resp.status_code == 502
+    assert "unauthorized" in resp.json()["detail"]
 
 
 def test_api_settings_update():

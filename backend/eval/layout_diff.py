@@ -175,15 +175,17 @@ class VisualQualityScore:
     """Multidimensional visual quality score evaluation.
 
     Weights:
-    - geometry: 40% (viewport boundary, margin intrusion, collision & overlap)
-    - readability: 25% (text overflow, container fitting, font size)
+    - geometry: 30% (viewport boundary, margin intrusion, collision & overlap)
+    - readability: 20% (text overflow, container fitting, font size)
     - contrast: 15% (WCAG 2.1 contrast ratios)
-    - balance: 20% (alignment consistency, distribution, spacing)
+    - balance: 15% (alignment consistency, distribution, spacing)
+    - aesthetics: 20% (whitespace breathing room, color harmony, typography hierarchy, radius discipline)
     """
     geometry: float = 100.0
     readability: float = 100.0
     contrast: float = 100.0
     balance: float = 100.0
+    aesthetics: float = 100.0
     total: float = 100.0
 
     def to_dict(self) -> Dict[str, Any]:
@@ -192,6 +194,7 @@ class VisualQualityScore:
             "readability": round(self.readability, 1),
             "contrast": round(self.contrast, 1),
             "balance": round(self.balance, 1),
+            "aesthetics": round(self.aesthetics, 1),
             "total": round(self.total, 1),
         }
 
@@ -253,7 +256,7 @@ class LayoutHealthReport:
         return (
             f"页面健康分: {self.score:.1f}/100 [几何:{self.quality_score.geometry:.0f}, "
             f"可读:{self.quality_score.readability:.0f}, 对比:{self.quality_score.contrast:.0f}, "
-            f"平衡:{self.quality_score.balance:.0f}] ({counts})。主要建议: {top_defects}"
+            f"平衡:{self.quality_score.balance:.0f}, 美观:{self.quality_score.aesthetics:.0f}] ({counts})。主要建议: {top_defects}"
         )
 
     def to_dict(self) -> Dict[str, Any]:
@@ -326,7 +329,14 @@ class LayoutDiffEngine:
         else:
             passed_checks.append("clean_grid_alignment")
 
-        # Multidimensional Quality Scoring (Geometry 40%, Readability 25%, Contrast 15%, Balance 20%)
+        # 6. Aesthetic Quality Analysis (whitespace, color harmony, typography hierarchy, radius discipline)
+        aesthetic_defects, aesthetic_penalty = cls._check_aesthetics(slide)
+        if aesthetic_defects:
+            defects.extend(aesthetic_defects)
+        else:
+            passed_checks.append("clean_aesthetic_harmony")
+
+        # Multidimensional Quality Scoring (Geometry 30%, Readability 20%, Contrast 15%, Balance 15%, Aesthetics 20%)
         # 1. Geometry dimension (clipping & overlaps)
         geom_penalty = 0.0
         for d in clipping_defects:
@@ -353,12 +363,16 @@ class LayoutDiffEngine:
             balance_penalty += 15.0 if d.severity == "warning" else 8.0
         balance_score = max(0.0, min(100.0, 100.0 - balance_penalty))
 
-        # 5. Weighted composite total
+        # 5. Aesthetic dimension (whitespace, color restraint, typography hierarchy, radius discipline)
+        aesthetic_score = max(0.0, min(100.0, 100.0 - aesthetic_penalty))
+
+        # 6. Weighted composite total
         total_score = round(
-            0.40 * geometry_score +
-            0.25 * readability_score +
+            0.30 * geometry_score +
+            0.20 * readability_score +
             0.15 * contrast_score +
-            0.20 * balance_score,
+            0.15 * balance_score +
+            0.20 * aesthetic_score,
             1
         )
         quality_score = VisualQualityScore(
@@ -366,6 +380,7 @@ class LayoutDiffEngine:
             readability=round(readability_score, 1),
             contrast=round(contrast_score, 1),
             balance=round(balance_score, 1),
+            aesthetics=round(aesthetic_score, 1),
             total=total_score
         )
 
@@ -772,6 +787,148 @@ class LayoutDiffEngine:
                         }
                     ))
         return defects
+
+    # -----------------------------------------------------------------
+    # Check 6: Aesthetics & Visual Discipline
+    # -----------------------------------------------------------------
+    @classmethod
+    def _check_aesthetics(cls, slide: SlideIR) -> Tuple[List[LayoutDefect], float]:
+        """Evaluates slide aesthetics: whitespace breathing room, color harmony,
+        typographic hierarchy, and form discipline (e.g. corner radius)."""
+        defects: List[LayoutDefect] = []
+        penalty = 0.0
+
+        if not slide.elements:
+            return defects, penalty
+
+        canvas_w = slide.width or 1280.0
+        canvas_h = slide.height or 720.0
+        canvas_area = canvas_w * canvas_h
+
+        # 1. Whitespace & content density
+        non_bg_elements = [
+            e for e in slide.elements
+            if not (isinstance(e, ShapeElementIR) and e.width >= (canvas_w - 40.0) and e.height >= (canvas_h - 40.0))
+        ]
+        if non_bg_elements:
+            total_elem_area = sum(e.width * e.height for e in non_bg_elements)
+            coverage_ratio = total_elem_area / canvas_area if canvas_area > 0 else 0.0
+
+            if coverage_ratio > 0.65:
+                p = min(20.0, (coverage_ratio - 0.65) * 100.0)
+                penalty += p
+                defects.append(LayoutDefect(
+                    defect_type="poor_whitespace",
+                    severity="warning" if coverage_ratio > 0.75 else "info",
+                    element_ids=[e.id for e in non_bg_elements[:4]],
+                    description=f"画布元素覆盖率过高 ({coverage_ratio * 100:.0f}%)，缺少留白呼吸感，页面显拥挤"
+                ))
+
+        # 2. Color harmony: detect garish neon colors and rainbow chaos
+        accent_colors: List[str] = []
+        garish_elements: List[str] = []
+
+        def _is_neutral(rgb: Tuple[int, int, int]) -> bool:
+            r, g, b = rgb
+            max_c, min_c = max(r, g, b), min(r, g, b)
+            if max_c > 240 and min_c > 240:
+                return True
+            if max_c < 30:
+                return True
+            delta = max_c - min_c
+            l = (max_c + min_c) / (2.0 * 255.0)
+            s = delta / (255.0 * (1.0 - abs(2.0 * l - 1.0))) if (1.0 - abs(2.0 * l - 1.0)) > 0.05 else 0.0
+            return s < 0.15
+
+        def _is_garish_neon(rgb: Tuple[int, int, int]) -> bool:
+            r, g, b = rgb
+            if (r in (0, 255) and g in (0, 255) and b in (0, 255)) and not (r == g == b):
+                return True
+            max_c, min_c = max(r, g, b), min(r, g, b)
+            l = (max_c + min_c) / (2.0 * 255.0)
+            delta = max_c - min_c
+            s = delta / (255.0 * (1.0 - abs(2.0 * l - 1.0))) if (1.0 - abs(2.0 * l - 1.0)) > 0.05 else 0.0
+            return s > 0.95 and 0.40 <= l <= 0.60
+
+        for elem in slide.elements:
+            colors_to_check: List[str] = []
+            if isinstance(elem, ShapeElementIR) and elem.style:
+                if elem.style.fill and elem.style.fill.type == "solid" and elem.style.fill.color:
+                    colors_to_check.append(elem.style.fill.color)
+                if elem.style.border and elem.style.border.color:
+                    colors_to_check.append(elem.style.border.color)
+            elif isinstance(elem, TextElementIR) and elem.text_content:
+                for p in elem.text_content.paragraphs:
+                    for r in p.runs:
+                        if r.font and r.font.color:
+                            colors_to_check.append(r.font.color)
+
+            for c in colors_to_check:
+                rgb = parse_hex_color(c)
+                if _is_garish_neon(rgb):
+                    if elem.id not in garish_elements:
+                        garish_elements.append(elem.id)
+                elif not _is_neutral(rgb):
+                    accent_colors.append(c.upper())
+
+        if garish_elements:
+            penalty += 15.0
+            defects.append(LayoutDefect(
+                defect_type="garish_color",
+                severity="warning",
+                element_ids=garish_elements,
+                description="检测到未经调和的高饱和刺眼原色，破坏商务与技术质感，建议采用中性低饱和强调色"
+            ))
+
+        unique_accents = set(accent_colors)
+        if len(unique_accents) > 3:
+            penalty += 15.0
+            defects.append(LayoutDefect(
+                defect_type="color_disharmony",
+                severity="warning",
+                element_ids=[],
+                description=f"页面使用过多互斥强调色 ({len(unique_accents)} 种)，建议收敛到 1~2 种以维持整体专业度"
+            ))
+
+        # 3. Card corner radius discipline (user constraint: no large rounded cards)
+        oversized_radius_ids: List[str] = []
+        for elem in slide.elements:
+            if isinstance(elem, ShapeElementIR) and elem.style and elem.style.radius is not None:
+                if elem.style.radius > 16.0 and elem.width >= 80.0 and elem.height >= 60.0:
+                    oversized_radius_ids.append(elem.id)
+
+        if oversized_radius_ids:
+            penalty += 15.0
+            defects.append(LayoutDefect(
+                defect_type="oversized_card_radius",
+                severity="warning",
+                element_ids=oversized_radius_ids,
+                description=f"检测到 {len(oversized_radius_ids)} 处大圆角卡片，违背精密技术/小圆角(radius ≤ 3px)设计语言"
+            ))
+
+        # 4. Typographic Hierarchy (font scale contrast between title and body)
+        font_sizes: List[float] = []
+        for elem in slide.elements:
+            if hasattr(elem, "text_content") and elem.text_content:
+                for p in elem.text_content.paragraphs:
+                    for r in p.runs:
+                        if r.font and r.font.size and r.text.strip():
+                            font_sizes.append(float(r.font.size))
+
+        if len(font_sizes) >= 3:
+            max_sz = max(font_sizes)
+            min_sz = min(font_sizes)
+            ratio = max_sz / max(min_sz, 1.0)
+            if ratio < 1.30:
+                penalty += 10.0
+                defects.append(LayoutDefect(
+                    defect_type="weak_hierarchy",
+                    severity="info",
+                    element_ids=[],
+                    description=f"文字字阶比不足 ({ratio:.2f})，重要标题与正文字号过近，缺乏视觉层级冲击力"
+                ))
+
+        return defects, penalty
 
 
 # =====================================================================

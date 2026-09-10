@@ -49,11 +49,16 @@ class PPTAgentState(TypedDict, total=False):
     user_query: str
     intent: str  # "generate_presentation" | "generate_slide" | "modify_elements" | "optimize_layout" | "apply_theme" | "undo" | "chat"
     plan: Optional[str]
+    plan_review: Optional[Dict[str, Any]]
+    plan_iteration: int
+    content_review: Optional[Dict[str, Any]]
+    content_iteration: int
     tool_calls: List[Dict[str, Any]]
     tool_results: List[Dict[str, Any]]
     vision_critique: Optional[str]
     visual_review: Optional[Dict[str, Any]]
     correction_count: int
+    content_refine_count: int
     iteration: int
     max_iterations: int
     final_summary: str
@@ -61,6 +66,7 @@ class PPTAgentState(TypedDict, total=False):
     presentation_version: int
     last_target_id: Optional[str]
     confirmed_tool_ids: List[str]
+    subagent_memories: Dict[str, Any]
 
 
 # =====================================================================
@@ -106,15 +112,20 @@ async def router_node(state: PPTAgentState, config: RunnableConfig) -> Dict[str,
 
 
 async def planner_node(state: PPTAgentState, config: RunnableConfig) -> Dict[str, Any]:
-    """Generates structural layout and coordinate-safe design plan."""
+    """Generates structural layout and coordinate-safe design plan.
+    
+    If returned here after PlanCriticSubagent rejection, incorporates feedback to refine plan.
+    """
     configurable = config.get("configurable", {})
     on_event: Optional[Callable] = configurable.get("on_event")
     pres: Optional[PresentationIR] = configurable.get("pres")
     intent = state.get("intent", "chat")
     user_query = state.get("user_query", "")
+    prev_plan_review = state.get("plan_review")
 
     if on_event:
-        await _safe_emit(on_event,{"type": "agent_thinking", "status": "planning", "text": f"规划设计策略 ({intent})，计算 1280x720 坐标体系..."})
+        status_text = "根据评审建议重构优化方案大纲..." if prev_plan_review and not prev_plan_review.get("approved", True) else f"规划设计策略 ({intent})，计算 1280x720 坐标体系..."
+        await _safe_emit(on_event, {"type": "agent_thinking", "status": "planning", "text": status_text})
 
     plan_desc = ""
     if intent == "undo":
@@ -133,64 +144,104 @@ async def planner_node(state: PPTAgentState, config: RunnableConfig) -> Dict[str
     elif intent == "modify_elements":
         plan_desc = "定位目标图元，执行精确属性微调与样式重写。"
 
+    # If previous audit had recommendations, incorporate into refined plan
+    if prev_plan_review and prev_plan_review.get("recommendations"):
+        plan_desc += f" [已吸纳规划评审优化要求: {prev_plan_review['recommendations']}]"
+
     return {
         "plan": plan_desc
     }
 
 
+async def plan_critic_node(state: PPTAgentState, config: RunnableConfig) -> Dict[str, Any]:
+    """Decoupled, read-only Plan Critic Subagent auditing the proposed plan with persistent memory."""
+    configurable = config.get("configurable", {})
+    on_event: Optional[Callable] = configurable.get("on_event")
+    llm_client: Optional[LLMClient] = configurable.get("llm_client")
+    intent = state.get("intent", "chat")
+    plan_desc = state.get("plan", "")
+    plan_iteration = state.get("plan_iteration", 0) + 1
+
+    subagent_mems = dict(state.get("subagent_memories") or {})
+    from .subagents.memory import SubagentSessionMemory
+    plan_mem = SubagentSessionMemory.from_dict(subagent_mems.get("PlanCriticSubagent", {})) if "PlanCriticSubagent" in subagent_mems else SubagentSessionMemory("PlanCriticSubagent")
+
+    slide_count = 5 if intent == "generate_presentation" else 1
+
+    plan_review_dict = None
+    if intent in ["generate_presentation", "generate_slide", "optimize_layout"]:
+        from .subagents.plan_critic import PlanCriticSubagent
+        plan_review = await PlanCriticSubagent.audit_plan(
+            plan_desc=plan_desc,
+            target_intent=intent,
+            slide_count=slide_count,
+            llm_client=llm_client,
+            session_memory=plan_mem,
+            on_event=on_event
+        )
+        plan_review_dict = plan_review.to_dict()
+
+    subagent_mems["PlanCriticSubagent"] = plan_mem.to_dict()
+
+    return {
+        "plan_review": plan_review_dict,
+        "plan_iteration": plan_iteration,
+        "subagent_memories": subagent_mems
+    }
+
+
 async def executor_node(state: PPTAgentState, config: RunnableConfig) -> Dict[str, Any]:
-    """Interacts with LLM tool-calling or heuristic planner to generate tool calls."""
+    """Delegates slide production and tool manipulation to independent ExecutorSubagent.
+    
+    The ExecutorSubagent executes operations in an isolated context and reports the execution
+    summary and results back to the main agent for centralized lifecycle orchestration.
+    """
     configurable = config.get("configurable", {})
     on_event: Optional[Callable] = configurable.get("on_event")
     pres: Optional[PresentationIR] = configurable.get("pres")
     memory: Optional[AgentMemory] = configurable.get("memory")
+    history: Optional[HistoryManager] = configurable.get("history")
     llm_client: Optional[LLMClient] = configurable.get("llm_client")
 
     user_query = state.get("user_query", "")
     intent = state.get("intent", "chat")
-    active_slide = pres.get_active_slide() if pres else None
+    plan_desc = state.get("plan", "")
     session = configurable.get("session")
     last_target_id = getattr(session, "last_target_id", None) if session else None
     if not last_target_id:
         last_target_id = state.get("last_target_id")
 
-    # Check if live LLM with valid non-mock API key is configured
-    has_live_llm = llm_client and llm_client.api_key and not llm_client.api_key.startswith("mock_")
+    # Delegate to decoupled ExecutorSubagent
+    from .subagents.executor import ExecutorSubagent
+    report = await ExecutorSubagent.execute_task(
+        intent=intent,
+        user_query=user_query,
+        plan_desc=plan_desc,
+        pres=pres,
+        history=history,
+        memory=memory,
+        llm_client=llm_client,
+        last_target_id=last_target_id,
+        session=session,
+        on_event=on_event
+    )
 
-    tool_calls: List[Dict[str, Any]] = []
+    current_target_id = report.last_target_id
+    if session and current_target_id:
+        session.last_target_id = current_target_id
 
-    if has_live_llm:
-        # Execute via live LLM tool calling
-        system_prompt = _build_llm_system_prompt(pres, memory)
-        messages = [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_query}
-        ]
-        try:
-            resp = await llm_client.chat_completion(
-                messages=messages,
-                tools=tools.schemas,
-                role="reasoning"
-            )
-            msg = resp["choices"][0]["message"]
-            raw_tc = msg.get("tool_calls", [])
-            for tc in raw_tc:
-                fn_name = tc["function"]["name"]
-                try:
-                    args = json.loads(tc["function"].get("arguments", "{}"))
-                except Exception:
-                    args = {}
-                tool_calls.append({"name": fn_name, "arguments": args, "id": tc.get("id", f"call_{uuid.uuid4().hex[:6]}")})
-        except Exception as e:
-            logger.warning(f"Live LLM call error: {e}, falling back to intelligent rule planner")
-            tool_calls = _heuristic_tool_planner(intent, user_query, pres, last_target_id=last_target_id)
-    else:
-        # Fallback / Mock intelligent rule planner
-        tool_calls = _heuristic_tool_planner(intent, user_query, pres, last_target_id=last_target_id)
+    # Sync active slide id
+    active_slide_id = state.get("active_slide_id")
+    if pres and pres.slides:
+        if not pres.active_slide_id:
+            pres.active_slide_id = pres.slides[0].id
+        active_slide_id = pres.active_slide_id
 
     return {
-        "tool_calls": tool_calls,
-        "last_target_id": last_target_id
+        "tool_results": report.tool_results,
+        "presentation_version": report.presentation_version,
+        "last_target_id": current_target_id,
+        "active_slide_id": active_slide_id
     }
 
 
@@ -224,7 +275,7 @@ def _heuristic_tool_planner(
             "name": "generate_presentation",
             "arguments": {
                 "topic": topic,
-                "theme": "monochrome_studio",
+                "theme": "editorial_technical",
                 "replace": True,
                 "slides": [
                     {
@@ -600,67 +651,89 @@ async def tools_node(state: PPTAgentState, config: RunnableConfig) -> Dict[str, 
     }
 
 
+async def content_critic_node(state: PPTAgentState, config: RunnableConfig) -> Dict[str, Any]:
+    """Runs decoupled, read-only content & narrative structural critique via ContentCriticSubagent with dedicated history."""
+    configurable = config.get("configurable", {})
+    pres: Optional[PresentationIR] = configurable.get("pres")
+    llm_client: Optional[LLMClient] = configurable.get("llm_client")
+    on_event: Optional[Callable] = configurable.get("on_event")
+    content_iteration = state.get("content_iteration", 0) + 1
+
+    subagent_mems = dict(state.get("subagent_memories") or {})
+    from .subagents.memory import SubagentSessionMemory
+    content_mem = SubagentSessionMemory.from_dict(subagent_mems.get("ContentCriticSubagent", {})) if "ContentCriticSubagent" in subagent_mems else SubagentSessionMemory("ContentCriticSubagent")
+
+    active_slide = pres.get_active_slide() if pres else None
+    if pres and (not active_slide or len(active_slide.elements) == 0):
+        for s in pres.slides:
+            if len(s.elements) > 0:
+                active_slide = s
+                pres.active_slide_id = s.id
+                break
+
+    content_dict = None
+    if active_slide and len(active_slide.elements) > 0:
+        from .subagents.content_critic import ContentCriticSubagent
+        c_res = await ContentCriticSubagent.audit_content(
+            slide=active_slide,
+            llm_client=llm_client,
+            session_memory=content_mem,
+            on_event=on_event
+        )
+        content_dict = c_res.to_dict()
+
+    subagent_mems["ContentCriticSubagent"] = content_mem.to_dict()
+
+    return {
+        "content_review": content_dict,
+        "content_iteration": content_iteration,
+        "subagent_memories": subagent_mems
+    }
+
+
 async def vision_critic_node(state: PPTAgentState, config: RunnableConfig) -> Dict[str, Any]:
-    """Runs comprehensive visual balance, geometric collision, and layout critique."""
+    """Runs comprehensive visual balance, geometric collision, and layout critique with dedicated history."""
     configurable = config.get("configurable", {})
     pres: Optional[PresentationIR] = configurable.get("pres")
     llm_client: Optional[LLMClient] = configurable.get("llm_client")
     on_event: Optional[Callable] = configurable.get("on_event")
 
+    subagent_mems = dict(state.get("subagent_memories") or {})
+    from .subagents.memory import SubagentSessionMemory
+    vision_mem = SubagentSessionMemory.from_dict(subagent_mems.get("VisualCriticSubagent", {})) if "VisualCriticSubagent" in subagent_mems else SubagentSessionMemory("VisualCriticSubagent")
+
     critique = None
     review_dict = None
     active_slide = pres.get_active_slide() if pres else None
 
+    # In zero-to-one deck generation or initial state, if active slide has no elements, inspect first non-empty slide
+    if pres and (not active_slide or len(active_slide.elements) == 0):
+        for s in pres.slides:
+            if len(s.elements) > 0:
+                active_slide = s
+                pres.active_slide_id = s.id
+                break
+
     if active_slide and len(active_slide.elements) > 0:
         if settings.enable_vision_loop:
-            if on_event:
-                await _safe_emit(on_event,{
-                    "type": "visual_remediation",
-                    "phase": "evaluating",
-                    "status": "evaluating",
-                    "slide_id": active_slide.id,
-                    "text": "排版几何与视觉多模态评估自检中..."
-                })
-                await _safe_emit(on_event,{"type": "vision_loop", "status": "reviewing", "text": "排版几何与视觉平衡多模态自检中..."})
-
-            from ..eval.visual_critic import VisualCritic
-            # Review slide geometry and contrast
-            review_res = await VisualCritic.review_slide(
+            # Delegate to decoupled, context-isolated VisualCriticSubagent
+            from .subagents.visual_critic import VisualCriticSubagent
+            review_res = await VisualCriticSubagent.audit_slide(
                 slide=active_slide,
                 llm_client=llm_client,
-                include_multimodal=bool(llm_client and getattr(llm_client, "api_key", None))
+                include_multimodal=bool(llm_client and getattr(llm_client, "api_key", None)),
+                session_memory=vision_mem,
+                on_event=on_event
             )
             critique = review_res.critique_summary
             review_dict = review_res.to_dict()
 
-            if on_event:
-                # Standardized visual_remediation telemetry event
-                await _safe_emit(on_event,{
-                    "type": "visual_remediation",
-                    "phase": "diagnosed",
-                    "status": "diagnosed",
-                    "slide_id": active_slide.id,
-                    "score": review_res.health_report.score,
-                    "quality_score": review_res.health_report.quality_score.to_dict(),
-                    "defects_count": len(review_res.health_report.defects),
-                    "critical_count": review_res.health_report.critical_count,
-                    "auto_executable_count": len(review_res.remediation_plan.auto_executable_actions),
-                    "actions": [a.to_dict() for a in review_res.remediation_plan.actions],
-                    "needs_auto_correction": review_res.needs_auto_correction,
-                    "text": f"排版体检完成: 健康分 {review_res.health_report.score:.1f}/100 [几何:{review_res.health_report.quality_score.geometry:.0f}, 可读:{review_res.health_report.quality_score.readability:.0f}, 对比:{review_res.health_report.quality_score.contrast:.0f}, 平衡:{review_res.health_report.quality_score.balance:.0f}]"
-                })
-                await _safe_emit(on_event,{
-                    "type": "vision_critique_completed",
-                    "score": review_res.health_report.score,
-                    "quality_score": review_res.health_report.quality_score.to_dict(),
-                    "defects_count": len(review_res.health_report.defects),
-                    "summary": review_res.critique_summary,
-                    "needs_auto_correction": review_res.needs_auto_correction
-                })
+    subagent_mems["VisualCriticSubagent"] = vision_mem.to_dict()
 
     return {
         "vision_critique": critique,
-        "visual_review": review_dict
+        "visual_review": review_dict,
+        "subagent_memories": subagent_mems
     }
 
 
@@ -815,6 +888,8 @@ async def summary_node(state: PPTAgentState, config: RunnableConfig) -> Dict[str
             "type": "agent_finished",
             "summary": final_text,
             "tools_executed": tool_results,
+            "plan_review": state.get("plan_review"),
+            "content_review": state.get("content_review"),
             "vision_critique": vision_critique,
             "visual_review": visual_review,
             "correction_count": correction_count,
@@ -852,6 +927,27 @@ def _build_llm_system_prompt(pres: Optional[PresentationIR], memory: Optional[Ag
 - 标题推荐字号 30~44px，正文推荐字号 15~18px，数字指标推荐 24~36px 粗体。
 - 左右边距通常建议 >= 80px，卡片间距 20~40px。
 
+【设计语言 — 技术编辑风 / 精密仪表美学】:
+- 使用小圆角（radius ≤ 2px）而非大圆角卡片；不要给每张卡叠加阴影。
+- 文字是主要视觉：标题大而有力，正文克制；把数字、结论做成"主角"，而不是把所有内容塞进相同卡片。
+- 每个版式只突出一个强调色元素（顶缘细条、左缘条、色块数字），其余保持中性安静。
+- 用细发丝线（hairline）、编号等结构元素承载信息；只有当内容确实是序列（时间线/步骤）时才用 01/02/03 编号。
+- 避免模板感：不要给每个标题都套一个"标签横幅"，不要用大号圆角胶囊徽章。
+
+【文字精简铁律】:
+- 每页幻灯片文字必须精简：标题一句话，正文用短语或要点（每条 ≤ 20 字），数字/结论直接上大号字，绝不堆砌整段文字。
+- 一张卡片/列内最多 1 个结论 + 1~2 条短语要点；放不下的内容拆到下一页或删减。
+- 优先用图标、色块、编号、图表等非文字元素代替大段说明。
+
+【语言：以中文为主】:
+- 本工具仅供个人使用，所有标题、正文、卡片文案一律使用中文。
+- 专业术语保持中文表达即可（如"异常检测""强化学习""提示工程"）；英文缩写可保留（如 AD、RL、LLM、SOTA），但不要整段英文。
+- 单位、代码、专有模型名（如 MVTec-AD、Segoe UI）保留原文。
+
+【UI 质感：渐变与配色】:
+- 可用主题强调色的双色渐变（如 accent → accent_soft）做标题/卡片的装饰色带或顶部条，让页面更有层次。
+- 保持一页一个主色系，渐变只用于点缀性装饰（色带、数值块、标题下划条），不要整页渐变。
+
 【演示文稿当前状态】:
 - 标题: {pres.title}
 - 幻灯片总数: {len(pres.slides)}
@@ -863,7 +959,7 @@ def _build_llm_system_prompt(pres: Optional[PresentationIR], memory: Optional[Ag
 {memory_str}
 
 【重要操作准则】:
-1. 当用户要求生成完整 PPT 时，调用 generate_presentation 工具。
+1. 当用户要求生成完整 PPT 时，调用 generate_presentation 工具，主题可选 editorial_technical / engineering_dark / tech_blue 等。
 2. 当用户要求生成时间线、指标或卡片等布局时，调用 generate_slide_layout 或 batch_add_cards。
 3. 当用户要求微调特定元素或排版时，调用 update_element, format_text, optimize_layout 或 align_elements。
 """
@@ -879,15 +975,34 @@ def should_route_planner(state: PPTAgentState) -> str:
     return "planner_node"
 
 
-def should_execute_tools(state: PPTAgentState) -> str:
-    tool_calls = state.get("tool_calls", [])
-    if tool_calls:
-        return "tools_node"
-    return "summary_node"
+def should_route_plan_critic(state: PPTAgentState) -> str:
+    """Decides whether to proceed to executor or loop back to planner to refine outline."""
+    intent = state.get("intent", "chat")
+    if intent not in ["generate_presentation", "generate_slide", "optimize_layout"]:
+        return "executor_node"
+
+    plan_review = state.get("plan_review")
+    plan_it = state.get("plan_iteration", 0)
+
+    # If PlanCriticSubagent did not approve and within max 2 iterations, loop back to planner
+    if plan_review and not plan_review.get("approved", True) and plan_it < 2:
+        return "planner_node"
+    return "executor_node"
+
+
+def should_route_content_critic(state: PPTAgentState) -> str:
+    """Decides whether to proceed to visual critic or loop back to executor to refine text."""
+    content_review = state.get("content_review")
+    content_it = state.get("content_iteration", 0)
+
+    # If ContentCriticSubagent did not approve and within max 2 iterations, loop back to executor
+    if content_review and not content_review.get("approved", True) and content_it < 2:
+        return "executor_node"
+    return "vision_critic_node"
 
 
 def should_auto_correct(state: PPTAgentState) -> str:
-    """Decides whether to enter auto-correction loop based on critical defects."""
+    """Decides whether to enter layout auto-correction loop based on critical geometric defects."""
     visual_review = state.get("visual_review")
     if not visual_review:
         return "summary_node"
@@ -899,22 +1014,26 @@ def should_auto_correct(state: PPTAgentState) -> str:
     correction_count = state.get("correction_count", 0)
     max_allowed = getattr(settings, "max_visual_iterations", 3)
 
-    # Policy: only critical defects (clipping, collisions, severe overflow) with confidence >= 0.9
-    # trigger auto-correction up to settings.max_visual_iterations
     if (has_critical or needs_correction) and auto_count > 0 and correction_count < max_allowed:
         return "auto_correct_node"
     return "summary_node"
 
 
 def build_ppt_agent_graph() -> StateGraph:
-    """Builds and compiles the LangGraph StateGraph."""
+    """Builds and compiles the complete LangGraph closed-loop workflow:
+    START -> router_node -> planner_node -> plan_critic_node (loop if rejected)
+          -> executor_node -> content_critic_node (loop if rejected)
+          -> vision_critic_node -> auto_correct_node (loop if geometric defects)
+          -> summary_node -> END
+    """
     workflow = StateGraph(PPTAgentState)
 
     # Add Nodes
     workflow.add_node("router_node", router_node)
     workflow.add_node("planner_node", planner_node)
+    workflow.add_node("plan_critic_node", plan_critic_node)
     workflow.add_node("executor_node", executor_node)
-    workflow.add_node("tools_node", tools_node)
+    workflow.add_node("content_critic_node", content_critic_node)
     workflow.add_node("vision_critic_node", vision_critic_node)
     workflow.add_node("auto_correct_node", auto_correct_node)
     workflow.add_node("summary_node", summary_node)
@@ -925,12 +1044,16 @@ def build_ppt_agent_graph() -> StateGraph:
         "planner_node": "planner_node",
         "summary_node": "summary_node"
     })
-    workflow.add_edge("planner_node", "executor_node")
-    workflow.add_conditional_edges("executor_node", should_execute_tools, {
-        "tools_node": "tools_node",
-        "summary_node": "summary_node"
+    workflow.add_edge("planner_node", "plan_critic_node")
+    workflow.add_conditional_edges("plan_critic_node", should_route_plan_critic, {
+        "planner_node": "planner_node",
+        "executor_node": "executor_node"
     })
-    workflow.add_edge("tools_node", "vision_critic_node")
+    workflow.add_edge("executor_node", "content_critic_node")
+    workflow.add_conditional_edges("content_critic_node", should_route_content_critic, {
+        "executor_node": "executor_node",
+        "vision_critic_node": "vision_critic_node"
+    })
     workflow.add_conditional_edges("vision_critic_node", should_auto_correct, {
         "auto_correct_node": "auto_correct_node",
         "summary_node": "summary_node"

@@ -6,7 +6,7 @@ import logging
 from typing import Dict, Any, Optional
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
-from ..state.store import store, create_default_demo_presentation
+from ..state.store import store
 from ..session.manager import session_manager
 from ..session.session import PPTSession
 from ..ir.svg_renderer import SVGRenderer
@@ -48,10 +48,7 @@ def build_preview_update(session: PPTSession, slide_id: Optional[str] = None) ->
 async def websocket_endpoint(websocket: WebSocket):
     """Session-aware WebSocket endpoint for streaming editing, chat, and instant previews."""
     session_id = websocket.query_params.get("session_id") or store.active_session_id
-    session: PPTSession = session_manager.get_or_create(
-        session_id=session_id,
-        pres_factory=create_default_demo_presentation
-    )
+    session: PPTSession = session_manager.get_or_create(session_id=session_id)
 
     await store.connect_ws(websocket, session_id=session.session_id)
     logger.info(f"WebSocket client connected to session '{session.session_id}'")
@@ -301,8 +298,24 @@ async def websocket_endpoint(websocket: WebSocket):
                             "color": color,
                             "slide_id": args.get("slide_id")
                         }, session.pres, session.history)
-                    elif action in ("add_shape", "add_text", "add_connector", "optimize_layout", "apply_theme"):
+                    elif action == "group_elements":
+                        res = tools.execute(action, args, session.pres, session.history)
+                        if res.get("group_id"):
+                            session.last_target_id = res.get("group_id")
+                    elif action == "ungroup_elements":
                         tools.execute(action, args, session.pres, session.history)
+                        session.last_target_id = None
+                    elif action == "align_elements":
+                        tools.execute(action, args, session.pres, session.history)
+                        session.last_target_id = None
+                    elif action in (
+                        "add_shape", "add_text", "add_connector", "optimize_layout", "apply_theme",
+                        "clear_slide_elements", "generate_slide_layout",
+                        "batch_add_cards", "auto_fix_layout",
+                    ):
+                        res = tools.execute(action, args, session.pres, session.history)
+                        if res.get("element_id"):
+                            session.last_target_id = res.get("element_id")
 
                     await store.broadcast({
                         "type": "presentation_updated",

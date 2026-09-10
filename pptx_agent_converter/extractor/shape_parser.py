@@ -88,7 +88,13 @@ class ShapeParser:
                     if adj is not None and adj.get("fmla"):
                         parts = adj.get("fmla", "").split()
                         if len(parts) >= 2 and parts[-1].isdigit():
-                            radius = round(float(parts[-1]) / 100000.0, 4)
+                            # Convert OOXML adj back to a pixel radius (96 DPI):
+                            # radius_px = adj / 100000 * min(w, h)_px
+                            frac = float(parts[-1]) / 100000.0
+                            min_side_in = 1.0
+                            if pos is not None:
+                                min_side_in = min(pos.width, pos.height) or 1.0
+                            radius = round(frac * min_side_in * 96.0, 2)
             else:
                 cust_geom = sp_pr.find("a:custGeom", NS)
                 if cust_geom is not None:

@@ -107,3 +107,52 @@ def test_export_clean_presentation():
     finally:
         if os.path.exists(out_path):
             os.remove(out_path)
+
+
+def test_export_never_uses_invalid_textbox_geometry():
+    """Regression: textboxes must not emit prst="textbox" (invalid DrawingML).
+
+    PowerPoint refuses to open packages containing the non-existent
+    "textbox" preset geometry. Textboxes must use prst="rect" + txBox="1".
+    """
+    slide = SlideIR(
+        id="tb_slide",
+        slide_num=1,
+        title="Textbox Slide",
+        background=FillStyle(type="solid", color="#FFFFFF")
+    )
+    slide.add_element(
+        TextElementIR(
+            id="tb1",
+            x=100,
+            y=80,
+            width=800,
+            height=60,
+            text_content=TextContentIR.from_plain_text(
+                "Hello Textbox",
+                font=FontIR(name="Arial", size=24.0, color="#111111")
+            )
+        )
+    )
+
+    pres_ir = PresentationIR(title="Textbox Deck", slides=[slide])
+    ooxml_pres = PPTIRConverter.ir_to_presentation(pres_ir)
+
+    with tempfile.NamedTemporaryFile(suffix=".pptx", delete=False) as tmp:
+        out_path = tmp.name
+
+    try:
+        builder = PPTXBuilder()
+        builder.build(ooxml_pres, out_path)
+
+        with zipfile.ZipFile(out_path, "r") as z:
+            slide_xml = z.read("ppt/slides/slide1.xml").decode("utf-8")
+
+        # The invalid preset geometry must never appear.
+        assert 'prst="textbox"' not in slide_xml
+        # Textbox must be rendered as rect geometry flagged txBox=1.
+        assert 'prst="rect"' in slide_xml
+        assert 'txBox="1"' in slide_xml
+    finally:
+        if os.path.exists(out_path):
+            os.remove(out_path)
