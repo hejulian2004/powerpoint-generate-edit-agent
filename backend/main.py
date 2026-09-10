@@ -17,11 +17,14 @@ app = FastAPI(
     version="1.0.0"
 )
 
-# Enable CORS for local Vite dev server
+# CORS: explicit origin allowlist from CORS_ORIGINS (dev origins by default).
+# "*" is supported but disables credential sharing per the CORS spec.
+_cors_origins = settings.cors_origin_list or ["*"]
+_allow_all_origins = _cors_origins == ["*"]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
+    allow_origins=_cors_origins,
+    allow_credentials=not _allow_all_origins,
     allow_methods=["*"],
     allow_headers=["*"],
 )

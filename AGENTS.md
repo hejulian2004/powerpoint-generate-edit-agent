@@ -131,3 +131,7 @@ plan_critic_node (PlanCriticSubagent blind audit)
 - Runtime mutations must dispatch through `backend/agent/mutation_gateway.py` (the single writer); the gateway validates, risk-gates, and transactionally calls `backend/agent/tools.py:execute(tool_name, args, pres, history)`.
 - Reversible mutations are tracked in `HistoryManager` (`backend/ir/patch.py`).
 - Mock LLM fallback is test-only: set `APP_ENV=test` and `MOCK_LLM=true`; production without an API key fails fast.
+
+### 4. Quality Evaluation & Security
+- All layout quality calls go through `backend/quality/` (`QualityService` + `QualityIssue`/`QualityReport`): the IR engine `backend/eval/` and LayoutSpec engine `backend/evaluation/` stay separate; consumers must not import the engines directly.
+- CORS uses the `CORS_ORIGINS` allowlist (local Vite/Tauri origins by default); `"*"` is opt-in and disables credentialed CORS.
