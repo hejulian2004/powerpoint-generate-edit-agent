@@ -70,9 +70,16 @@ class AgentRuntime:
         history: HistoryManager,
         session: Optional[Any] = None,
         on_event: Optional[Callable[[Dict[str, Any]], Any]] = None,
-        max_iterations: int = 5
+        max_iterations: int = 5,
+        confirmed_tool_ids: Optional[List[str]] = None,
     ) -> Dict[str, Any]:
-        """Runs an interactive turn executed through the LangGraph state machine."""
+        """Runs an interactive turn executed through the LangGraph state machine.
+
+        `confirmed_tool_ids` lets a caller explicitly unblock previously flagged
+        call ids for this turn (used by the confirmation lifecycle when replaying
+        the original pending call through the graph).
+        """
+        confirmed_ids = list(confirmed_tool_ids or [])
         initial_state: PPTAgentState = {
             "user_query": user_message,
             "messages": [{"role": "user", "content": user_message}],
@@ -81,7 +88,8 @@ class AgentRuntime:
             "active_slide_id": pres.active_slide_id,
             "presentation_version": pres.version,
             "tool_calls": [],
-            "tool_results": []
+            "tool_results": [],
+            "confirmed_tool_ids": confirmed_ids,
         }
 
         config = {
@@ -91,7 +99,8 @@ class AgentRuntime:
                 "session": session,
                 "on_event": on_event,
                 "llm_client": self.llm,
-                "memory": self.memory
+                "memory": self.memory,
+                "confirmed_tool_ids": confirmed_ids,
             }
         }
 
@@ -124,3 +133,104 @@ class AgentRuntime:
                 "version": pres.version,
                 "error": str(e)
             }
+
+    # ------------------------------------------------------------------
+    # Pending confirmation lifecycle (PR6-hardening round 2)
+    # ------------------------------------------------------------------
+
+    async def confirm_pending(
+        self,
+        session: Any,
+        call_id: str,
+        on_event: Optional[Callable[[Dict[str, Any]], Any]] = None,
+    ) -> Dict[str, Any]:
+        """Executes the ORIGINAL pending call after explicit user confirmation.
+
+        Confirmation is invalidated when the presentation changed since the call was
+        blocked: executing it against a newer version could hit a different element.
+        """
+        record = session.get_pending_confirmation(call_id) if session else None
+        if record is None:
+            result = {
+                "success": False,
+                "error": "unknown_confirmation",
+                "message": f"未找到待确认的挂起调用（call_id: {call_id}）。",
+            }
+            if on_event:
+                await on_event({"type": "confirmation_failed", "call_id": call_id, **result})
+            return result
+
+        current_version = session.pres.version
+        if record["presentation_version"] != current_version:
+            session.consume_pending_confirmation(call_id)
+            result = {
+                "success": False,
+                "error": "confirmation_invalidated",
+                "call_id": call_id,
+                "expected_version": record["presentation_version"],
+                "current_version": current_version,
+                "message": (
+                    "演示文稿在等待确认期间已发生变化，该挂起调用已失效，"
+                    "请重新发起指令。"
+                ),
+            }
+            if on_event:
+                await on_event({"type": "confirmation_invalidated", **result})
+            return result
+
+        session.consume_pending_confirmation(call_id)
+
+        if on_event:
+            await on_event({
+                "type": "confirmation_approved",
+                "call_id": call_id,
+                "tool": record["tool"],
+            })
+
+        res = tools.execute(record["tool"], record["arguments"], session.pres, session.history)
+        target_el_id = record["arguments"].get("element_id") or (
+            res.get("element_id") if isinstance(res, dict) else None
+        )
+        if target_el_id and hasattr(session, "last_target_id"):
+            session.last_target_id = target_el_id
+
+        if on_event:
+            await on_event({
+                "type": "tool_completed",
+                "tool": record["tool"],
+                "result": res,
+                "presentation_version": session.pres.version,
+                "confirmed_call_id": call_id,
+            })
+            await on_event({
+                "type": "confirmation_resolved",
+                "call_id": call_id,
+                "tool": record["tool"],
+                "success": bool(res.get("success")) if isinstance(res, dict) else False,
+            })
+
+        return {
+            "success": bool(res.get("success")) if isinstance(res, dict) else False,
+            "call_id": call_id,
+            "tool": record["tool"],
+            "result": res,
+            "version": session.pres.version,
+        }
+
+    async def cancel_pending(
+        self,
+        session: Any,
+        call_id: str,
+        on_event: Optional[Callable[[Dict[str, Any]], Any]] = None,
+    ) -> Dict[str, Any]:
+        """Discards a pending call without executing it."""
+        record = session.consume_pending_confirmation(call_id) if session else None
+        result = {
+            "success": record is not None,
+            "call_id": call_id,
+            "cancelled": record is not None,
+            "message": "已取消待确认操作。" if record else f"未找到待确认的挂起调用（call_id: {call_id}）。",
+        }
+        if on_event:
+            await on_event({"type": "confirmation_cancelled", **result})
+        return result

@@ -11,7 +11,8 @@ from pathlib import Path
 import pytest
 
 from backend.fidelity.capability import (
-    FidelityCapability,
+    EngineCapabilities,
+    DetectedFeatures,
     CapabilityDetector,
     SUPPORTED_FEATURES,
     DETECT_ONLY_FEATURES,
@@ -32,25 +33,40 @@ def _require_deck(name: str) -> Path:
 
 
 # =====================================================================
-# FidelityCapability structure
+# EngineCapabilities (static support matrix) vs DetectedFeatures (presence)
 # =====================================================================
 
-def test_engine_supported_matrix_defaults():
-    cap = FidelityCapability.engine_supported()
-    assert cap.shape is True
-    assert cap.text is True
-    assert cap.image is True
-    assert cap.group is True
-    assert cap.table is True
-    # Detect-only by default
-    assert cap.chart is False
-    assert cap.smartart is False
-    assert cap.animation is False
-    assert cap.master_slide is False
+def test_engine_capabilities_support_matrix():
+    engine = EngineCapabilities()
+    # Editable features
+    assert engine.supports_edit("shape") is True
+    assert engine.supports_edit("text") is True
+    assert engine.supports_edit("image") is True
+    assert engine.supports_edit("group") is True
+    assert engine.supports_edit("table") is True
+    assert engine.supports_edit("theme") is True
+    # Detect-only features are not editable
+    assert engine.supports_edit("chart") is False
+    assert engine.supports_edit("smartart") is False
+    assert engine.supports_edit("animation") is False
+    assert engine.supports_edit("master_slide") is False
+    # Table write-back is declared lossy
+    assert engine.writeback_status("table") == {
+        "status": "lossy", "lossless": False, "reason": "flattened_to_group"
+    }
+
+
+def test_detected_features_default_to_absent():
+    """Presence defaults MUST be False: an unparsed/empty deck contains nothing."""
+    detected = DetectedFeatures()
+    assert detected.present_features() == []
+    assert detected.table is False
+    assert detected.lossy_warnings() == []
+    assert detected.unsupported_present() == []
 
 
 def test_unsupported_present_reports_detect_only_features():
-    cap = FidelityCapability(shape=True, chart=True, smartart=True, animation=False)
+    cap = DetectedFeatures(shape=True, chart=True, smartart=True, animation=False)
     unsupported = cap.unsupported_present()
     assert "chart" in unsupported
     assert "smartart" in unsupported
@@ -70,9 +86,72 @@ def test_check_support_verdicts():
         "supported": False, "reason": "unknown_feature"}
 
 
+def test_check_writeback_tri_state():
+    assert CapabilityDetector.check_writeback("table") == {
+        "status": "lossy", "lossless": False, "reason": "flattened_to_group"
+    }
+    assert CapabilityDetector.check_writeback("text") == {
+        "status": "lossless", "lossless": True, "reason": ""
+    }
+    for detect_only in ["chart", "smartart", "animation", "master_slide"]:
+        verdict = CapabilityDetector.check_writeback(detect_only)
+        assert verdict["status"] == "unsupported"
+        assert verdict["lossless"] is False
+        assert verdict["reason"] == "unsupported_feature"
+    unknown = CapabilityDetector.check_writeback("smartart_v2")
+    assert unknown["status"] == "unsupported"
+    assert unknown["lossless"] is False
+    assert unknown["reason"] == "unknown_feature"
+
+
 def test_support_feature_sets_cover_all_fields():
-    fields = set(FidelityCapability().to_dict().keys())
+    fields = set(DetectedFeatures().to_dict().keys())
     assert SUPPORTED_FEATURES | DETECT_ONLY_FEATURES == fields
+
+
+def _minimal_pptx(slide_xml: str) -> bytes:
+    import io
+    import zipfile
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr("ppt/slides/slide1.xml", slide_xml)
+    return buf.getvalue()
+
+
+def test_zip_without_table_reports_table_false_and_no_lossy_warning():
+    """Regression: defaults must not fabricate presence for absent features."""
+    pptx = _minimal_pptx(
+        '<p:sld xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main" '
+        'xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"><p:cSld/></p:sld>'
+    )
+    cap = CapabilityDetector.detect(pptx)
+    assert cap.table is False
+    assert cap.lossy_warnings() == []
+    assert "table" not in cap.present_features()
+
+
+def test_zip_with_table_reports_table_true_and_lossy_warning():
+    pptx = _minimal_pptx(
+        '<p:sld xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main" '
+        'xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main">'
+        '<p:cSld><a:tbl/></p:cSld></p:sld>'
+    )
+    cap = CapabilityDetector.detect(pptx)
+    assert cap.table is True
+    assert any("table" in w and "lossy" in w for w in cap.lossy_warnings())
+
+
+def test_detect_from_ir_merges_without_poisoning_absent_features():
+    from backend.ir.models import PresentationIR, SlideIR
+
+    pres = PresentationIR(title="No Table Deck")
+    slide = SlideIR(id="s1", slide_num=1)
+    pres.slides.append(slide)
+    cap = CapabilityDetector.detect_from_ir(pres)
+    assert cap.table is False
+    assert cap.shape is False
+    assert cap.lossy_warnings() == []
 
 
 # =====================================================================
@@ -122,7 +201,10 @@ def test_parser_populates_capabilities_and_warnings():
     deck = _require_deck("SmartArt.pptx")
     pres = OOXMLParser(deck).parse()
     assert pres.capabilities.get("smartart") is True
-    assert pres.capabilities.get("shape") is True
+    # Presence is honest: this deck's slide contains only a detect-only SmartArt
+    # graphic, so the engine must NOT claim editable shape/table content exists.
+    assert pres.capabilities.get("shape") is False
+    assert pres.capabilities.get("table") is False
     warnings = pres.metadata.get("capability_warnings", [])
     assert any("smartart" in w for w in warnings)
 

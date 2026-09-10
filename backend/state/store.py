@@ -3,7 +3,7 @@
 Manages:
 - Active PresentationIR instance and slide selection
 - HistoryManager (undo / redo)
-- PPTX import via PPTXParser and export via PPTXBuilder
+- PPTX import via FidelityEngine/OOXMLParser (production) and export via PPTXBuilder
 - WebSocket connection broadcasting
 """
 
@@ -20,12 +20,11 @@ from ..ir.models import (
     ConnectorElementIR, FillStyle, BorderStyle, ShadowStyle,
     FontIR, TextContentIR, ParagraphIR, RunIR
 )
-from ..ir.converter import PPTIRConverter
+from ..ir.converter import PPTIRConverter, import_pptx
 from ..ir.patch import HistoryManager
 from ..agent.runtime import AgentRuntime
 from ..session.manager import session_manager, SessionManager
 from ..session.session import PPTSession
-from pptx_agent_converter.extractor.pptx_parser import PPTXParser
 from pptx_agent_converter.renderer.pptx_builder import PPTXBuilder
 
 logger = logging.getLogger(__name__)
@@ -277,9 +276,8 @@ class PresentationStore:
             tmp_path = tmp.name
 
         try:
-            parser = PPTXParser(tmp_path)
-            ooxml_pres = parser.parse()
-            ir_pres = PPTIRConverter.presentation_to_ir(ooxml_pres)
+            # Production import path: FidelityEngine/OOXMLParser (via import_pptx)
+            ir_pres = import_pptx(tmp_path)
             ir_pres.title = filename.replace(".pptx", "")
 
             target_session.pres = ir_pres
@@ -293,12 +291,32 @@ class PresentationStore:
             if os.path.exists(tmp_path):
                 os.remove(tmp_path)
 
-    def export_pptx_bytes(self, pres: Optional[PresentationIR] = None) -> bytes:
+    def export_preflight(self, pres: Optional[PresentationIR] = None) -> Dict[str, Any]:
+        """Returns structured lossy/unsupported write-back warnings for an export."""
+        from ..fidelity.preflight import evaluate_export_preflight
+
+        target_pres = pres if pres is not None else self.presentation
+        return evaluate_export_preflight(target_pres).to_dict()
+
+    def export_pptx_bytes(
+        self,
+        pres: Optional[PresentationIR] = None,
+        *,
+        allow_lossy: bool = True,
+    ) -> bytes:
         """Renders PPT-IR into native PPTX binary bytes.
-        
+
         Accepts explicit PresentationIR or defaults to current active presentation.
+        With ``allow_lossy=False`` the export is refused when native semantics
+        (e.g. tables) would be degraded by write-back.
         """
         target_pres = pres if pres is not None else self.presentation
+
+        from ..fidelity.preflight import evaluate_export_preflight, LossyWritebackError
+        preflight = evaluate_export_preflight(target_pres)
+        if preflight.has_lossy and not allow_lossy:
+            raise LossyWritebackError(preflight)
+
         ooxml_pres = PPTIRConverter.ir_to_presentation(target_pres)
         with tempfile.NamedTemporaryFile(suffix=".pptx", delete=False) as tmp:
             tmp_path = tmp.name

@@ -36,7 +36,9 @@ _CAIROSVG_AVAILABLE = False
 try:
     import cairosvg
     _CAIROSVG_AVAILABLE = True
-except ImportError:
+except (ImportError, OSError):
+    # ImportError: package absent. OSError: package present but its native
+    # cairo library is missing (e.g. pip-installed cairosvg without libcairo).
     pass
 
 _PIL_AVAILABLE = False

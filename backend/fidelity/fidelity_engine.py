@@ -52,11 +52,31 @@ class FidelityEngine:
 
     @classmethod
     def evaluate(
-        cls, orig: SlideIR, recon: SlideIR, scale: float = 0.5
+        cls,
+        orig: SlideIR,
+        recon: SlideIR,
+        scale: float = 0.5,
+        *,
+        orig_image: Any = None,
+        recon_image: Any = None,
+        strict_visual: bool = False,
     ) -> "FidelityScore":
-        """Evaluates multidimensional fidelity between an original and reconstructed slide."""
+        """Evaluates multidimensional fidelity between an original and reconstructed slide.
+
+        Supply ``orig_image``/``recon_image`` (PowerPoint/LibreOffice screenshots) to
+        score against the only visual basis that proves true WYSIWYG fidelity; without
+        them the internal Pillow rasterizer is used and ``visual_source`` says so.
+        ``strict_visual=True`` refuses to PASS on anything but external screenshots.
+        """
         from ..eval.fidelity import FidelityEvaluator
-        return FidelityEvaluator.evaluate_slides(orig, recon, scale=scale)
+        return FidelityEvaluator.evaluate_slides(
+            orig,
+            recon,
+            orig_image=orig_image,
+            recon_image=recon_image,
+            scale=scale,
+            strict_visual=strict_visual,
+        )
 
     @classmethod
     def diff(cls, orig: SlideIR, recon: SlideIR) -> "FidelityDiffReport":
@@ -66,8 +86,27 @@ class FidelityEngine:
 
     @classmethod
     def report(
-        cls, orig: SlideIR, recon: SlideIR, scale: float = 0.5
+        cls,
+        orig: SlideIR,
+        recon: SlideIR,
+        scale: float = 0.5,
+        *,
+        orig_image: Any = None,
+        recon_image: Any = None,
+        strict_visual: bool = False,
     ) -> "FidelityReport":
-        """Builds the structured, machine-readable fidelity report."""
+        """Builds the structured fidelity report, including the honesty contract.
+
+        The returned ``FidelityReport`` carries ``passed`` / ``degraded`` /
+        ``visual_source`` so consumers know whether a score came from real
+        WYSIWYG screenshots or from the internal rasterizer.
+        """
         from ..eval.fidelity import build_fidelity_report
-        return build_fidelity_report(orig, recon, scale=scale)
+        return build_fidelity_report(
+            orig,
+            recon,
+            scale=scale,
+            orig_image=orig_image,
+            recon_image=recon_image,
+            strict_visual=strict_visual,
+        )

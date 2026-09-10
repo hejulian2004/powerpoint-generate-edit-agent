@@ -108,10 +108,36 @@ def test_roundtrip_multi_slide_presentation(tmp_path: Path):
         assert score.total >= 90.0
 
 
-def test_roundtrip_table_element_preservation(tmp_path: Path):
-    """Verifies that tables roundtrip with shape structure and cell content preserved."""
+def test_roundtrip_table_flattening_is_declared_lossy(tmp_path: Path):
+    """Honest contract for TableElementIR write-back (PR6-hardening).
+
+    The export path currently flattens tables into a Group of styled cell
+    rectangles, permanently dropping native <a:tbl> semantics. This test pins:
+
+    1. Native import parses real <a:tbl> into TableElementIR (fidelity importer).
+    2. Export write-back is DECLARED lossy by the capability matrix.
+    3. Round-tripped geometry + text survive, but the element must be a flattened
+       Group — never asserted as native table preservation.
+    """
+    # 1. Native <a:tbl> import must produce an editable TableElementIR
+    native_path = Path(__file__).parent / "assets" / "real_world" / "table-with-theme.pptx"
+    native_pres = import_pptx(str(native_path))
+    native_tables = [
+        el for s in native_pres.slides
+        for el in s.all_elements(recursive=True)
+        if isinstance(el, TableElementIR)
+    ]
+    assert native_tables, "fidelity importer must parse native <a:tbl> into TableElementIR"
+
+    # 2. Export write-back is declaratively lossy, not silently "preserved"
+    from backend.fidelity.capability import CapabilityDetector
+    verdict = CapabilityDetector.check_writeback("table")
+    assert verdict["status"] == "lossy"
+    assert verdict["lossless"] is False
+    assert verdict["reason"] == "flattened_to_group"
+
     pres = PresentationIR(title="Table Benchmark")
-    slide = SlideIR(id="tbl_slide_1", slide_num=1, title="Table Preservation")
+    slide = SlideIR(id="tbl_slide_1", slide_num=1, title="Table Degradation Contract")
 
     tbl = TableElementIR(
         id="elem_tbl_1",
@@ -136,15 +162,25 @@ def test_roundtrip_table_element_preservation(tmp_path: Path):
     slide.add_element(tbl)
     pres.slides.append(slide)
 
+    # Capability matrix warns on export degradation
+    caps = CapabilityDetector.detect_from_ir(pres)
+    assert any("table" in w and "lossy" in w for w in caps.lossy_warnings())
+
     out_file = tmp_path / "table_deck.pptx"
     export_pptx(pres, str(out_file))
 
     re_pres = import_pptx(str(out_file))
     re_slide = re_pres.slides[0]
-    table_elem = next((el for el in re_slide.elements if isinstance(el, (TableElementIR, GroupElementIR))), None)
-    assert table_elem is not None
-    assert abs(table_elem.x - 100.0) < 2.0
-    assert abs(table_elem.width - 600.0) < 2.0
+    # 3. Export degrades to a flattened group; that is the documented contract.
+    flattened = next(
+        (el for el in re_slide.elements if isinstance(el, GroupElementIR)), None
+    )
+    assert flattened is not None, (
+        "table export currently flattens to GroupElementIR; if native <a:tbl> "
+        "write-back lands, update this lossy-writeback contract deliberately"
+    )
+    assert abs(flattened.x - 100.0) < 2.0
+    assert abs(flattened.width - 600.0) < 2.0
 
     all_texts = " ".join(
         el.text_content.plain_text

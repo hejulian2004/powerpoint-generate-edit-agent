@@ -131,3 +131,96 @@ def test_fidelity_evaluator_composite_score():
     score_drifted = FidelityEvaluator.evaluate_slides(slide1, slide_drifted)
     assert score_drifted.geometry < 90.0
     assert any("Geometry drift" in d for d in score_drifted.diagnostics)
+
+
+def test_evaluator_declares_internal_raster_basis():
+    """Internal Pillow raster SSIM measures IR consistency, not PowerPoint WYSIWYG."""
+    slide1 = _make_sample_slide()
+    slide2 = _make_sample_slide()
+    score = FidelityEvaluator.evaluate_slides(slide1, slide2)
+    assert score.visual_source == "internal_rasterizer"
+    assert score.degraded is False
+
+
+def test_evaluator_strict_visual_requires_external_raster():
+    """strict_visual must fail a PASS when only the internal rasterizer is available."""
+    slide1 = _make_sample_slide()
+    slide2 = _make_sample_slide()
+    score = FidelityEvaluator.evaluate_slides(slide1, slide2, strict_visual=True)
+    assert score.visual_source == "internal_rasterizer"
+    assert score.degraded is True
+    assert score.passed is False
+    assert any("strict_visual" in d for d in score.diagnostics)
+
+
+def test_evaluator_raster_failure_is_degraded_and_never_passes(monkeypatch):
+    """A synthesized fallback visual score must not be able to produce a PASS."""
+    from backend.eval.renderer_snapshot import PillowSlideRasterizer
+
+    def _boom(*args, **kwargs):
+        raise RuntimeError("raster explosion")
+
+    monkeypatch.setattr(PillowSlideRasterizer, "render_to_image", _boom)
+
+    slide1 = _make_sample_slide()
+    slide2 = _make_sample_slide()
+    score = FidelityEvaluator.evaluate_slides(slide1, slide2)
+    assert score.visual_source == "fallback"
+    assert score.degraded is True
+    assert score.passed is False
+    assert any("DEGRADED" in d for d in score.diagnostics)
+
+
+# =====================================================================
+# Size-aware IoU target (full drift-ball worst case)
+# =====================================================================
+
+class _Box:
+    def __init__(self, w, h):
+        self.x = 0.0
+        self.y = 0.0
+        self.width = float(w)
+        self.height = float(h)
+
+
+def test_iou_target_full_drift_ball_worst_case():
+    """Target must equal the IoU of the worst legal <=2px recon.
+
+    Worst case: shifted by 2px on both axes AND grown by 2px on both dims
+    (all within max(dx, dy, dw, dh) <= 2). inter = (w-2)(h-2),
+    union = w*h + (w+2)(h+2) - inter.
+    """
+    # 50x50 -> 48*48 / (2500 + 2704 - 2304) = 2304 / 2900
+    assert FidelityEvaluator._iou_target(_Box(50, 50)) == pytest.approx(2304 / 2900)
+    # 100x20 -> 98*18 / (2000 + 2244 - 1764) = 1764 / 2480
+    assert FidelityEvaluator._iou_target(_Box(100, 20)) == pytest.approx(1764 / 2480)
+    # Small element -> 10x10 -> 8*8 / (100 + 144 - 64) = 64 / 180
+    assert FidelityEvaluator._iou_target(_Box(10, 10)) == pytest.approx(64 / 180)
+
+
+def test_iou_target_caps_and_degenerate_guards():
+    # Large boxes stay capped at the 0.98 acceptance bar
+    assert FidelityEvaluator._iou_target(_Box(2000, 2000)) == pytest.approx(0.98)
+    # Degenerate sizes have no meaningful target
+    assert FidelityEvaluator._iou_target(_Box(2, 100)) == 0.0
+    assert FidelityEvaluator._iou_target(_Box(100, 1)) == 0.0
+
+
+def test_geometry_not_penalized_for_legal_drift_ball():
+    """Elements within 2px drift on every parameter must score a perfect 100."""
+    # Translation dx=dy=2 (same size): IoU 0.855 > target 0.794
+    slide_shifted = _make_sample_slide(x=52, y=52)
+    score_shifted = FidelityEvaluator.evaluate_slides(_make_sample_slide(), slide_shifted)
+    assert score_shifted.geometry == 100.0
+
+    # Worst legal case: shift +2/+2 AND grow +2/+2 -> IoU exactly equals target
+    slide_worst = _make_sample_slide(x=52, y=52)
+    for el, o_el in zip(
+        slide_worst.all_elements(recursive=True),
+        _make_sample_slide().all_elements(recursive=True),
+    ):
+        el.width = o_el.width + 2.0
+        el.height = o_el.height + 2.0
+    score_worst = FidelityEvaluator.evaluate_slides(_make_sample_slide(), slide_worst)
+    assert score_worst.geometry == 100.0
+    assert not any("Geometry IoU" in d for d in score_worst.diagnostics)

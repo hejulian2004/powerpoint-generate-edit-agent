@@ -1,7 +1,9 @@
 """End-to-end integration tests for backend API, PPTX import/export, and store."""
 
 import io
+from pathlib import Path
 from fastapi.testclient import TestClient
+import pytest
 from backend.main import app
 from backend.state.store import store
 from pptx_agent_converter.extractor.pptx_parser import PPTXParser
@@ -9,6 +11,8 @@ import tempfile
 import os
 
 client = TestClient(app)
+
+_FRONTEND_DIST_INDEX = Path(__file__).resolve().parents[1] / "frontend" / "dist" / "index.html"
 
 
 def test_api_get_presentation():
@@ -84,9 +88,64 @@ def test_api_upload_and_export():
     assert export_resp.content[:4] == b"PK\x03\x04"
 
 
+@pytest.mark.skipif(
+    not _FRONTEND_DIST_INDEX.exists(),
+    reason="frontend not built (run `npm run build` in frontend/ to enable SPA serving test)"
+)
 def test_frontend_spa_serving():
     resp = client.get("/")
     assert resp.status_code == 200
     assert "html" in resp.headers.get("content-type", "").lower()
     assert "<!doctype html>" in resp.text.lower()
+
+
+def test_api_confirm_pending_lifecycle():
+    session = store.active_session
+    pres = store.get_presentation()
+    slide = pres.slides[0]
+    elem = slide.elements[0]
+    original_y = elem.y
+
+    session.clear_pending_confirmations()
+    session.register_pending_confirmation(
+        call_id="api_call_1",
+        tool="update_element",
+        arguments={"element_id": elem.id, "y": original_y + 40.0},
+        confidence=0.5,
+        presentation_version=pres.version,
+    )
+
+    pending_resp = client.get("/api/confirm/pending")
+    assert pending_resp.status_code == 200
+    assert any(p["call_id"] == "api_call_1" for p in pending_resp.json()["pending"])
+
+    resp = client.post("/api/confirm", json={"call_id": "api_call_1"})
+    assert resp.status_code == 200
+    assert resp.json()["success"] is True
+    assert slide.get_element(elem.id).y == original_y + 40.0
+    assert session.get_pending_confirmation("api_call_1") is None
+
+    # Cleanup: restore the demo element through the session undo stack
+    session.undo()
+
+
+def test_api_confirm_unknown_call_id():
+    resp = client.post("/api/confirm", json={"call_id": "does_not_exist"})
+    assert resp.status_code == 200
+    assert resp.json()["success"] is False
+    assert resp.json()["error"] == "unknown_confirmation"
+
+
+def test_api_confirm_requires_call_id():
+    resp = client.post("/api/confirm", json={})
+    assert resp.status_code == 400
+
+
+def test_api_chat_accepts_confirmed_tool_ids():
+    resp = client.post(
+        "/api/chat",
+        json={"message": "你好", "confirmed_tool_ids": ["call_nonexistent"]},
+    )
+    assert resp.status_code == 200
+    assert "reply" in resp.json()
 

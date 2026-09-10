@@ -6,7 +6,6 @@ fonts across Windows, Linux, and macOS with style (weight, italic) and fallback 
 
 from __future__ import annotations
 import os
-import glob
 import logging
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple, Any
@@ -59,14 +58,18 @@ class FontEngine:
             os.path.expanduser("~/Library/Fonts")
         ])
 
-        font_extensions = ("*.ttf", "*.otf", "*.ttc", "*.TTF", "*.OTF", "*.TTC")
+        font_extensions = (".ttf", ".otf", ".ttc")
 
         for d in search_dirs:
             if not os.path.isdir(d):
                 continue
-            for ext in font_extensions:
-                for file_path in glob.glob(os.path.join(d, ext)):
-                    cls._index_font_file(file_path, index)
+            # Recursive walk: distro font packages install into family
+            # subdirectories (e.g. /usr/share/fonts/truetype/dejavu), so a
+            # top-level-only glob indexes zero fonts on typical Linux images.
+            for root, _dirs, files in os.walk(d):
+                for fname in files:
+                    if fname.lower().endswith(font_extensions):
+                        cls._index_font_file(os.path.join(root, fname), index)
 
         return index
 

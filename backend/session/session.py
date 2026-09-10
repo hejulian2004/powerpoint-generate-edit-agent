@@ -27,12 +27,54 @@ class PPTSession:
     updated_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     last_target_id: Optional[str] = None
     last_action_type: Optional[str] = None
+    pending_confirmations: Dict[str, Dict[str, Any]] = field(default_factory=dict)
     mutation_lock: asyncio.Lock = field(default_factory=asyncio.Lock, repr=False)
 
     def __post_init__(self):
         self.checkpoint_mgr = CheckpointManager(session_id=self.session_id)
         # Create initial baseline checkpoint
         self.checkpoint_mgr.create(self.pres, description="Initial session state")
+
+    # ------------------------------------------------------------------
+    # Pending confirmation lifecycle (PR6-hardening round 2)
+    # ------------------------------------------------------------------
+
+    def register_pending_confirmation(
+        self,
+        call_id: str,
+        tool: str,
+        arguments: Dict[str, Any],
+        confidence: Optional[float],
+        presentation_version: int,
+        target_element_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Stores a blocked call so the user can confirm the *original* invocation."""
+        record = {
+            "call_id": call_id,
+            "tool": tool,
+            "arguments": dict(arguments or {}),
+            "confidence": confidence,
+            "presentation_version": presentation_version,
+            "target_element_id": target_element_id,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        }
+        self.pending_confirmations[call_id] = record
+        self.updated_at = datetime.now(timezone.utc)
+        return record
+
+    def get_pending_confirmation(self, call_id: str) -> Optional[Dict[str, Any]]:
+        return self.pending_confirmations.get(call_id)
+
+    def consume_pending_confirmation(self, call_id: str) -> Optional[Dict[str, Any]]:
+        record = self.pending_confirmations.pop(call_id, None)
+        if record is not None:
+            self.updated_at = datetime.now(timezone.utc)
+        return record
+
+    def clear_pending_confirmations(self) -> None:
+        if self.pending_confirmations:
+            self.pending_confirmations.clear()
+            self.updated_at = datetime.now(timezone.utc)
 
     @property
     def checkpoints(self) -> List[SessionCheckpoint]:
@@ -142,4 +184,5 @@ class PPTSession:
             "can_undo": self.history.can_undo(),
             "can_redo": self.history.can_redo(),
             "last_target_id": self.last_target_id,
+            "pending_confirmations_count": len(self.pending_confirmations),
         }

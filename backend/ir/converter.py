@@ -765,20 +765,82 @@ def uuid_short() -> str:
     return uuid.uuid4().hex[:6]
 
 
-def import_pptx(source: Union[str, Path, os.PathLike]) -> PresentationIR:
-    """Imports a PPTX file into PPT-IR representation."""
+def import_pptx(
+    source: Union[str, Path, os.PathLike],
+    importer: str = "fidelity",
+    strict: bool = False
+) -> PresentationIR:
+    """Imports a PPTX file into PPT-IR representation.
+
+    Two importers exist during the PR6 hardening transition:
+
+    - ``"fidelity"`` (production default): canonical path through
+      ``FidelityEngine`` / ``OOXMLParser`` with capability detection and
+      structured parser warnings.
+    - ``"legacy"``: the pre-PR6 ``pptx_agent_converter`` extractor, retained as an
+      explicit escape hatch for regression comparison only.
+
+    When the fidelity parser raises and ``strict`` is False, the import falls back
+    to the legacy parser and records ``metadata["importer_fallback_reason"]``.
+    """
     path = Path(source)
     if not path.exists():
         raise FileNotFoundError(f"PPTX file not found: {path}")
 
+    if importer == "fidelity":
+        try:
+            from ..fidelity import FidelityEngine
+            pres = FidelityEngine.import_presentation(str(path))
+            pres.metadata["importer_used"] = "fidelity"
+            return pres
+        except Exception as e:  # noqa: BLE001 - deliberate graceful degradation
+            if strict:
+                raise
+            import logging
+            logging.getLogger(__name__).warning(
+                "Fidelity import failed for %s (%s); falling back to legacy parser", path, e
+            )
+            fallback_reason = str(e)
+    elif importer != "legacy":
+        raise ValueError(f"Unknown importer: {importer!r}. Expected 'fidelity' or 'legacy'.")
+
     from pptx_agent_converter.extractor.pptx_parser import PPTXParser
     parser = PPTXParser(str(path))
     ooxml_pres = parser.parse()
-    return PPTIRConverter.presentation_to_ir(ooxml_pres)
+    pres = PPTIRConverter.presentation_to_ir(ooxml_pres)
+    pres.metadata["importer_used"] = "legacy"
+    if importer == "fidelity" and "fallback_reason" in locals():
+        pres.metadata["importer_fallback_reason"] = fallback_reason
+    return pres
 
 
-def export_pptx(pres_ir: PresentationIR, output_path: Union[str, Path, os.PathLike]) -> Path:
-    """Exports a PPT-IR presentation into a valid OOXML PPTX file."""
+def export_pptx(
+    pres_ir: PresentationIR,
+    output_path: Union[str, Path, os.PathLike],
+    exporter: str = "legacy",
+    *,
+    allow_lossy: bool = True
+) -> Path:
+    """Exports a PPT-IR presentation into a valid OOXML PPTX file.
+
+    Only the ``"legacy"`` (``PPTIRConverter`` + ``PPTXBuilder``) native OOXML writer
+    is implemented; it is the single production export path. Native write-back for
+    some IR features is still lossy — see ``backend.fidelity.capability`` for the
+    declarative lossy-writeback matrix (e.g. ``TableElementIR`` currently flattens
+    to a group of styled rectangles).
+
+    With ``allow_lossy=False`` the export is refused (``LossyWritebackError``) when
+    the preflight finds features whose native semantics would be degraded, so a
+    caller cannot silently accept data loss.
+    """
+    if exporter != "legacy":
+        raise ValueError(f"Unknown exporter: {exporter!r}. Only 'legacy' is implemented.")
+
+    from ..fidelity.preflight import evaluate_export_preflight, LossyWritebackError
+    preflight = evaluate_export_preflight(pres_ir)
+    if preflight.has_lossy and not allow_lossy:
+        raise LossyWritebackError(preflight)
+
     out = Path(output_path)
     out.parent.mkdir(parents=True, exist_ok=True)
 
