@@ -1,7 +1,7 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react'
 import {
   ZoomIn, ZoomOut, Maximize2, Trash2, Move,
-  Edit3, Bold, Image as ImageIcon
+  Edit3, Bold, Image as ImageIcon, Layers, Ungroup, Copy
 } from 'lucide-react'
 import { usePPTStore } from '../store/usePPTStore'
 import { SVGRendererComponent } from './SVGRendererComponent'
@@ -43,8 +43,15 @@ export const SlideCanvas: React.FC = () => {
     zoom,
     setZoom,
     selectedElementId,
+    selectedElementIds,
     setSelectedElementId,
+    setSelectedElementIds,
+    clearSelection,
     deleteSelectedElement,
+    deleteSelectedElements,
+    groupSelectedElements,
+    duplicateSelectedElements,
+    ungroupSelectedElement,
     addShapeQuick,
     addTextQuick,
     showGrid,
@@ -62,7 +69,84 @@ export const SlideCanvas: React.FC = () => {
   const snapSessionRef = useRef<SnapSession>({})
   const [, setTick] = useState(0) // Force local re-render during smooth drag
 
-  const selectedElement = slide?.elements.find((e) => e.id === selectedElementId) || null
+  const isMultiSelected = selectedElementIds.length > 1
+  const selectedElement = !isMultiSelected && slide
+    ? slide.elements.find((e) => e.id === selectedElementId) || null
+    : null
+  const selectedGroup = selectedElementIds.length === 1 && selectedElement?.type === 'group'
+    ? selectedElement
+    : null
+
+  // Box (marquee) selection in slide coordinates
+  const boxSelectRef = useRef<{ startX: number; startY: number; curX: number; curY: number; additive: boolean } | null>(null)
+  const [selectionBox, setSelectionBox] = useState<{ x: number; y: number; width: number; height: number } | null>(null)
+
+  useEffect(() => {
+    const onMouseMove = (e: MouseEvent) => {
+      const s = boxSelectRef.current
+      if (!s || !canvasRef.current || !slide) return
+      const rect = canvasRef.current.getBoundingClientRect()
+      const p = screenToSlidePoint(e.clientX, e.clientY, rect, slide)
+      s.curX = p.x
+      s.curY = p.y
+      setSelectionBox({
+        x: Math.min(s.startX, s.curX),
+        y: Math.min(s.startY, s.curY),
+        width: Math.abs(s.curX - s.startX),
+        height: Math.abs(s.curY - s.startY)
+      })
+    }
+
+    const onMouseUp = () => {
+      const s = boxSelectRef.current
+      boxSelectRef.current = null
+      setSelectionBox(null)
+      if (!s || !slide) return
+
+      const x1 = Math.min(s.startX, s.curX)
+      const y1 = Math.min(s.startY, s.curY)
+      const w = Math.abs(s.curX - s.startX)
+      const h = Math.abs(s.curY - s.startY)
+      if (w < 5 && h < 5) return
+
+      const hits = slide.elements
+        .filter(
+          (el) => el.x < x1 + w && el.x + el.width > x1 && el.y < y1 + h && el.y + el.height > y1
+        )
+        .map((el) => el.id)
+
+      const base = s.additive ? usePPTStore.getState().selectedElementIds : []
+      const merged = Array.from(new Set([...base, ...hits]))
+      if (merged.length > 0) {
+        usePPTStore.getState().setSelectedElementIds(merged)
+      }
+    }
+
+    window.addEventListener('mousemove', onMouseMove)
+    window.addEventListener('mouseup', onMouseUp)
+    return () => {
+      window.removeEventListener('mousemove', onMouseMove)
+      window.removeEventListener('mouseup', onMouseUp)
+    }
+  }, [slide])
+
+  const handleBackgroundMouseDown = useCallback((e: React.MouseEvent) => {
+    if (!slide || !canvasRef.current || e.button !== 0) return
+    const rect = canvasRef.current.getBoundingClientRect()
+    const p = screenToSlidePoint(e.clientX, e.clientY, rect, slide)
+    setEditingElementId(null)
+    if (!e.shiftKey) {
+      setSelectedElementIds([])
+    }
+    boxSelectRef.current = {
+      startX: p.x,
+      startY: p.y,
+      curX: p.x,
+      curY: p.y,
+      additive: e.shiftKey
+    }
+    setSelectionBox({ x: p.x, y: p.y, width: 0, height: 0 })
+  }, [slide, setEditingElementId, setSelectedElementIds])
 
   const handleDeleteSelected = () => {
     deleteSelectedElement()
@@ -374,8 +458,7 @@ export const SlideCanvas: React.FC = () => {
         onClick={(e) => {
           // Deselect if clicked on empty canvas background
           if (e.target === canvasRef.current) {
-            setSelectedElementId(null)
-            setEditingElementId(null)
+            clearSelection()
           }
         }}
       >
@@ -384,7 +467,9 @@ export const SlideCanvas: React.FC = () => {
           onElementMouseDown={handleElementMouseDown}
           onElementDoubleClick={handleElementDoubleClick}
           onResizeHandleMouseDown={handleResizeHandleMouseDown}
+          onBackgroundMouseDown={handleBackgroundMouseDown}
           alignmentGuides={alignmentGuides}
+          selectionBox={selectionBox}
           editingElementId={editingElementId}
           onCommitInlineEdit={handleCommitInlineEdit}
           onCancelInlineEdit={handleCancelInlineEdit}
@@ -421,6 +506,38 @@ export const SlideCanvas: React.FC = () => {
           </button>
         </div>
 
+        {/* Multi-Selection Quick Actions */}
+        {isMultiSelected && (
+          <div className="flex items-center gap-2.5 bg-panel/95 backdrop-blur-xl px-3 py-1.5 rounded-xl border border-line-strong shadow-xl shadow-slate-200/60 text-xs text-main animate-in fade-in duration-150">
+            <span className="font-tabular text-main font-semibold bg-elevated px-2 py-0.5 rounded border border-line">
+              已选中 {selectedElementIds.length} 个图元
+            </span>
+            <button
+              onClick={() => groupSelectedElements()}
+              className="flex items-center gap-1 px-2 py-0.5 rounded bg-blue-50 text-blue-600 hover:bg-blue-100 font-medium transition-colors text-[11px]"
+              title="组合选中图元 (Ctrl+G)"
+            >
+              <Layers className="w-3 h-3" />
+              <span>组合</span>
+            </button>
+            <button
+              onClick={() => duplicateSelectedElements()}
+              className="flex items-center gap-1 px-2 py-0.5 rounded hover:bg-elevated text-secondary hover:text-main font-medium transition-colors text-[11px]"
+              title="复制选中图元 (Ctrl+D)"
+            >
+              <Copy className="w-3 h-3" />
+              <span>复制</span>
+            </button>
+            <button
+              onClick={deleteSelectedElements}
+              className="p-1 rounded hover:bg-rose-50 text-muted hover:text-rose-600 transition-colors"
+              title="删除选中图元 (Delete)"
+            >
+              <Trash2 className="w-3.5 h-3.5" />
+            </button>
+          </div>
+        )}
+
         {/* Selected Element Floating Info & Instant Formatter */}
         {selectedElement && (() => {
           const isTextOrShape = selectedElement.type === 'text' || selectedElement.type === 'shape'
@@ -449,6 +566,18 @@ export const SlideCanvas: React.FC = () => {
               </span>
 
               <div className="w-[1px] h-3.5 bg-line" />
+
+              {/* Ungroup Button for Group Selection */}
+              {selectedGroup && (
+                <button
+                  onClick={() => ungroupSelectedElement()}
+                  className="flex items-center gap-1 px-2 py-0.5 rounded bg-amber-50 text-amber-700 hover:bg-amber-100 font-medium transition-colors text-[11px]"
+                  title="解散当前组合 (Ctrl+Shift+G)"
+                >
+                  <Ungroup className="w-3 h-3" />
+                  <span>解散组合</span>
+                </button>
+              )}
 
               {/* Instant Inline Text Edit Button */}
               {isTextOrShape && (

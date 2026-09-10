@@ -1,10 +1,18 @@
 import React from 'react'
-import { Plus, Trash2, LayoutGrid } from 'lucide-react'
+import { Plus, Trash2, LayoutGrid, Copy, Eraser } from 'lucide-react'
 import { usePPTStore } from '../store/usePPTStore'
 import { SVGRendererComponent } from './SVGRendererComponent'
 
 export const Sidebar: React.FC = () => {
-  const { presentation, activeSlideId, setActiveSlideId, addNewSlide, deleteSlide } = usePPTStore()
+  const {
+    presentation,
+    activeSlideId,
+    setActiveSlideId,
+    addNewSlide,
+    deleteSlide,
+    duplicateSlide,
+    clearSlideElements
+  } = usePPTStore()
 
   if (!presentation) {
     return (
@@ -27,6 +35,18 @@ export const Sidebar: React.FC = () => {
 
   const handleAddSlide = () => {
     addNewSlide()
+  }
+
+  const handleDuplicateSlide = (e: React.MouseEvent, slideId: string) => {
+    e.stopPropagation()
+    duplicateSlide(slideId)
+  }
+
+  const handleClearSlide = (e: React.MouseEvent, slideId: string, slideNum: number) => {
+    e.stopPropagation()
+    if (confirm(`确定清空第 ${slideNum} 页的内容吗？（保留标题，可撤销）`)) {
+      clearSlideElements(slideId, true)
+    }
   }
 
   return (
@@ -78,15 +98,31 @@ export const Sidebar: React.FC = () => {
                   </span>
                 </div>
 
-                {presentation.slides.length > 1 && (
+                <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-all">
                   <button
-                    onClick={(e) => handleDeleteSlide(e, slide.id, idx + 1)}
-                    title="删除页面"
-                    className="opacity-0 group-hover:opacity-100 p-1 rounded text-line-focus hover:text-rose-600 hover:bg-rose-50 transition-all"
+                    onClick={(e) => handleDuplicateSlide(e, slide.id)}
+                    title="复制此页"
+                    className="p-1 rounded text-line-focus hover:text-main hover:bg-elevated transition-all"
                   >
-                    <Trash2 className="w-3 h-3" />
+                    <Copy className="w-3 h-3" />
                   </button>
-                )}
+                  <button
+                    onClick={(e) => handleClearSlide(e, slide.id, idx + 1)}
+                    title="清空此页内容（保留标题）"
+                    className="p-1 rounded text-line-focus hover:text-amber-600 hover:bg-amber-50 transition-all"
+                  >
+                    <Eraser className="w-3 h-3" />
+                  </button>
+                  {presentation.slides.length > 1 && (
+                    <button
+                      onClick={(e) => handleDeleteSlide(e, slide.id, idx + 1)}
+                      title="删除页面"
+                      className="p-1 rounded text-line-focus hover:text-rose-600 hover:bg-rose-50 transition-all"
+                    >
+                      <Trash2 className="w-3 h-3" />
+                    </button>
+                  )}
+                </div>
               </div>
 
               {/* 16:9 Mini Canvas Preview */}
