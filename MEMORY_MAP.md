@@ -31,7 +31,7 @@
 ### 全局三大不可变公理
 1. **PPT-IR 是系统唯一状态真理 (Source of Truth)**：任何组件与模型不得直接破坏或绕过 PPT-IR。
 2. **画布基准物理尺寸**：全局坐标系严格为 **1280 × 720** (16:9)。
-3. **图元修改统一派发**：后端所有图元写操作必须经由 `backend/agent/tools.py:execute(tool_name, args, pres, history)`，确保 Undo/Redo 快照完整。
+3. **图元修改统一派发**：后端所有运行时图元写操作必须经由 `backend/agent/mutation_gateway.py`（唯一写入口），由网关统一完成 Schema 校验、风险门控、确认拦截与事务回滚，并内部调用 `backend/agent/tools.py:execute(tool_name, args, pres, history)`，确保 Undo/Redo 快照完整。
 
 ### 一键启动入口
 - **全栈一体化运行**：根目录执行 `python main.py`（自动检查产物、拉起 FastAPI 托管 API/WebSocket/SPA 并唤起浏览器）。
@@ -46,6 +46,11 @@
 - **上下文核算与 90% 自动压缩**：
   - 支持 `128k`, `256k` (默认), `512k`, `1m`。
   - Token 消耗达 90% 时后端自动滑动窗口语义压缩并广播 `context_usage` 事件；前端顶部环形进度规实时呈现。
+  - `AgentRuntime.run_turn()` 是原始会话记录的唯一 owner（WS/REST 不再各自追加消息）；压缩结果仅面向模型，不回写 `session.messages`。
+- **会话隔离与文档身份**：
+  - `AgentMemory` 位于 `PPTSession.agent_memory`，跨会话严格隔离。
+  - 挂起确认绑定 `document_epoch` + `expected_revision`；导入 / PPTSpec 生成 / 检查点恢复会轮换 epoch 并清空挂起确认。
+- **锁粒度**：`session.mutation_lock` 仅由 MutationGateway 在实际写入时短暂持有；LLM 规划/评审期间不持锁，GUI 拖拽、撤销、直编不被慢模型阻塞。
 
 ---
 
