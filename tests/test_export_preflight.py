@@ -162,7 +162,10 @@ def test_api_upload_reports_importer_provenance():
         with open("demo_input.pptx", "rb") as f:
             files = {"file": ("demo_input.pptx", f, "application/vnd.openxmlformats-officedocument.presentationml.presentation")}
             resp = client.post(
-                f"/api/upload?session_id={session.session_id}", files=files
+                f"/api/upload?session_id={session.session_id}"
+                f"&expected_epoch={session.document_epoch}"
+                f"&expected_revision={session.pres.version}",
+                files=files,
             )
         assert resp.status_code == 200
         data = resp.json()

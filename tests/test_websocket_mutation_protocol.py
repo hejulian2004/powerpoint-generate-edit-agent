@@ -27,9 +27,17 @@ def _find_element(presentation, slide_id, element_id):
     return next(e for e in slide["elements"] if e["id"] == element_id)
 
 
+def _stamp(session):
+    """CAS stamps for a synced client (the current canonical epoch/revision)."""
+    return {
+        "document_epoch": session.document_epoch,
+        "expected_revision": session.pres.version,
+    }
+
+
 def test_direct_update_echoes_mutation_id_and_version():
     client = TestClient(app)
-    _seed_demo_session("ws_proto_ack")
+    session = _seed_demo_session("ws_proto_ack")
     with client.websocket_connect("/ws?session_id=ws_proto_ack") as ws:
         ws.receive_json()  # presentation_loaded
         ws.receive_json()  # preview_update
@@ -38,6 +46,7 @@ def test_direct_update_echoes_mutation_id_and_version():
             "type": "direct_update_element",
             "mutation_id": "mut_ack_1",
             "payload": {"slide_id": "slide_01", "element_id": "title_main", "x": 260.0},
+            **_stamp(session),
         })
         ev = ws.receive_json()
         assert ev["type"] == "presentation_updated"
@@ -48,7 +57,7 @@ def test_direct_update_echoes_mutation_id_and_version():
 
 def test_direct_update_rejects_unknown_element():
     client = TestClient(app)
-    _seed_demo_session("ws_proto_reject")
+    session = _seed_demo_session("ws_proto_reject")
     with client.websocket_connect("/ws?session_id=ws_proto_reject") as ws:
         ws.receive_json()
         ws.receive_json()
@@ -57,6 +66,7 @@ def test_direct_update_rejects_unknown_element():
             "type": "direct_update_element",
             "mutation_id": "mut_missing",
             "payload": {"slide_id": "slide_01", "element_id": "does_not_exist", "x": 100.0},
+            **_stamp(session),
         })
         rejected = ws.receive_json()
         assert rejected["type"] == "mutation_rejected"
@@ -66,7 +76,7 @@ def test_direct_update_rejects_unknown_element():
 
 def test_batch_mutation_is_one_undo_step():
     client = TestClient(app)
-    _seed_demo_session("ws_proto_batch")
+    session = _seed_demo_session("ws_proto_batch")
     with client.websocket_connect("/ws?session_id=ws_proto_batch") as ws:
         loaded = ws.receive_json()
         ws.receive_json()  # preview_update
@@ -83,6 +93,7 @@ def test_batch_mutation_is_one_undo_step():
                 {"name": "update_element",
                  "payload": {"slide_id": "slide_01", "element_id": "card_ir", "x": card["x"] + 30}},
             ],
+            **_stamp(session),
         })
         ev = ws.receive_json()
         assert ev["type"] == "presentation_updated"
@@ -94,7 +105,7 @@ def test_batch_mutation_is_one_undo_step():
         ws.receive_json()  # preview_update
 
         # One undo restores BOTH operations.
-        ws.send_json({"type": "undo"})
+        ws.send_json({"type": "undo", "mutation_id": "mut_batch_undo", **_stamp(session)})
         undo_ev = ws.receive_json()
         assert undo_ev["type"] == "presentation_updated"
         restored_title = _find_element(undo_ev["presentation"], "slide_01", "title_main")
@@ -105,7 +116,7 @@ def test_batch_mutation_is_one_undo_step():
 
 def test_batch_mutation_rolls_back_on_failure():
     client = TestClient(app)
-    _seed_demo_session("ws_proto_batch_fail")
+    session = _seed_demo_session("ws_proto_batch_fail")
     with client.websocket_connect("/ws?session_id=ws_proto_batch_fail") as ws:
         loaded = ws.receive_json()
         ws.receive_json()
@@ -121,6 +132,7 @@ def test_batch_mutation_rolls_back_on_failure():
                 {"name": "update_element",
                  "payload": {"slide_id": "slide_01", "element_id": "missing_element", "x": 10}},
             ],
+            **_stamp(session),
         })
         rejected = ws.receive_json()
         assert rejected["type"] == "mutation_rejected"
@@ -131,6 +143,7 @@ def test_batch_mutation_rolls_back_on_failure():
             "type": "direct_update_element",
             "mutation_id": "mut_read",
             "payload": {"slide_id": "slide_01", "element_id": "title_main", "x": title["x"]},
+            **_stamp(session),
         })
         ev = ws.receive_json()
         assert ev["type"] == "presentation_updated"
@@ -140,7 +153,7 @@ def test_batch_mutation_rolls_back_on_failure():
 
 def test_undo_routes_through_gateway_with_mutation_id_and_cas():
     client = TestClient(app)
-    _seed_demo_session("ws_proto_undo_gateway")
+    session = _seed_demo_session("ws_proto_undo_gateway")
     with client.websocket_connect("/ws?session_id=ws_proto_undo_gateway") as ws:
         loaded = ws.receive_json()
         ws.receive_json()  # preview_update
@@ -150,6 +163,7 @@ def test_undo_routes_through_gateway_with_mutation_id_and_cas():
             "type": "direct_update_element",
             "mutation_id": "mut_edit_1",
             "payload": {"slide_id": "slide_01", "element_id": "title_main", "x": title["x"] + 42},
+            **_stamp(session),
         })
         edit_ev = ws.receive_json()
         assert edit_ev["type"] == "presentation_updated"
@@ -174,6 +188,7 @@ def test_undo_routes_through_gateway_with_mutation_id_and_cas():
         ws.send_json({
             "type": "redo",
             "mutation_id": "mut_redo_stale",
+            "document_epoch": loaded.get("document_epoch"),
             "expected_revision": moved_version,
         })
         rejected = ws.receive_json()
@@ -187,12 +202,12 @@ def test_undo_routes_through_gateway_with_mutation_id_and_cas():
 
 def test_undo_with_empty_history_is_acknowledged_noop():
     client = TestClient(app)
-    _seed_demo_session("ws_proto_undo_noop")
+    session = _seed_demo_session("ws_proto_undo_noop")
     with client.websocket_connect("/ws?session_id=ws_proto_undo_noop") as ws:
         ws.receive_json()
         ws.receive_json()
 
-        ws.send_json({"type": "undo", "mutation_id": "mut_noop"})
+        ws.send_json({"type": "undo", "mutation_id": "mut_noop", **_stamp(session)})
         ev = ws.receive_json()
         assert ev["type"] == "presentation_updated"
         assert ev["last_mutation_id"] == "mut_noop"
@@ -212,6 +227,8 @@ def test_replayed_mutation_id_is_idempotent():
             "mutation_id": "mut_create_1",
             "action": "create_slide",
             "payload": {"title": "新增"},
+            # A lost-ACK retry reuses the ORIGINAL attempt stamp, not a restamped one.
+            **_stamp(session),
         }
         ws.send_json(payload)
         first = ws.receive_json()
@@ -240,7 +257,8 @@ def test_replayed_empty_undo_stays_noop_even_after_new_history():
         ws.receive_json()
         ws.receive_json()
 
-        ws.send_json({"type": "undo", "mutation_id": "mut_noop_1"})
+        replay = {"type": "undo", "mutation_id": "mut_noop_1", **_stamp(session)}
+        ws.send_json(replay)
         first = ws.receive_json()
         assert first["type"] == "presentation_updated"
         assert first["last_mutation_id"] == "mut_noop_1"
@@ -257,8 +275,8 @@ def test_replayed_empty_undo_stays_noop_even_after_new_history():
         )
         assert session.history.can_undo() is True
 
-        # Replaying the same mutation_id must stay the original no-op.
-        ws.send_json({"type": "undo", "mutation_id": "mut_noop_1"})
+        # Replaying the same mutation_id (and original stamp) must stay the no-op.
+        ws.send_json(replay)
         second = ws.receive_json()
         assert second["type"] == "presentation_updated"
         assert second["last_mutation_id"] == "mut_noop_1"

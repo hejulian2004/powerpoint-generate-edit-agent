@@ -174,10 +174,22 @@ def test_pptx_import_export_roundtrip():
     with open("demo_input.pptx", "rb") as f:
         pptx_bytes = f.read()
 
-    imported_pres = store.import_pptx_bytes(pptx_bytes, "demo_input.pptx")
+    imported_pres = store.parse_pptx_bytes(pptx_bytes, "demo_input.pptx")
     assert len(imported_pres.slides) >= 1
     assert imported_pres.width == 1280
     assert imported_pres.height == 720
+
+    # Commit through the CAS-guarded replacement API (production path).
+    import asyncio
+
+    session = store.active_session
+    result = asyncio.run(session.commit_replacement(
+        imported_pres,
+        expected_epoch=session.document_epoch,
+        expected_revision=session.pres.version,
+        checkpoint_description="demo_input.pptx",
+    ))
+    assert result.committed is True
 
     # 2. Export back to PPTX
     exported_bytes = store.export_pptx_bytes()
@@ -200,9 +212,14 @@ def test_pptx_import_export_roundtrip():
 
 
 def test_api_upload_and_export():
+    session = store.active_session
     with open("demo_input.pptx", "rb") as f:
         files = {"file": ("demo_input.pptx", f, "application/vnd.openxmlformats-officedocument.presentationml.presentation")}
-        upload_resp = client.post("/api/upload", files=files)
+        upload_resp = client.post(
+            f"/api/upload?expected_epoch={session.document_epoch}"
+            f"&expected_revision={session.pres.version}",
+            files=files,
+        )
         assert upload_resp.status_code == 200
         data = upload_resp.json()
         assert data["success"] is True
@@ -267,9 +284,15 @@ def test_api_confirm_requires_call_id():
 
 
 def test_api_chat_accepts_confirmed_tool_ids():
+    session = store.active_session
     resp = client.post(
         "/api/chat",
-        json={"message": "你好", "confirmed_tool_ids": ["call_nonexistent"]},
+        json={
+            "message": "你好",
+            "confirmed_tool_ids": ["call_nonexistent"],
+            "document_epoch": session.document_epoch,
+            "base_revision": session.pres.version,
+        },
     )
     assert resp.status_code == 200
     assert "reply" in resp.json()

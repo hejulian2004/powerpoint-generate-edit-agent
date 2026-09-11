@@ -138,6 +138,14 @@ class ExecutorSubagent:
         grounding: Optional[Dict[str, Any]] = None
     ) -> ExecutorPlan:
         """Builds an execution plan (tool calls) without mutating the presentation."""
+        # Freeze the document identity and an immutable snapshot BEFORE any await.
+        # The plan must be labeled with the revision it actually planned from, or
+        # the stale-plan guard cannot detect edits made during the LLM call. Every
+        # prompt/heuristic below reads the snapshot, never the live presentation.
+        planning_epoch = getattr(session, "document_epoch", None) if session else None
+        planning_revision = pres.version if pres is not None else None
+        planning_snapshot = pres.model_copy(deep=True) if pres is not None else None
+
         # 1. Broadcast lifecycle start: Main agent pauses waiting for executor subagent
         if on_event:
             await cls._safe_emit(on_event, {
@@ -161,7 +169,7 @@ class ExecutorSubagent:
 
         if has_live_llm:
             from ..graph import _build_llm_system_prompt
-            system_prompt = _build_llm_system_prompt(pres, memory)
+            system_prompt = _build_llm_system_prompt(planning_snapshot, memory)
             anchor_text, context_messages = _split_conversation_context(
                 conversation_context, current_user_query=user_query
             )
@@ -202,11 +210,11 @@ class ExecutorSubagent:
             except Exception as e:
                 logger.warning(f"ExecutorSubagent LLM call error: {e}, using heuristic planner")
                 from ..graph import _heuristic_tool_planner
-                tool_calls = _heuristic_tool_planner(intent, user_query, pres, last_target_id=last_target_id)
+                tool_calls = _heuristic_tool_planner(intent, user_query, planning_snapshot, last_target_id=last_target_id)
 
         if not has_live_llm or not tool_calls:
             from ..graph import _heuristic_tool_planner
-            tool_calls = _heuristic_tool_planner(intent, user_query, pres, last_target_id=last_target_id)
+            tool_calls = _heuristic_tool_planner(intent, user_query, planning_snapshot, last_target_id=last_target_id)
 
         # A content rework must be precise: never regenerate the whole deck.
         if rework_directive:
@@ -222,8 +230,8 @@ class ExecutorSubagent:
         return ExecutorPlan(
             tool_calls=tool_calls,
             summary_message=summary,
-            document_epoch=getattr(session, "document_epoch", None) if session else None,
-            base_revision=pres.version if pres else None,
+            document_epoch=planning_epoch,
+            base_revision=planning_revision,
         )
 
     @staticmethod

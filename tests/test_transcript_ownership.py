@@ -83,7 +83,7 @@ def _seed_session(session_id: str) -> PPTSession:
     session = session_manager.get_or_create(
         session_id, pres_factory=create_default_demo_presentation
     )
-    session.replace_presentation(
+    session._unsafe_install_for_bootstrap(
         create_default_demo_presentation(),
         checkpoint_description="test seed",
     )
@@ -104,17 +104,27 @@ def test_websocket_and_rest_chat_produce_identical_transcripts():
     client = TestClient(app)
     ws_session_id = "transcript_ws"
     rest_session_id = "transcript_rest"
-    _seed_session(ws_session_id)
-    _seed_session(rest_session_id)
+    ws_seed = _seed_session(ws_session_id)
+    rest_seed = _seed_session(rest_session_id)
 
     with client.websocket_connect(f"/ws?session_id={ws_session_id}") as ws:
         ws.receive_json()  # presentation_loaded
         ws.receive_json()  # preview_update
-        ws.send_json({"type": "chat", "message": "你好"})
+        ws.send_json({
+            "type": "chat",
+            "message": "你好",
+            "document_epoch": ws_seed.document_epoch,
+            "base_revision": ws_seed.pres.version,
+        })
         _drain_until(ws, "presentation_updated")
 
     response = client.post(
-        f"/api/chat?session_id={rest_session_id}", json={"message": "你好"}
+        f"/api/chat?session_id={rest_session_id}",
+        json={
+            "message": "你好",
+            "document_epoch": rest_seed.document_epoch,
+            "base_revision": rest_seed.pres.version,
+        },
     )
     assert response.status_code == 200
 

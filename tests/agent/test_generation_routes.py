@@ -218,14 +218,28 @@ def test_rest_undo_uses_requested_session():
     assert sess.history.can_undo() is True
 
     # Call undo endpoint for this specific session
-    res = client.post(f"/api/action/undo?session_id={sid}")
+    res = client.post(
+        f"/api/action/undo?session_id={sid}",
+        json={
+            "session_id": sid,
+            "document_epoch": sess.document_epoch,
+            "expected_revision": sess.pres.version,
+        },
+    )
     assert res.status_code == 200
     assert res.json()["success"] is True
     assert sess.history.can_undo() is False
     assert sess.history.can_redo() is True
 
     # Redo
-    res_redo = client.post(f"/api/action/redo?session_id={sid}")
+    res_redo = client.post(
+        f"/api/action/redo?session_id={sid}",
+        json={
+            "session_id": sid,
+            "document_epoch": sess.document_epoch,
+            "expected_revision": sess.pres.version,
+        },
+    )
     assert res_redo.status_code == 200
     assert res_redo.json()["success"] is True
     assert sess.history.can_undo() is True
@@ -257,7 +271,11 @@ def test_rest_undo_forwards_cas():
     # Stale expected_revision is refused by CAS (no history consumed).
     stale = client.post(
         f"/api/action/undo?session_id={sid}",
-        json={"session_id": sid, "expected_revision": 999999},
+        json={
+            "session_id": sid,
+            "document_epoch": sess.document_epoch,
+            "expected_revision": 999999,
+        },
     )
     assert stale.status_code == 200
     assert stale.json()["success"] is False
@@ -267,7 +285,11 @@ def test_rest_undo_forwards_cas():
     current = sess.pres.version
     ok = client.post(
         f"/api/action/undo?session_id={sid}",
-        json={"session_id": sid, "expected_revision": current},
+        json={
+            "session_id": sid,
+            "document_epoch": sess.document_epoch,
+            "expected_revision": current,
+        },
     )
     assert ok.status_code == 200
     assert ok.json()["success"] is True
@@ -290,7 +312,9 @@ def test_upload_uses_requested_session():
     assert sess.history.can_undo() is True
 
     res = client.post(
-        f"/api/upload?session_id={sid}",
+        f"/api/upload?session_id={sid}"
+        f"&expected_epoch={sess.document_epoch}"
+        f"&expected_revision={sess.pres.version}",
         files={"file": ("new_sample.pptx", pptx_bytes, "application/vnd.openxmlformats-officedocument.presentationml.presentation")}
     )
     assert res.status_code == 200

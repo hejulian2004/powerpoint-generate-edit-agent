@@ -34,7 +34,7 @@ def _seed_session(session_id: str) -> PPTSession:
     session = session_manager.get_or_create(
         session_id, pres_factory=create_default_demo_presentation
     )
-    session.replace_presentation(create_default_demo_presentation(), checkpoint_description="seed")
+    session._unsafe_install_for_bootstrap(create_default_demo_presentation(), checkpoint_description="seed")
     return session
 
 
@@ -89,7 +89,14 @@ def test_rest_chat_does_not_hold_mutation_lock(monkeypatch):
         return await original(*args, **kwargs)
 
     monkeypatch.setattr(store.agent_runtime, "run_turn", spy)
-    response = client.post(f"/api/chat?session_id={session_id}", json={"message": "你好"})
+    response = client.post(
+        f"/api/chat?session_id={session_id}",
+        json={
+            "message": "你好",
+            "document_epoch": session.document_epoch,
+            "base_revision": session.pres.version,
+        },
+    )
     assert response.status_code == 200
     assert captured["locked"] is False
 
@@ -109,7 +116,12 @@ def test_websocket_chat_does_not_hold_mutation_lock(monkeypatch):
     with client.websocket_connect(f"/ws?session_id={session_id}") as ws:
         ws.receive_json()  # presentation_loaded
         ws.receive_json()  # preview_update
-        ws.send_json({"type": "chat", "message": "你好"})
+        ws.send_json({
+            "type": "chat",
+            "message": "你好",
+            "document_epoch": session.document_epoch,
+            "base_revision": session.pres.version,
+        })
         for _ in range(20):
             message = ws.receive_json()
             if message.get("type") == "presentation_updated":

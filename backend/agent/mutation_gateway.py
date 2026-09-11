@@ -50,6 +50,29 @@ GENERATION_TOOLS = frozenset({
 STALE_MUTATION = "stale_mutation"
 DOCUMENT_EPOCH_MISMATCH = "document_epoch_mismatch"
 STALE_EXECUTION_PLAN = "stale_execution_plan"
+# A whole-document replacement was requested in a shape the gateway refuses to
+# honour (mixed with other ops, or declared without a qualifying operation).
+INVALID_REPLACEMENT_ENVELOPE = "invalid_replacement_envelope"
+# A session-backed user mutation arrived without its required CAS stamps.
+MISSING_MUTATION_STAMP = "missing_mutation_stamp"
+
+
+def _tool_name(call: Dict[str, Any]) -> str:
+    return str(call.get("name") or call.get("tool") or "")
+
+
+def _is_replacement_op(call: Dict[str, Any]) -> bool:
+    """Operation semantics decide replacement authority - never a caller flag.
+
+    `generate_presentation` defaults ``replace`` to True, so an omitted argument
+    is a replacement. Only an explicit ``replace=False`` is additive.
+    """
+    if _tool_name(call) != "generate_presentation":
+        return False
+    args = call.get("arguments")
+    if args is None:
+        args = call.get("args") or {}
+    return args.get("replace", True) is not False
 
 
 def _fire_event(on_event: Optional[Callable], data: Dict[str, Any]) -> None:
@@ -124,6 +147,12 @@ class MutationEnvelope:
     mutation_id: str = field(default_factory=lambda: f"mut_{uuid.uuid4().hex[:10]}")
     grounding_source: Optional[str] = None
     enforce_grounding: bool = False
+    # Caller ASSERTION only. The gateway derives replacement authority from the
+    # operations themselves; an inconsistent assertion fails closed.
+    replaces_document: bool = False
+    # When True, session-backed writes must carry `document_epoch` AND
+    # `expected_revision`; missing stamps fail closed before cache/CAS.
+    require_stamps: bool = False
 
     @classmethod
     def from_tool_calls(
@@ -138,6 +167,8 @@ class MutationEnvelope:
         mutation_id: Optional[str] = None,
         grounding_source: Optional[str] = None,
         enforce_grounding: bool = False,
+        replaces_document: bool = False,
+        require_stamps: bool = False,
     ) -> "MutationEnvelope":
         return cls(
             operations=[MutationOperation.from_tool_call(c) for c in (tool_calls or [])],
@@ -149,6 +180,8 @@ class MutationEnvelope:
             mutation_id=mutation_id or f"mut_{uuid.uuid4().hex[:10]}",
             grounding_source=grounding_source,
             enforce_grounding=enforce_grounding,
+            replaces_document=replaces_document,
+            require_stamps=require_stamps,
         )
 
     def to_calls(self) -> List[Dict[str, Any]]:
@@ -172,6 +205,7 @@ class MutationBatchResult:
     mutation_id: Optional[str] = None
     unsupported_numbers: List[str] = field(default_factory=list)
     rolled_back: bool = False
+    replaced_document: bool = False
 
     @property
     def success(self) -> bool:
@@ -218,6 +252,8 @@ class MutationGateway:
         mutation_id: Optional[str] = None,
         grounding_source: Optional[str] = None,
         enforce_grounding: bool = False,
+        replaces_document: bool = False,
+        require_stamps: bool = False,
     ) -> MutationBatchResult:
         """Executes a batch of tool calls, awaiting every telemetry event."""
         events: List[Dict[str, Any]] = []
@@ -240,6 +276,8 @@ class MutationGateway:
                 mutation_id=mutation_id,
                 grounding_source=grounding_source,
                 enforce_grounding=enforce_grounding,
+                replaces_document=replaces_document,
+                require_stamps=require_stamps,
             )
 
         # Serialize only the actual mutations. The lock is NOT held while the graph
@@ -248,6 +286,16 @@ class MutationGateway:
         if lock is not None:
             async with lock:
                 batch = _run()
+                # A replacement rotates the epoch/resets the revision AFTER the
+                # mutation transaction exits but BEFORE the lock is released.
+                # Rewrite the buffered document-version telemetry here so the
+                # client never observes the transaction's transient revision.
+                if batch.replaced_document:
+                    for event in events:
+                        if "presentation_version" in event:
+                            event["presentation_version"] = batch.version
+                        if "document_epoch" in event:
+                            event["document_epoch"] = batch.document_epoch
         else:
             batch = _run()
 
@@ -286,6 +334,8 @@ class MutationGateway:
             mutation_id=envelope.mutation_id,
             grounding_source=envelope.grounding_source,
             enforce_grounding=envelope.enforce_grounding,
+            replaces_document=envelope.replaces_document,
+            require_stamps=envelope.require_stamps,
         )
 
     @classmethod
@@ -308,6 +358,8 @@ class MutationGateway:
         mutation_id: Optional[str] = None,
         grounding_source: Optional[str] = None,
         enforce_grounding: bool = False,
+        replaces_document: bool = False,
+        require_stamps: bool = False,
     ) -> MutationBatchResult:
         """Sync entry point used by deterministic remediation pipelines."""
 
@@ -331,6 +383,8 @@ class MutationGateway:
             mutation_id=mutation_id,
             grounding_source=grounding_source,
             enforce_grounding=enforce_grounding,
+            replaces_document=replaces_document,
+            require_stamps=require_stamps,
         )
 
     @classmethod
@@ -407,6 +461,8 @@ class MutationGateway:
         mutation_id: Optional[str] = None,
         grounding_source: Optional[str] = None,
         enforce_grounding: bool = False,
+        replaces_document: bool = False,
+        require_stamps: bool = False,
     ) -> MutationBatchResult:
         calls = list(tool_calls or [])
         live_epoch = getattr(session, "document_epoch", None) if session is not None else None
@@ -419,6 +475,53 @@ class MutationGateway:
             document_epoch=live_epoch,
             mutation_id=effective_mutation_id,
         )
+
+        # 0-pre. Required CAS stamps (session-backed user mutations): fail closed
+        # BEFORE the idempotency cache and CAS so an unstamped write can never be
+        # mistaken for a cached/replayable one. Internal callers (agent plan,
+        # remediation) supply their own stamps and do not set this.
+        if require_stamps and session is not None and (
+            document_epoch is None or expected_revision is None
+        ):
+            batch.error = MISSING_MUTATION_STAMP
+            batch.failed = len(calls)
+            emit({
+                "type": "mutation_rejected",
+                "error": MISSING_MUTATION_STAMP,
+                "mutation_id": batch.mutation_id,
+                "version": batch.version,
+                "document_epoch": batch.document_epoch,
+            })
+            return batch
+
+        # Replacement authority is derived from the operations, never trusted
+        # from a flag. `replaces_document` is at most an assertion; an
+        # inconsistent or malformed envelope fails closed with ZERO writes.
+        # A replacement is only meaningful with a session (it rotates that
+        # session's document identity); session-less callers (direct graph
+        # tests) remain additive.
+        detected_replacement = session is not None and any(
+            _is_replacement_op(c) for c in calls
+        )
+        effective_replacement = detected_replacement or replaces_document
+        if effective_replacement:
+            valid_shape = (
+                detected_replacement
+                and len(calls) == 1
+                and _is_replacement_op(calls[0])
+                and session is not None
+            )
+            if not valid_shape:
+                batch.error = INVALID_REPLACEMENT_ENVELOPE
+                batch.failed = len(calls)
+                emit({
+                    "type": "mutation_rejected",
+                    "error": INVALID_REPLACEMENT_ENVELOPE,
+                    "mutation_id": batch.mutation_id,
+                    "version": batch.version,
+                    "document_epoch": batch.document_epoch,
+                })
+                return batch
 
         # 0a. Idempotent replay: return the first terminal outcome for a
         # caller-supplied id BEFORE CAS. A replayed mutation may carry an
@@ -510,7 +613,25 @@ class MutationGateway:
                 before_texts={},
             )
 
+        # Whole-document replacement: rotate the document identity AFTER the
+        # mutation transaction and its history batch have fully exited, while
+        # still inside the caller's `mutation_lock`. Finalizing earlier would let
+        # `HistoryBatch.commit()` re-push the commands we just cleared.
+        if (
+            effective_replacement
+            and session is not None
+            and batch.success
+            and not batch.rolled_back
+        ):
+            session._finalize_inplace_replacement_locked()
+            batch.replaced_document = True
+
         batch.version = pres.version if pres else batch.version
+        batch.document_epoch = (
+            getattr(session, "document_epoch", None)
+            if session is not None
+            else batch.document_epoch
+        )
         batch.last_target_id = (
             getattr(session, "last_target_id", None) if session is not None else batch.last_target_id
         )
@@ -518,13 +639,15 @@ class MutationGateway:
         # Cache only terminal ACK outcomes (success / atomic success / undo-redo
         # success, including the acknowledged empty-history no-op). Stale CAS,
         # blocked confirmations, rolled-back transactions, and transient errors
-        # stay uncached so a corrected retry can still execute.
+        # stay uncached so a corrected retry can still execute. A replacement is
+        # never cached: its epoch is gone, and finalize already cleared the cache.
         if (
             caller_mutation_id is not None
             and session is not None
             and hasattr(session, "remember_mutation_result")
             and batch.success
             and not batch.rolled_back
+            and not batch.replaced_document
         ):
             session.remember_mutation_result(
                 caller_mutation_id, batch, document_epoch=live_epoch

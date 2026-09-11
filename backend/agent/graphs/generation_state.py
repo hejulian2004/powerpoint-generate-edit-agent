@@ -33,6 +33,12 @@ class PPTGenerationState(TypedDict, total=False):
 
     visual_issues: List[VisualIssue]
 
+    # Document identity captured when generation starts. The final persist commits
+    # only if the live session still matches, so a generation run can never
+    # overwrite edits the user made while it was running.
+    base_document_epoch: Optional[str]
+    base_revision: Optional[int]
+
     spec_repair_attempts: int
     max_spec_repair_attempts: int
 

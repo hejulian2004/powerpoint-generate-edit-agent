@@ -108,6 +108,9 @@ async def execute_direct_batch(
         mutation_id=mutation_id,
         document_epoch=document_epoch,
         expected_revision=expected_revision,
+        # Session-backed user writes MUST carry CAS stamps; an unstamped direct
+        # mutation is rejected rather than silently applied to "current".
+        require_stamps=True,
     )
 
 
@@ -220,6 +223,22 @@ async def websocket_endpoint(websocket: WebSocket):
                 if not user_message:
                     continue
 
+                # A chat turn is a mutation-bearing request: it MUST declare the
+                # document identity the client observed. A missing stamp is
+                # rejected so an offline/unsynced client cannot have its request
+                # interpreted against a deck it never saw.
+                request_epoch = data.get("document_epoch")
+                request_revision = data.get("base_revision", data.get("expected_revision"))
+                if request_epoch is None or request_revision is None:
+                    await websocket.send_json({
+                        "type": "turn_rejected",
+                        "session_id": session.session_id,
+                        "error": "missing_request_stamp",
+                        "document_epoch": getattr(session, "document_epoch", None),
+                        "version": session.pres.version,
+                    })
+                    continue
+
                 # The mutation lock is NOT held across the LLM turn: the gateway
                 # serializes only the actual mutations, so GUI edits stay responsive.
                 # Event streaming callback
@@ -235,7 +254,9 @@ async def websocket_endpoint(websocket: WebSocket):
                         history=session.history,
                         session=session,
                         on_event=on_event,
-                        confirmed_tool_ids=data.get("confirmed_tool_ids") or []
+                        confirmed_tool_ids=data.get("confirmed_tool_ids") or [],
+                        request_document_epoch=request_epoch,
+                        request_base_revision=request_revision,
                     )
 
                     # Transcript is owned by AgentRuntime.run_turn.
@@ -459,9 +480,20 @@ async def websocket_endpoint(websocket: WebSocket):
 
             elif msg_type == "restore_checkpoint":
                 cp_id = data.get("checkpoint_id")
-                async with session.mutation_lock:
-                    if cp_id and session.restore_checkpoint(cp_id):
+                if cp_id:
+                    result = await session.commit_checkpoint_restore(
+                        cp_id,
+                        expected_epoch=data.get("document_epoch"),
+                        expected_revision=data.get("expected_revision"),
+                    )
+                    if result.committed:
                         await _broadcast_state(session)
+                    else:
+                        await websocket.send_json({
+                            "type": "replacement_rejected",
+                            "session_id": session.session_id,
+                            "error": result.error,
+                        })
 
     except WebSocketDisconnect:
         logger.info(f"WebSocket client disconnected from session '{session.session_id}'")
