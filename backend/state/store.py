@@ -252,9 +252,6 @@ class PresentationStore:
     def get_presentation(self) -> PresentationIR:
         return self.active_session.pres
 
-    def set_active_slide(self, slide_id: str) -> bool:
-        return self.active_session.set_active_slide(slide_id)
-
     def parse_pptx_bytes(
         self,
         data: bytes,

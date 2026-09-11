@@ -35,6 +35,10 @@ class ToolRegistry:
             return func
         return decorator
 
+    def get_schema(self, name: str) -> Optional[Dict[str, Any]]:
+        """Returns the JSON schema for a registered tool, or None."""
+        return next((s for s in self.schemas if s["function"]["name"] == name), None)
+
     def validate_arguments(self, name: str, args: Dict[str, Any]) -> Optional[str]:
         """Fail-closed validation of a tool call before any mutation is attempted.
 
