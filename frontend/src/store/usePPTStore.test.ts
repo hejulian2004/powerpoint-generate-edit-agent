@@ -16,6 +16,10 @@ const resetStore = () => {
     editingElementId: null,
     ws: null,
     wsConnected: false,
+    previewSvg: null,
+    previewScore: null,
+    previewSlideId: null,
+    qualityScore: null,
     pendingMutations: [],
     outbox: [],
     inFlightMutationId: null,
@@ -602,5 +606,75 @@ describe('usePPTStore mutation pipeline', () => {
     expect(usePPTStore.getState().presentation).toStrictEqual(presB)
     expect(usePPTStore.getState().outbox).toHaveLength(0)
     expect(usePPTStore.getState().pendingMutations).toHaveLength(0)
+  })
+
+  it('chat carries UIContext and the confirmed base revision', () => {
+    const slide = makeSlide([makeShape('s1', 0, 0)])
+    const pres = makePresentation([slide], 9)
+    usePPTStore.getState().setPresentation(pres)
+    const ws = connect()
+    ws.emit('presentation_loaded', {
+      presentation: pres,
+      active_slide_id: slide.id,
+      version: 9,
+      document_epoch: 'epoch_A'
+    })
+
+    usePPTStore.getState().setSelectedElementId('s1')
+    usePPTStore.getState().sendChatMessage('把这个改红')
+
+    const chat = ws.sentMessages().find((m) => m.type === 'chat')!
+    expect(chat).toBeTruthy()
+    expect(chat.base_revision).toBe(9)
+    expect(chat.document_epoch).toBe('epoch_A')
+    expect(chat.ui_context.selected_element_ids).toEqual(['s1'])
+    expect(chat.ui_context.primary_selected_element_id).toBe('s1')
+    expect(chat.ui_context.active_slide_id).toBe(slide.id)
+    expect(chat.ui_context.ui_context_revision).toBeGreaterThan(0)
+    expect(typeof chat.ui_context.client_id).toBe('string')
+  })
+
+  it('isolates a remote client active-slide change from the local view and chat targeting', async () => {
+    const s2 = makeSlide([makeShape('b1', 0, 0)], 'slide_2')
+    const s7 = makeSlide([makeShape('b2', 0, 0)], 'slide_7')
+    const pres = makePresentation([s2, s7], 5)
+    const ws = connect()
+    ws.emit('presentation_loaded', {
+      presentation: pres,
+      active_slide_id: 'slide_7',
+      version: 5,
+      document_epoch: 'epoch_A'
+    })
+    expect(usePPTStore.getState().activeSlideId).toBe('slide_7')
+
+    // Client A switched slides: the session-global broadcast must be ignored.
+    ws.emit('active_slide_changed', { active_slide_id: 'slide_2' })
+    expect(usePPTStore.getState().activeSlideId).toBe('slide_7')
+
+    // Client A mutated the document; the server template carries their active
+    // slide, but client B must keep viewing slide_7.
+    ws.emit('presentation_updated', {
+      presentation: makePresentation([s2, s7], 6),
+      active_slide_id: 'slide_2',
+      version: 6
+    })
+    expect(usePPTStore.getState().activeSlideId).toBe('slide_7')
+
+    // Client B edits slide_7; the shared document still carries A's active
+    // slide_2. Even on B's OWN ack the canonical active_slide_id must not move
+    // B's view — navigation is client-local.
+    usePPTStore.getState().updateElementDirect('b2', { x: 10 })
+    const bAck = usePPTStore.getState().pendingMutations[0].mutationId
+    ws.emit('presentation_updated', {
+      presentation: makePresentation([s2, s7], 7),
+      active_slide_id: 'slide_2',
+      version: 7,
+      last_mutation_id: bAck
+    })
+    expect(usePPTStore.getState().activeSlideId).toBe('slide_7')
+
+    await usePPTStore.getState().sendChatMessage('把这个改红')
+    const chat = ws.sentMessages().find((m) => m.type === 'chat')!
+    expect(chat.ui_context.active_slide_id).toBe('slide_7')
   })
 })

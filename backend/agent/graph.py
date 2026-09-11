@@ -339,7 +339,8 @@ async def executor_node(state: PPTAgentState, config: RunnableConfig) -> Dict[st
         on_event=on_event,
         conversation_context=state.get("messages"),
         rework_directive=state.get("rework_directive"),
-        grounding=state.get("grounding")
+        grounding=state.get("grounding"),
+        ui_context=configurable.get("ui_context"),
     )
 
     # Sync active slide id
@@ -388,7 +389,9 @@ def _heuristic_tool_planner(
     intent: str,
     user_query: str,
     pres: Optional[PresentationIR],
-    last_target_id: Optional[str] = None
+    last_target_id: Optional[str] = None,
+    selected_element_ids: Optional[List[str]] = None,
+    primary_selected_element_id: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
     """Heuristic tool planner using AgentAction contract for deterministic execution."""
     tool_calls = []
@@ -567,6 +570,40 @@ def _heuristic_tool_planner(
         })
 
     elif intent == "modify_elements":
+        # Deictic references ("这个/它/选中的") bind to the requesting client's
+        # selection, or fail closed with a clarification (empty plan). Never fall
+        # back to last_target_id or textual guessing.
+        from .uicontext import DEFERENCE_TOKENS
+        if any(tok in user_query for tok in DEFERENCE_TOKENS):
+            targets = [t for t in (selected_element_ids or []) if t]
+            target = primary_selected_element_id or (targets[0] if targets else None)
+            if not target:
+                return tool_calls
+            updates: Dict[str, Any] = {"element_id": target}
+            if "红" in user_query:
+                updates["fill_color"] = "#EF4444"
+            elif "蓝" in user_query:
+                updates["fill_color"] = "#3B82F6"
+            elif "绿" in user_query:
+                updates["fill_color"] = "#10B981"
+            elif "黄" in user_query:
+                updates["fill_color"] = "#F59E0B"
+            elements = active_slide.elements if active_slide else []
+            target_el = next((e for e in elements if e.id == target), None)
+            if target_el is not None:
+                if any(k in user_query for k in ["放大", "变大", "大一点", "再大", "增大"]):
+                    updates["width"] = float(target_el.width) * 1.2
+                    updates["height"] = float(target_el.height) * 1.2
+                elif any(k in user_query for k in ["缩小", "变小", "小一点", "再小"]):
+                    updates["width"] = float(target_el.width) * 0.8
+                    updates["height"] = float(target_el.height) * 0.8
+            tool_calls.append({
+                "name": "update_element",
+                "arguments": updates,
+                "id": f"call_{uuid.uuid4().hex[:6]}",
+            })
+            return tool_calls
+
         # Target elements on active slide using AgentAction contract
         if active_slide and active_slide.elements:
             target_ref = last_target_id or "title"

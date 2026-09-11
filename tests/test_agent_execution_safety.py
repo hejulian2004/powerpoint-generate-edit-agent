@@ -137,7 +137,7 @@ def test_run_turn_blocks_unresolved_dangerous_mutation():
         pending = session.get_pending_confirmation("call_ghost_delete")
         assert pending is not None
         assert pending["tool"] == "delete_element"
-        assert pending["arguments"] == {"element_id": "ghost_element"}
+        assert pending["arguments"] == {"element_id": "ghost_element", "slide_id": "slide_1"}
         assert pending["document_epoch"] == session.document_epoch
         assert any(
             e.get("type") == "confirmation_required"

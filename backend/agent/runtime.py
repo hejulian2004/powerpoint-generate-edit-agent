@@ -108,6 +108,7 @@ class AgentRuntime:
         confirmed_tool_ids: Optional[List[str]] = None,
         request_document_epoch: Optional[str] = None,
         request_base_revision: Optional[int] = None,
+        ui_context: Optional[Any] = None,
     ) -> Dict[str, Any]:
         """Runs an interactive turn executed through the LangGraph state machine.
 
@@ -120,8 +121,14 @@ class AgentRuntime:
         distinct from the per-plan `plan_document_epoch` / `plan_base_revision`:
         the transport freezes the request stamp, and the turn is terminally
         invalidated if the document identity changes before any write.
+
+        `ui_context` carries the requesting client's active slide / selection so
+        deictic references bind to explicit element ids. It is request-scoped and
+        never written into the document.
         """
         confirmed_ids = list(confirmed_tool_ids or [])
+        from .uicontext import UIContext
+        ctx = UIContext.from_any(ui_context)
         from .context_compressor import ContextCompressor, CONTEXT_LIMIT_PRESETS
 
         # 0. Request-admission CAS: reject a request that is already stale when it
@@ -196,6 +203,8 @@ class AgentRuntime:
             "max_iterations": max_iterations,
             "active_slide_id": pres.active_slide_id,
             "presentation_version": pres.version,
+            "ui_context": ctx.to_dict(),
+            "ui_context_revision": ctx.ui_context_revision,
             "tool_calls": [],
             "tool_results": [],
             "confirmed_tool_ids": confirmed_ids,
@@ -213,6 +222,7 @@ class AgentRuntime:
                 "llm_client": self.llm,
                 "memory": (getattr(session, "agent_memory", None) if session else None) or self.memory,
                 "confirmed_tool_ids": confirmed_ids,
+                "ui_context": ctx,
             }
         }
 

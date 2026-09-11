@@ -134,12 +134,29 @@ def _rejection_payload(session: PPTSession, mutation_id: str, batch: Any) -> Dic
     return payload
 
 
-async def _broadcast_state(session: PPTSession, *, last_mutation_id: Optional[str] = None) -> None:
+async def _broadcast_state(
+    session: PPTSession,
+    *,
+    last_mutation_id: Optional[str] = None,
+    preview_slide_id: Optional[str] = None,
+    local_view_hint_slide_id: Optional[str] = None,
+) -> None:
+    extra: Dict[str, Any] = {}
+    # Navigation is client-local, so `active_slide_id` carries no document
+    # authority. When a mutation creates a slide for THIS request, ship a
+    # mutation-scoped hint so the initiating client may follow it while other
+    # clients keep their own view.
+    if local_view_hint_slide_id:
+        extra["local_view_hint"] = {"active_slide_id": local_view_hint_slide_id}
     await store.broadcast(
-        build_presentation_updated(session, last_mutation_id=last_mutation_id),
+        build_presentation_updated(
+            session, last_mutation_id=last_mutation_id, **extra
+        ),
         session_id=session.session_id,
     )
-    new_preview = build_preview_update(session)
+    # Preview the slide the mutation actually touched; the session no longer owns
+    # a single "active" slide now that navigation is client-local.
+    new_preview = build_preview_update(session, preview_slide_id)
     if new_preview:
         await store.broadcast(new_preview, session_id=session.session_id)
 
@@ -244,6 +261,7 @@ async def websocket_endpoint(websocket: WebSocket):
                         confirmed_tool_ids=data.get("confirmed_tool_ids") or [],
                         request_document_epoch=request_epoch,
                         request_base_revision=request_revision,
+                        ui_context=data.get("ui_context"),
                     )
 
                     # Transcript is owned by AgentRuntime.run_turn.
@@ -297,19 +315,18 @@ async def websocket_endpoint(websocket: WebSocket):
                 if new_preview:
                     await store.broadcast(new_preview, session_id=session.session_id)
 
-            # User selected a slide thumbnail
+            # User selected a slide thumbnail.
+            #
+            # Navigation is CLIENT-LOCAL UI state: it must not mutate the shared
+            # document's `active_slide_id`, and it must not be broadcast to other
+            # clients (which would drag their view to someone else's slide). We
+            # only return a preview of the requested slide to the requester.
             elif msg_type == "select_slide":
                 slide_id = data.get("slide_id")
-                async with session.mutation_lock:
-                    if slide_id and session.set_active_slide(slide_id):
-                        await store.broadcast({
-                            "type": "active_slide_changed",
-                            "session_id": session.session_id,
-                            "active_slide_id": slide_id
-                        }, session_id=session.session_id)
-                        new_preview = build_preview_update(session, slide_id)
-                        if new_preview:
-                            await store.broadcast(new_preview, session_id=session.session_id)
+                if slide_id and session.pres.get_slide(slide_id):
+                    new_preview = build_preview_update(session, slide_id)
+                    if new_preview:
+                        await websocket.send_json(new_preview)
 
             # User triggered Undo
             elif msg_type == "undo":
@@ -387,12 +404,20 @@ async def websocket_endpoint(websocket: WebSocket):
                     await websocket.send_json(_rejection_payload(session, mutation_id, batch))
                 else:
                     res = batch.first_result()
+                    hint_sid: Optional[str] = None
                     if action == "create_slide":
                         new_sid = res.get("slide_id") or (
                             session.pres.slides[-1].id if session.pres.slides else None
                         )
                         if new_sid:
                             session.set_active_slide(new_sid)
+                            hint_sid = new_sid
+                    elif action == "duplicate_slide":
+                        # The tool mirrors the new slide into `pres.active_slide_id`;
+                        # echo it back only as this request's own navigation hint.
+                        dup_sid = res.get("new_slide_id")
+                        if dup_sid:
+                            hint_sid = dup_sid
                     elif action == "delete_slide":
                         if not session.get_active_slide() and session.pres.slides:
                             session.set_active_slide(session.pres.slides[0].id)
@@ -412,7 +437,12 @@ async def websocket_endpoint(websocket: WebSocket):
                         if new_id:
                             session.last_target_id = new_id
 
-                    await _broadcast_state(session, last_mutation_id=mutation_id)
+                    await _broadcast_state(
+                        session,
+                        last_mutation_id=mutation_id,
+                        preview_slide_id=args.get("slide_id") or session.active_slide_id,
+                        local_view_hint_slide_id=hint_sid,
+                    )
 
             # Atomic batch mutation (e.g. multi-select drag as ONE undo step)
             elif msg_type == "batch_mutation":

@@ -16,6 +16,7 @@ from ..config import settings, AppSettings
 from ..session.session import PPTSession
 from ..agent.mutation_gateway import MutationGateway
 from ..protocol.presentation import build_canonical_snapshot, build_presentation_event
+from .websocket import build_preview_update
 
 logger = logging.getLogger(__name__)
 
@@ -51,20 +52,26 @@ async def get_presentation_snapshot(session_id: Optional[str] = Query(None)):
 
 
 @router.post("/presentation/active-slide")
-async def set_active_slide(
+async def preview_active_slide(
     slide_id: str = Body(..., embed=True),
     session_id: Optional[str] = Query(None),
 ):
+    """Returns a preview of a slide for the REQUESTER only.
+
+    Navigation is client-local UI state: this endpoint must never write the shared
+    `PresentationIR.active_slide_id`, and must never broadcast an
+    `active_slide_changed` event (which would drag other clients' views). The
+    response is the same `preview_update` envelope the WebSocket returns.
+    """
     session = _resolve_session(session_id)
-    ok = session.set_active_slide(slide_id)
-    if not ok:
+    # `build_preview_update` falls back to the session active slide when the id is
+    # unknown; pre-check so an unknown slide is an explicit 404.
+    if not session.pres.get_slide(slide_id):
         raise HTTPException(status_code=404, detail="Slide not found")
-    await store.broadcast({
-        "type": "active_slide_changed",
-        "session_id": session.session_id,
-        "active_slide_id": slide_id
-    }, session_id=session.session_id)
-    return {"success": True, "session_id": session.session_id, "active_slide_id": slide_id}
+    preview = build_preview_update(session, slide_id)
+    if preview is None:
+        raise HTTPException(status_code=404, detail="Slide not found")
+    return preview
 
 
 @router.get("/slide/{slide_id}/svg")
@@ -398,6 +405,7 @@ async def chat_interaction(
         confirmed_tool_ids=confirmed_tool_ids,
         request_document_epoch=request_epoch,
         request_base_revision=request_revision,
+        ui_context=payload.get("ui_context"),
     )
 
     # Broadcast canonical updated presentation

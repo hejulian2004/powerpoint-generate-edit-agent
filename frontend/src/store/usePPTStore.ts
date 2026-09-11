@@ -271,6 +271,10 @@ interface PPTState {
   showSmartGuides: boolean
   previewSvg: string | null
   previewScore: number | null
+  // Provenance for `previewSvg`: the slide id it actually depicts. Invariant:
+  // `previewSvg != null` implies `previewSlideId` identifies exactly that slide.
+  // Never derive it from `activeSlideId` (a foreign broadcast must not relabel it).
+  previewSlideId: string | null
   qualityScore: VisualQualityScore | null
   history: PatchRecord[]
   mutationStatus: MutationStatus
@@ -285,6 +289,10 @@ interface PPTState {
   documentEpoch: string | null
   confirmedRevision: number
   hasServerRevision: boolean
+  // UI context (never document state): identifies this client's selection so the
+  // Agent can bind deictic references ("这个") to explicit element ids.
+  clientId: string
+  uiContextRevision: number
   contextUsage: ContextUsageData | null
   setContextUsage: (usage: ContextUsageData | null) => void
 
@@ -388,6 +396,7 @@ export const usePPTStore = create<PPTState>((set, get) => ({
   showSmartGuides: true,
   previewSvg: null,
   previewScore: null,
+  previewSlideId: null,
   qualityScore: null,
   history: [],
   mutationStatus: 'idle',
@@ -398,6 +407,13 @@ export const usePPTStore = create<PPTState>((set, get) => ({
   documentEpoch: null,
   confirmedRevision: 0,
   hasServerRevision: false,
+  clientId: (() => {
+    if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+      return `client_${crypto.randomUUID()}`
+    }
+    return `client_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`
+  })(),
+  uiContextRevision: 0,
   contextUsage: {
     current_tokens: 1200,
     max_tokens: 256 * 1024,
@@ -448,11 +464,18 @@ export const usePPTStore = create<PPTState>((set, get) => ({
       const inFlightSurvives = pendingMutations.some(
         (m) => m.mutationId === state.inFlightMutationId
       )
+      // `active_slide_id` has no canonical document authority: the server hint
+      // must never yank this client off the slide it is currently viewing.
+      const serverActive =
+        snapshot.active_slide_id || snapshot.presentation.slides?.[0]?.id || null
+      const keepLocalActive = !!state.activeSlideId && (
+        hasPending || snapshot.presentation.slides.some((s) => s.id === state.activeSlideId)
+      )
       return {
         sessionId: snapshot.session_id || state.sessionId,
         presentation: hasPending ? state.presentation : snapshot.presentation,
         confirmedPresentation: snapshot.presentation,
-        activeSlideId: snapshot.active_slide_id || snapshot.presentation.slides?.[0]?.id || null,
+        activeSlideId: keepLocalActive ? state.activeSlideId : serverActive,
         canUndo: snapshot.can_undo ?? state.canUndo,
         canRedo: snapshot.can_redo ?? state.canRedo,
         selectedElementId: hasPending ? state.selectedElementId : null,
@@ -473,16 +496,26 @@ export const usePPTStore = create<PPTState>((set, get) => ({
   },
 
   setActiveSlideId: (id) => {
-    set({
+    set((state) => ({
       activeSlideId: id,
+      // The cached preview only belongs to the slide it depicts. If we are moving
+      // to a different slide, drop it rather than let components read a stale SVG.
+      previewSvg: state.previewSlideId === id ? state.previewSvg : null,
+      previewScore: state.previewSlideId === id ? state.previewScore : null,
+      qualityScore: state.previewSlideId === id ? state.qualityScore : null,
+      previewSlideId: state.previewSlideId === id ? state.previewSlideId : null,
       selectedElementId: null,
       selectedElementIds: [],
       selectionScope: [],
-      editingElementId: null
-    })
-    const { ws, sessionId } = get()
+      editingElementId: null,
+      uiContextRevision: state.uiContextRevision + 1
+    }))
+    // Navigation is CLIENT-LOCAL UI state, never a shared document field. We only
+    // ask the server for a preview of the newly viewed slide; the server must not
+    // treat this as a session-wide active-slide change nor broadcast it.
+    const { ws } = get()
     if (ws && ws.readyState === WebSocket.OPEN) {
-      ws.send(JSON.stringify({ type: 'select_slide', slide_id: id, session_id: sessionId }))
+      ws.send(JSON.stringify({ type: 'preview_request', slide_id: id }))
     }
   },
 
@@ -491,14 +524,16 @@ export const usePPTStore = create<PPTState>((set, get) => ({
       if (id && state.selectedElementIds.includes(id)) {
         return {
           selectedElementId: id,
-          activeRightTab: 'inspector'
+          activeRightTab: 'inspector',
+          uiContextRevision: state.uiContextRevision + 1
         }
       }
       return {
         selectedElementId: id,
         selectedElementIds: id ? [id] : [],
         editingElementId: id === null ? null : state.editingElementId,
-        activeRightTab: id ? 'inspector' : state.activeRightTab
+        activeRightTab: id ? 'inspector' : state.activeRightTab,
+        uiContextRevision: state.uiContextRevision + 1
       }
     })
   },
@@ -508,7 +543,8 @@ export const usePPTStore = create<PPTState>((set, get) => ({
       selectedElementIds: ids,
       selectedElementId: ids.length ? ids[ids.length - 1] : null,
       editingElementId: null,
-      activeRightTab: ids.length ? 'inspector' : state.activeRightTab
+      activeRightTab: ids.length ? 'inspector' : state.activeRightTab,
+      uiContextRevision: state.uiContextRevision + 1
     }))
   },
 
@@ -522,7 +558,8 @@ export const usePPTStore = create<PPTState>((set, get) => ({
         selectedElementIds: ids,
         selectedElementId: ids.length ? ids[ids.length - 1] : null,
         editingElementId: null,
-        activeRightTab: ids.length ? 'inspector' : state.activeRightTab
+        activeRightTab: ids.length ? 'inspector' : state.activeRightTab,
+        uiContextRevision: state.uiContextRevision + 1
       }
     })
   },
@@ -534,19 +571,23 @@ export const usePPTStore = create<PPTState>((set, get) => ({
   },
 
   clearSelection: () => {
-    set({
+    set((state) => ({
       selectedElementId: null,
       selectedElementIds: [],
       selectionScope: [],
-      editingElementId: null
-    })
+      editingElementId: null,
+      uiContextRevision: state.uiContextRevision + 1
+    }))
   },
 
   enterGroup: (groupId) => {
     set((state) => (
       state.selectionScope.includes(groupId)
         ? state
-        : { selectionScope: [...state.selectionScope, groupId] }
+        : {
+            selectionScope: [...state.selectionScope, groupId],
+            uiContextRevision: state.uiContextRevision + 1
+          }
     ))
   },
 
@@ -559,17 +600,19 @@ export const usePPTStore = create<PPTState>((set, get) => ({
         selectionScope: scope,
         selectedElementId: groupId,
         selectedElementIds: [groupId],
-        editingElementId: null
+        editingElementId: null,
+        uiContextRevision: state.uiContextRevision + 1
       }
     })
   },
 
   setEditingElementId: (id) => {
-    set({
+    set((state) => ({
       editingElementId: id,
-      selectedElementId: id ?? get().selectedElementId,
-      activeRightTab: id ? 'inspector' : get().activeRightTab
-    })
+      selectedElementId: id ?? state.selectedElementId,
+      activeRightTab: id ? 'inspector' : state.activeRightTab,
+      uiContextRevision: state.uiContextRevision + 1
+    }))
   },
 
   setActiveRightTab: (tab) => set({ activeRightTab: tab }),
@@ -940,7 +983,14 @@ export const usePPTStore = create<PPTState>((set, get) => ({
           // second source of truth for epoch/revision reconciliation.
           get().adoptCanonicalSnapshot(data)
         } else if (type === 'preview_update') {
+          // Preview is client-local: apply it only when it depicts the slide this
+          // client is actually viewing. A broadcast triggered by another client's
+          // mutation must not repaint our canvas with a foreign slide.
+          if (data.slide_id && data.slide_id !== get().activeSlideId) {
+            return
+          }
           set({
+            previewSlideId: data.slide_id ?? null,
             previewSvg: data.svg,
             previewScore: data.score,
             qualityScore: data.quality_score
@@ -950,6 +1000,7 @@ export const usePPTStore = create<PPTState>((set, get) => ({
           const ackId: string | undefined = data.last_mutation_id
           const shouldSelectTarget = !!ackId && selectTargetOnAck.has(ackId)
           if (ackId) selectTargetOnAck.delete(ackId)
+          let localNavHint: string | null = null
           set((state) => {
             let pending = state.pendingMutations
             let inFlightMutationId = state.inFlightMutationId
@@ -960,7 +1011,33 @@ export const usePPTStore = create<PPTState>((set, get) => ({
                 inFlightMutationId = null
               }
             }
-            const activeSid = data.active_slide_id || state.activeSlideId || serverPres?.slides?.[0]?.id
+            const isLocalAck = !!ackId && (
+              state.pendingMutations.some((p) => p.mutationId === ackId) ||
+              state.inFlightMutationId === ackId
+            )
+            const localActive = state.activeSlideId
+            const localActiveValid = !!localActive &&
+              !!serverPres?.slides?.some((s) => s.id === localActive)
+            // Navigation is client-local: the shared document's `active_slide_id`
+            // has no authority over a viewer. The ONLY way a mutation moves this
+            // client's view is a mutation-scoped `local_view_hint` attached to
+            // THIS client's own ACK (e.g. a create_slide whose new id this client
+            // could not have known). Remote broadcasts, and other clients'
+            // mutations reflected by the shared active_slide_id, never navigate.
+            const hint = isLocalAck ? data.local_view_hint : null
+            const hintSid = hint?.active_slide_id
+            const hintValid = !!hintSid &&
+              !!serverPres?.slides?.some((s) => s.id === hintSid)
+            const activeSid = hintValid
+              ? hintSid
+              : (localActiveValid
+                ? localActive
+                : (data.active_slide_id || state.activeSlideId || serverPres?.slides?.[0]?.id))
+            if (hintValid) localNavHint = hintSid
+            // The cached preview must always match the slide it depicts. If this
+            // snapshot moves us to a different slide, drop the stale preview; the
+            // initiator then requests the new slide's preview below.
+            const previewBelongs = !!state.previewSvg && state.previewSlideId === activeSid
             const serverSlide = serverPres?.slides?.find((s) => s.id === activeSid)
             const adopting = pending.length === 0
             const presentation = adopting ? serverPres : state.presentation
@@ -1000,6 +1077,10 @@ export const usePPTStore = create<PPTState>((set, get) => ({
               presentation,
               confirmedPresentation: serverPres,
               activeSlideId: activeSid,
+              previewSvg: previewBelongs ? state.previewSvg : null,
+              previewScore: previewBelongs ? state.previewScore : null,
+              qualityScore: previewBelongs ? state.qualityScore : null,
+              previewSlideId: previewBelongs ? state.previewSlideId : null,
               canUndo: data.can_undo ?? state.canUndo,
               canRedo: data.can_redo ?? state.canRedo,
               mutationStatus: pending.length === 0 ? 'committed' : 'pending',
@@ -1015,6 +1096,14 @@ export const usePPTStore = create<PPTState>((set, get) => ({
               activeRightTab: selectedId ? 'inspector' : state.activeRightTab
             }
           })
+          // A local_view_hint moved THIS client to a newly created slide. Fetch its
+          // preview now so the canvas never shows the previous slide's SVG.
+          if (localNavHint) {
+            const { ws } = get()
+            if (ws && ws.readyState === WebSocket.OPEN) {
+              ws.send(JSON.stringify({ type: 'preview_request', slide_id: localNavHint }))
+            }
+          }
           get().dispatchNextMutation()
         } else if (type === 'mutation_rejected') {
           const rejectedId: string | undefined = data.mutation_id
@@ -1080,7 +1169,8 @@ export const usePPTStore = create<PPTState>((set, get) => ({
           })
           get().dispatchNextMutation()
         } else if (type === 'active_slide_changed') {
-          set({ activeSlideId: data.active_slide_id })
+          // Deprecated: active slide is client-local UI state. A session-global
+          // navigation broadcast must not move this client's view.
         } else if (type === 'context_usage') {
           if (data.usage) {
             set({ contextUsage: data.usage })
@@ -1130,8 +1220,24 @@ export const usePPTStore = create<PPTState>((set, get) => ({
   },
 
   sendChatMessage: (text) => {
-    const { ws, addMessage, sessionId } = get()
+    const {
+      ws, addMessage, sessionId, selectedElementIds, selectedElementId,
+      selectionScope, editingElementId, activeSlideId, confirmedRevision,
+      documentEpoch, uiContextRevision, clientId
+    } = get()
     if (!text.trim()) return
+
+    // Request-scoped UI context: never written into the document, it lets the
+    // Agent bind "这个/它" to the elements this client currently has selected.
+    const uiContext = {
+      client_id: clientId,
+      ui_context_revision: uiContextRevision,
+      active_slide_id: activeSlideId,
+      selected_element_ids: selectedElementIds,
+      primary_selected_element_id: selectedElementId,
+      selection_scope: selectionScope,
+      editing_element_id: editingElementId
+    }
 
     addMessage({
       id: `user_${Date.now()}`,
@@ -1143,12 +1249,25 @@ export const usePPTStore = create<PPTState>((set, get) => ({
     set({ isAgentThinking: true, thinkingStatus: '分析需求与视觉结构...', activeRightTab: 'copilot' })
 
     if (ws && ws.readyState === WebSocket.OPEN) {
-      ws.send(JSON.stringify({ type: 'chat', message: text, session_id: sessionId }))
+      ws.send(JSON.stringify({
+        type: 'chat',
+        message: text,
+        session_id: sessionId,
+        document_epoch: documentEpoch,
+        base_revision: confirmedRevision,
+        ui_context: uiContext
+      }))
     } else {
       fetch('/api/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ message: text, session_id: sessionId })
+        body: JSON.stringify({
+          message: text,
+          session_id: sessionId,
+          document_epoch: documentEpoch,
+          base_revision: confirmedRevision,
+          ui_context: uiContext
+        })
       })
         .then((res) => res.json())
         .then((data) => {
@@ -1319,6 +1438,7 @@ export const usePPTStore = create<PPTState>((set, get) => ({
       history,
       previewSvg,
       previewScore,
+      previewSlideId,
       qualityScore,
       isAgentThinking,
       thinkingStatus,
@@ -1332,7 +1452,7 @@ export const usePPTStore = create<PPTState>((set, get) => ({
       selectedElement: getSelectedElement(),
       history,
       preview: previewSvg ? {
-        slide_id: activeSlideId || '',
+        slide_id: previewSlideId ?? activeSlideId ?? '',
         svg: previewSvg,
         score: previewScore ?? undefined,
         quality_score: qualityScore ?? undefined

@@ -135,7 +135,8 @@ class ExecutorSubagent:
         on_event: Optional[Callable] = None,
         conversation_context: Optional[List[Dict[str, Any]]] = None,
         rework_directive: Optional[Dict[str, Any]] = None,
-        grounding: Optional[Dict[str, Any]] = None
+        grounding: Optional[Dict[str, Any]] = None,
+        ui_context: Optional[Any] = None
     ) -> ExecutorPlan:
         """Builds an execution plan (tool calls) without mutating the presentation."""
         # Freeze the document identity and an immutable snapshot BEFORE any await.
@@ -145,6 +146,14 @@ class ExecutorSubagent:
         planning_epoch = getattr(session, "document_epoch", None) if session else None
         planning_revision = pres.version if pres is not None else None
         planning_snapshot = pres.model_copy(deep=True) if pres is not None else None
+
+        # Request-local targeting: the requesting client's active slide overrides
+        # the snapshot's slide for planning only. The live IR is never touched.
+        from ..uicontext import UIContext
+        ctx = UIContext.from_any(ui_context)
+        if planning_snapshot is not None and ctx.active_slide_id:
+            if planning_snapshot.get_slide(ctx.active_slide_id):
+                planning_snapshot.active_slide_id = ctx.active_slide_id
 
         # 1. Broadcast lifecycle start: Main agent pauses waiting for executor subagent
         if on_event:
@@ -175,6 +184,12 @@ class ExecutorSubagent:
             )
             if anchor_text:
                 system_prompt += f"\n\n【历史会话压缩摘要】:\n{anchor_text}"
+            if ctx.has_selection:
+                system_prompt += (
+                    "\n\n【当前选中元素】: "
+                    + ", ".join(ctx.selected_element_ids)
+                    + "（用户的“这个/它/选中的”指代这些元素，必须精确修改它们，不要猜测其他元素）"
+                )
             if grounding and grounding.get("enforce_numeric_grounding"):
                 source_excerpt = (grounding.get("source_text") or "").strip()[:2000]
                 system_prompt += (
@@ -210,11 +225,21 @@ class ExecutorSubagent:
             except Exception as e:
                 logger.warning(f"ExecutorSubagent LLM call error: {e}, using heuristic planner")
                 from ..graph import _heuristic_tool_planner
-                tool_calls = _heuristic_tool_planner(intent, user_query, planning_snapshot, last_target_id=last_target_id)
+                tool_calls = _heuristic_tool_planner(
+                    intent, user_query, planning_snapshot,
+                    last_target_id=last_target_id,
+                    selected_element_ids=ctx.selected_element_ids,
+                    primary_selected_element_id=ctx.primary_selected_element_id,
+                )
 
         if not has_live_llm or not tool_calls:
             from ..graph import _heuristic_tool_planner
-            tool_calls = _heuristic_tool_planner(intent, user_query, planning_snapshot, last_target_id=last_target_id)
+            tool_calls = _heuristic_tool_planner(
+                intent, user_query, planning_snapshot,
+                last_target_id=last_target_id,
+                selected_element_ids=ctx.selected_element_ids,
+                primary_selected_element_id=ctx.primary_selected_element_id,
+            )
 
         # A content rework must be precise: never regenerate the whole deck.
         if rework_directive:
@@ -222,6 +247,23 @@ class ExecutorSubagent:
                 tc for tc in tool_calls
                 if tc.get("name") not in ("generate_presentation",)
             ]
+
+        # Deictic targeting is bound at PLANNING time from the requesting client's
+        # UIContext. Thread that slide id into every slide-scoped call explicitly:
+        # execution must never fall back to the session's live active slide, which
+        # another client (or a later broadcast) may have moved.
+        if planning_snapshot is not None and planning_snapshot.active_slide_id:
+            threaded_slide_id = planning_snapshot.active_slide_id
+            for tc in tool_calls:
+                if not isinstance(tc, dict):
+                    continue
+                args = tc.get("arguments")
+                if not isinstance(args, dict):
+                    continue
+                schema = tools.get_schema(tc.get("name", ""))
+                params = ((schema or {}).get("function", {}) or {}).get("parameters", {}) or {}
+                if "slide_id" in (params.get("properties") or {}) and not args.get("slide_id"):
+                    args["slide_id"] = threaded_slide_id
 
         tool_names = [tc.get("name", "") for tc in tool_calls if isinstance(tc, dict)]
         tool_summary_desc = ', '.join(n for n in tool_names if n) if tool_names else '无具体工具'

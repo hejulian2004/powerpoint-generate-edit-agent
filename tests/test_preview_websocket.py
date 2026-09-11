@@ -75,7 +75,7 @@ def test_websocket_connection_and_preview_stream():
 
 
 def test_websocket_slide_selection_and_direct_update():
-    """Verify select_slide and direct_update_element trigger preview_update."""
+    """Verify select_slide is client-local: preview only, no session-wide navigation."""
     client = TestClient(app)
     session = _seed_demo_session("ws_slide_ops")
     with client.websocket_connect("/ws?session_id=ws_slide_ops") as ws:
@@ -83,12 +83,9 @@ def test_websocket_slide_selection_and_direct_update():
         ws.receive_json()
         ws.receive_json()
 
-        # 1. Select Slide 2
+        # 1. Select Slide 2: the requester gets a preview, the session document's
+        # active slide is NOT mutated and no cross-client broadcast is emitted.
         ws.send_json({"type": "select_slide", "slide_id": "slide_02"})
-        ev_slide = ws.receive_json()
-        assert ev_slide["type"] == "active_slide_changed"
-        assert ev_slide["active_slide_id"] == "slide_02"
-
         ev_prev = ws.receive_json()
         assert ev_prev["type"] == "preview_update"
         assert ev_prev["slide_id"] == "slide_02"
@@ -233,6 +230,9 @@ def test_websocket_duplicate_and_clear_slide_direct_actions():
         assert len(ev_dup["presentation"]["slides"]) >= 2
         duplicate_id = ev_dup["active_slide_id"]
         assert duplicate_id != "slide_01"
+        # Navigation is client-local: the new slide id is surfaced only as a
+        # mutation-scoped hint for the requesting client, never as shared state.
+        assert ev_dup["local_view_hint"]["active_slide_id"] == duplicate_id
         ws.receive_json()  # preview_update
 
         duplicate = next(s for s in ev_dup["presentation"]["slides"] if s["id"] == duplicate_id)
@@ -445,4 +445,39 @@ def test_websocket_duplicate_element_reports_new_target():
         assert ev["type"] == "presentation_updated"
         assert ev["last_mutation_id"] == "mut_dup_1"
         assert ev["last_target_id"] and ev["last_target_id"] != "title_main"
+        ws.receive_json()  # preview_update
+
+
+def test_websocket_local_view_hint_is_mutation_scoped():
+    """Only slide-creating direct actions carry a navigation hint, not edits."""
+    client = TestClient(app)
+    _seed_demo_session("ws_view_hint")
+    with client.websocket_connect("/ws?session_id=ws_view_hint") as ws:
+        ws.receive_json()  # presentation_loaded
+        ws.receive_json()  # preview_update
+
+        # create_slide hints the requesting client to the freshly created slide.
+        ws.send_json({
+            "type": "direct_action",
+            "action": "create_slide",
+            "mutation_id": "mut_create_1",
+            "payload": {"title": "新页"}
+        })
+        ev_create = ws.receive_json()
+        assert ev_create["type"] == "presentation_updated"
+        hint = ev_create["local_view_hint"]["active_slide_id"]
+        assert hint
+        assert hint == ev_create["active_slide_id"]
+        assert any(s["id"] == hint for s in ev_create["presentation"]["slides"])
+        ws.receive_json()  # preview_update
+
+        # Ordinary element edits carry no navigation hint.
+        ws.send_json({
+            "type": "direct_update_element",
+            "mutation_id": "mut_edit_1",
+            "payload": {"slide_id": "slide_01", "element_id": "title_main", "x": 260.0}
+        })
+        ev_edit = ws.receive_json()
+        assert ev_edit["type"] == "presentation_updated"
+        assert ev_edit.get("local_view_hint") is None
         ws.receive_json()  # preview_update
