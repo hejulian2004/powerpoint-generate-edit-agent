@@ -1026,6 +1026,25 @@ describe('usePPTStore mutation pipeline', () => {
     ).rejects.toMatchObject({ code: 'LOCAL_CHANGES_NOT_SYNCED' })
   })
 
+  it('sequencing barrier hard-fails when offline even with NO pending edits', async () => {
+    const slide = makeSlide([makeShape('s1', 0, 0)])
+    usePPTStore.getState().setPresentation(makePresentation([slide], 3))
+    const ws = connect()
+    ws.emit('presentation_loaded', {
+      presentation: makePresentation([slide], 3),
+      active_slide_id: slide.id,
+      version: 3,
+      document_epoch: 'epoch_A'
+    })
+    // Clean local state, but the transport is down: a gated action must not
+    // believe it is safely synced.
+    ws.readyState = FakeWebSocket.CLOSED
+
+    await expect(
+      usePPTStore.getState().awaitDirectSyncBarrier({ timeoutMs: 1000 })
+    ).rejects.toMatchObject({ code: 'LOCAL_CHANGES_NOT_SYNCED' })
+  })
+
   it('sequencing barrier times out when the ack never arrives', async () => {
     const slide = makeSlide([makeShape('s1', 0, 0)])
     const pres = makePresentation([slide], 3)

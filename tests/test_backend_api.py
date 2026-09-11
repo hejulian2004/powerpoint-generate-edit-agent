@@ -228,6 +228,10 @@ def test_api_upload_and_export():
     assert export_resp.status_code == 200
     assert len(export_resp.content) > 0
     assert export_resp.content[:4] == b"PK\x03\x04"
+    # Export is pinned to one epoch/revision so a concurrent edit cannot produce
+    # a mixed-revision file.
+    assert export_resp.headers.get("x-document-epoch")
+    assert export_resp.headers.get("x-document-revision")
 
 
 @pytest.mark.skipif(

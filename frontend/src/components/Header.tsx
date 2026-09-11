@@ -18,7 +18,8 @@ export const Header: React.FC = () => {
     triggerRedo,
     addNewSlide,
     setSettingsOpen,
-    setPptspecModalOpen
+    setPptspecModalOpen,
+    awaitDirectSyncBarrier
   } = usePPTStore()
 
   const pendingCount = pendingMutations.length
@@ -52,7 +53,27 @@ export const Header: React.FC = () => {
     formData.append('file', file)
 
     try {
-      const res = await fetch(`/api/upload?session_id=${encodeURIComponent(sessionId)}`, {
+      // Upload replaces the whole document: refuse if local edits are unsynced,
+      // otherwise they would be silently discarded.
+      await awaitDirectSyncBarrier({ timeoutMs: 10000 })
+    } catch {
+      alert('本地修改尚未同步完成，已取消导入。请等待同步完成或重试。')
+      if (fileInputRef.current) fileInputRef.current.value = ''
+      return
+    }
+
+    try {
+      // Pin the replacement to the revision the user can actually see: after the
+      // barrier the local view is synced, so these stamps describe the document
+      // the user intends to replace. Both are always sent — the server rejects a
+      // replacement that omits either stamp, so we never fall back to "current".
+      const { documentEpoch, confirmedRevision } = usePPTStore.getState()
+      const params = new URLSearchParams({
+        session_id: sessionId,
+        expected_epoch: documentEpoch ?? '',
+        expected_revision: String(confirmedRevision)
+      })
+      const res = await fetch(`/api/upload?${params.toString()}`, {
         method: 'POST',
         body: formData
       })
@@ -67,7 +88,14 @@ export const Header: React.FC = () => {
     }
   }
 
-  const handleExport = () => {
+  const handleExport = async () => {
+    try {
+      // Export must correspond to one committed revision, not a local prediction.
+      await awaitDirectSyncBarrier({ timeoutMs: 10000 })
+    } catch {
+      alert('本地修改尚未同步完成，已取消导出。请等待同步完成或重试。')
+      return
+    }
     window.location.href = `/api/export?session_id=${encodeURIComponent(sessionId)}`
   }
 

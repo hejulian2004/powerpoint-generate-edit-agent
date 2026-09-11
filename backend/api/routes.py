@@ -257,7 +257,11 @@ async def export_pptx(
     allow_lossy: bool = Query(True),
 ):
     session = _resolve_session(session_id)
-    preflight = store.export_preflight(pres=session.pres)
+    # Render from an immutable epoch/revision-pinned copy so a concurrent edit
+    # cannot produce a file that mixes revisions.
+    snapshot = await session.snapshot_for_export()
+    pres = snapshot.presentation
+    preflight = store.export_preflight(pres=pres)
 
     if preflight["has_lossy"] and not allow_lossy:
         raise HTTPException(
@@ -270,8 +274,7 @@ async def export_pptx(
         )
 
     try:
-        data = store.export_pptx_bytes(pres=session.pres, allow_lossy=allow_lossy)
-        pres = session.pres
+        data = store.export_pptx_bytes(pres=pres, allow_lossy=allow_lossy)
         safe_filename = urllib.parse.quote(f"{pres.title or 'presentation'}.pptx")
         warning_header = json.dumps(
             {"warnings": preflight["warnings"], "lossy_features": preflight["lossy_features"]},
@@ -284,6 +287,8 @@ async def export_pptx(
                 "Content-Disposition": f"attachment; filename*=UTF-8''{safe_filename}",
                 "X-Fidelity-Warnings": warning_header,
                 "X-Export-Lossy": "true" if preflight["has_lossy"] else "false",
+                "X-Document-Epoch": snapshot.document_epoch,
+                "X-Document-Revision": str(snapshot.version),
             },
         )
     except HTTPException:
