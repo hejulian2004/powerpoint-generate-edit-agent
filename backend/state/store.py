@@ -123,7 +123,7 @@ def create_default_demo_presentation() -> PresentationIR:
                     radius=12.0
                 ),
                 text_content=TextContentIR.from_plain_text(
-                    "③ 实时渲染与高保真导出\n\n毫秒级 SVG 实时重绘与双向 WebSocket 推送。\n底层直连 OOXML 引擎，实现原生 .pptx 核心元素高保真导入导出。",
+                    "③ 实时渲染与高保真导出\n\n实时 SVG 重绘与双向 WebSocket 推送。\n底层直连 OOXML 引擎，实现原生 .pptx 核心元素高保真导入导出。",
                     font=FontIR(name="Segoe UI", size=15.0, color="#334155"),
                     align="left"
                 )
