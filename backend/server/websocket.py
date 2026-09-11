@@ -26,6 +26,7 @@ from ..agent.mutation_gateway import (
     STALE_MUTATION,
     DOCUMENT_EPOCH_MISMATCH,
 )
+from ..protocol.presentation import build_presentation_event
 
 logger = logging.getLogger(__name__)
 ws_router = APIRouter()
@@ -69,20 +70,12 @@ def build_presentation_updated(
     **extra: Any,
 ) -> Dict[str, Any]:
     """Canonical `presentation_updated` envelope with ACK + CAS version fields."""
-    payload: Dict[str, Any] = {
-        "type": "presentation_updated",
-        "session_id": session.session_id,
-        "presentation": session.pres.model_dump(),
-        "can_undo": session.history.can_undo(),
-        "can_redo": session.history.can_redo(),
-        "active_slide_id": session.active_slide_id,
-        "last_target_id": session.last_target_id,
-        "version": session.pres.version,
-        "document_epoch": getattr(session, "document_epoch", None),
-        "last_mutation_id": last_mutation_id,
-    }
-    payload.update(extra)
-    return payload
+    return build_presentation_event(
+        session,
+        "presentation_updated",
+        last_mutation_id=last_mutation_id,
+        extra=extra or None,
+    )
 
 
 async def execute_direct_batch(
@@ -188,19 +181,13 @@ async def websocket_endpoint(websocket: WebSocket):
 
     try:
         # 1. Send initial presentation state immediately
-        await websocket.send_json({
-            "type": "presentation_loaded",
-            "session_id": session.session_id,
-            "presentation": session.pres.model_dump(),
-            "active_slide_id": session.active_slide_id,
-            "can_undo": session.history.can_undo(),
-            "can_redo": session.history.can_redo(),
-            "last_target_id": session.last_target_id,
-            "checkpoints_count": len(session.checkpoints),
-            "version": session.pres.version,
-            "document_epoch": getattr(session, "document_epoch", None),
-            "last_mutation_id": None,
-        })
+        await websocket.send_json(
+            build_presentation_event(
+                session,
+                "presentation_loaded",
+                extra={"checkpoints_count": len(session.checkpoints)},
+            )
+        )
 
         # 2. Push initial preview update
         preview = build_preview_update(session)

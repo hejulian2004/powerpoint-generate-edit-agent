@@ -57,9 +57,9 @@ export const Header: React.FC = () => {
         body: formData
       })
       if (!res.ok) throw new Error('Upload failed')
-      const presRes = await fetch(`/api/presentation?session_id=${encodeURIComponent(sessionId)}`)
-      const presData = await presRes.json()
-      usePPTStore.getState().setPresentation(presData)
+      // The upload response is a canonical snapshot: adopt it in one step.
+      const snapshot = await res.json()
+      usePPTStore.getState().adoptCanonicalSnapshot(snapshot)
     } catch (err) {
       alert(`上传失败: ${err}`)
     } finally {
