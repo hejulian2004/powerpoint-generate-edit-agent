@@ -64,7 +64,9 @@ class UndoRedoStack:
         source: str = "agent_tool",
         position: Optional[int] = None,
         prev_active_slide_id: Optional[str] = None,
-        active_after_delete: Optional[str] = None
+        active_after_delete: Optional[str] = None,
+        parent_id: Optional[str] = None,
+        parent_index: Optional[int] = None
     ) -> MutationCommand:
         """Constructs and pushes a MutationCommand matching legacy HistoryManager.record()."""
         cmd: MutationCommand
@@ -123,7 +125,9 @@ class UndoRedoStack:
                 before_data=copy.deepcopy(before or {}),
                 action=action,
                 description=description,
-                source=source
+                source=source,
+                parent_id=parent_id,
+                parent_index=parent_index
             )
         else:
             cmd = UpdateElementCommand(

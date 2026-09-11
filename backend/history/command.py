@@ -163,20 +163,23 @@ class UpdateElementCommand(MutationCommand):
         if not slide:
             return False
 
-        for idx, el in enumerate(slide.elements):
-            if el.id == self.element_id:
-                # Merge target state with full validation
-                current_dump = el.model_dump()
-                current_dump.update(state)
-                # Ensure transform sub-object is synchronized with updated coordinates
-                if "transform" in current_dump and isinstance(current_dump["transform"], dict):
-                    t = current_dump["transform"]
-                    for coord in ["x", "y", "width", "height", "rotation"]:
-                        if coord in state:
-                            t[coord] = state[coord]
-                slide.elements[idx] = _deserialize_element(current_dump)
-                return True
-        return False
+        located = slide.locate_element(self.element_id)
+        if not located:
+            return False
+        container, index, _ = located
+
+        current_dump = container[index].model_dump()
+        current_dump.update(state)
+        # Ensure transform sub-object is synchronized with updated coordinates
+        if "transform" in current_dump and isinstance(current_dump["transform"], dict):
+            t = current_dump["transform"]
+            for coord in ["x", "y", "width", "height", "rotation"]:
+                if coord in state:
+                    t[coord] = state[coord]
+        container[index] = _deserialize_element(current_dump)
+        # Nested edits can change the enclosing group's bounding box.
+        slide.recompute_ancestor_bounds(self.element_id)
+        return True
 
     def to_event(self) -> MutationEvent:
         return MutationEvent(
@@ -269,7 +272,9 @@ class DeleteElementCommand(MutationCommand):
         description: str = "",
         source: str = "agent_tool",
         command_id: Optional[str] = None,
-        timestamp: Optional[float] = None
+        timestamp: Optional[float] = None,
+        parent_id: Optional[str] = None,
+        parent_index: Optional[int] = None
     ):
         super().__init__(
             command_id=command_id,
@@ -283,20 +288,37 @@ class DeleteElementCommand(MutationCommand):
         self.before_data = copy.deepcopy(before_data)
         self.before = self.before_data
         self.after = {}
+        self.parent_id = parent_id
+        self.parent_index = parent_index
 
     def execute(self, pres: PresentationIR) -> bool:
         slide = pres.get_slide(self.slide_id) if self.slide_id else None
         if not slide or not self.element_id:
             return False
-        return slide.remove_element(self.element_id)
+        ok = slide.remove_element(self.element_id)
+        if ok and self.parent_id:
+            slide.recompute_group_chain(self.parent_id)
+        return ok
 
     def undo(self, pres: PresentationIR) -> bool:
         slide = pres.get_slide(self.slide_id) if self.slide_id else None
         if not slide or not self.before_data:
             return False
         elem = _deserialize_element(self.before_data)
+        if self.parent_id:
+            parent = slide.get_element(self.parent_id)
+            if not isinstance(parent, GroupElementIR):
+                return False
+            if any(c.id == self.element_id for c in parent.children):
+                return True
+            insert_at = self.parent_index if self.parent_index is not None else len(parent.children)
+            parent.children.insert(max(0, min(insert_at, len(parent.children))), elem)
+            parent.recompute_bounds()
+            slide.recompute_ancestor_bounds(self.element_id)
+            return True
         if not any(e.id == self.element_id for e in slide.elements):
-            slide.elements.append(elem)
+            insert_at = self.parent_index if self.parent_index is not None else len(slide.elements)
+            slide.elements.insert(max(0, min(insert_at, len(slide.elements))), elem)
         return True
 
     def redo(self, pres: PresentationIR) -> bool:

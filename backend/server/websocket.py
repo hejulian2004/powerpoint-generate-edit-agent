@@ -366,8 +366,9 @@ async def websocket_endpoint(websocket: WebSocket):
                         "optimize_layout", "apply_theme", "clear_slide_elements",
                         "generate_slide_layout", "batch_add_cards", "auto_fix_layout",
                     ):
-                        if res.get("element_id"):
-                            session.last_target_id = res.get("element_id")
+                        new_id = res.get("element_id") or res.get("new_element_id")
+                        if new_id:
+                            session.last_target_id = new_id
 
                     await _broadcast_state(session, last_mutation_id=mutation_id)
 
