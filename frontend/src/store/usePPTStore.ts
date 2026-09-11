@@ -1096,9 +1096,18 @@ export const usePPTStore = create<PPTState>((set, get) => ({
 
   awaitDirectSyncBarrier: (options) => {
     const timeoutMs = options?.timeoutMs ?? 10000
+    // Barrier-gated actions (chat / export / upload / generate / restore) require
+    // a LIVE transport: a clean local state while offline still cannot guarantee
+    // the server will observe committed edits, so it must hard-fail, never
+    // silently succeed. Direct GUI mutations remain queued in the outbox instead.
+    const isOnline = () => {
+      const s = get()
+      return !!s.ws && s.ws.readyState === WebSocket.OPEN
+    }
     const isSynced = () => {
       const s = get()
       return (
+        isOnline() &&
         s.pendingMutations.length === 0 &&
         s.outbox.length === 0 &&
         s.inFlightMutationId === null &&
@@ -1129,7 +1138,7 @@ export const usePPTStore = create<PPTState>((set, get) => ({
           fail()
           return
         }
-        const offline = !s.ws || s.ws.readyState !== WebSocket.OPEN
+        const offline = !isOnline()
         if (offline || Date.now() >= deadline) {
           fail()
           return

@@ -56,6 +56,19 @@ class ReplacementResult:
 
 
 @dataclass
+class ExportSnapshot:
+    """Immutable deep copy of a document pinned to one epoch/revision.
+
+    Captured under the mutation lock so a long export/render runs against a
+    single deterministic revision even if edits commit mid-flight.
+    """
+
+    presentation: Any
+    document_epoch: str
+    version: int
+
+
+@dataclass
 class PPTSession:
     """A persistent interactive session with presentation state, history, checkpoints, and dialogue."""
     session_id: str
@@ -348,6 +361,19 @@ class PPTSession:
                 error=None,
                 old_epoch=old_epoch,
                 old_revision=old_revision,
+                document_epoch=self.document_epoch,
+                version=self.pres.version,
+            )
+
+    async def snapshot_for_export(self) -> "ExportSnapshot":
+        """Pin a deep copy of the document to one epoch/revision under the lock.
+
+        The caller renders from the returned copy; subsequent edits cannot alter
+        what is written to disk.
+        """
+        async with self.mutation_lock:
+            return ExportSnapshot(
+                presentation=copy.deepcopy(self.pres),
                 document_epoch=self.document_epoch,
                 version=self.pres.version,
             )

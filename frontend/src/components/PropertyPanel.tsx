@@ -9,7 +9,7 @@ import {
   Layers, Ungroup
 } from 'lucide-react'
 import { usePPTStore } from '../store/usePPTStore'
-import type { ShapeElementIR, TextElementIR, ConnectorElementIR, GroupElementIR, ImageElementIR } from '../types/ppt'
+import type { ShapeElementIR, TextElementIR, ConnectorElementIR, GroupElementIR, ImageElementIR } from '../types/presentation-ir.generated'
 import { themeColors, DEFAULT_COLOR_SWATCHES, SLIDE_THEME_PRESETS } from '../theme/tokens'
 
 const safeHexColor = (col?: string, fallback = '#0F172A') => {
@@ -504,8 +504,16 @@ export const PropertyPanel: React.FC = () => {
   }
 
   // Quick Layout Alignment Helpers
-  const alignElement = (type: 'center-x' | 'center-y' | 'left' | 'right' | 'top' | 'bottom') => {
-    if (type === 'center-x') {
+  const alignElement = (
+    type: 'center' | 'center-x' | 'center-y' | 'left' | 'right' | 'top' | 'bottom'
+  ) => {
+    if (type === 'center') {
+      // Single mutation: true canvas-centering is ONE CAS/undo step.
+      handleUpdate({
+        x: Math.round((1280 - elem.width) / 2),
+        y: Math.round((720 - elem.height) / 2)
+      })
+    } else if (type === 'center-x') {
       handleUpdate({ x: Math.round((1280 - elem.width) / 2) })
     } else if (type === 'center-y') {
       handleUpdate({ y: Math.round((720 - elem.height) / 2) })
@@ -665,10 +673,7 @@ export const PropertyPanel: React.FC = () => {
               垂直居中
             </button>
             <button
-              onClick={() => {
-                alignElement('center-x')
-                alignElement('center-y')
-              }}
+              onClick={() => alignElement('center')}
               className="py-1 px-1.5 bg-elevated hover:bg-line text-secondary hover:text-main rounded border border-line text-[10px] font-medium transition-colors"
             >
               画布正中

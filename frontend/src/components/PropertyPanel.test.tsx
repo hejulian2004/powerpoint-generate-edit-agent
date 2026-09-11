@@ -94,4 +94,18 @@ describe('PropertyPanel editing transactions', () => {
     expect(usePPTStore.getState().outbox).toHaveLength(0)
     expect(usePPTStore.getState().pendingMutations).toHaveLength(0)
   })
+
+  it('centers the element with one atomic mutation (single CAS / undo step)', () => {
+    resetStore([makeShape('s1', 0, 0, 200, 100)])
+    render(<PropertyPanel />)
+
+    fireEvent.click(screen.getByText('画布正中'))
+
+    const outbox = usePPTStore.getState().outbox
+    expect(outbox).toHaveLength(1)
+    // x = (1280 - 200) / 2 ; y = (720 - 100) / 2
+    expect(outbox[0].message.payload.x).toBe(540)
+    expect(outbox[0].message.payload.y).toBe(310)
+    expect(usePPTStore.getState().pendingMutations).toHaveLength(1)
+  })
 })

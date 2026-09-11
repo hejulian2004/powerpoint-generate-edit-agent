@@ -31,7 +31,7 @@ interface NormalizationResult {
 }
 
 export const PPTSpecImportModal: React.FC = () => {
-  const { pptspecModalOpen, setPptspecModalOpen, sessionId, adoptCanonicalSnapshot } = usePPTStore()
+  const { pptspecModalOpen, setPptspecModalOpen, sessionId, adoptCanonicalSnapshot, awaitDirectSyncBarrier } = usePPTStore()
 
   const [rawInput, setRawInput] = useState('')
   const [copyFeedback, setCopyFeedback] = useState<string | null>(null)
@@ -85,6 +85,14 @@ export const PPTSpecImportModal: React.FC = () => {
     if (!normResult?.normalization_id || !normResult.valid || isGenerating) return
     setIsGenerating(true)
     setErrorMessage(null)
+
+    try {
+      await awaitDirectSyncBarrier({ timeoutMs: 10000 })
+    } catch {
+      setErrorMessage('本地修改尚未同步完成，已取消生成。请等待同步完成或重试。')
+      setIsGenerating(false)
+      return
+    }
 
     try {
       const res = await fetch('/api/pptspec/generate', {
