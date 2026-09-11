@@ -76,9 +76,11 @@ class PPTSession:
     # confirmations can never act on a different deck that happens to share a version.
     document_epoch: str = field(default_factory=lambda: uuid.uuid4().hex)
     mutation_lock: asyncio.Lock = field(default_factory=asyncio.Lock, repr=False)
-    # (document_epoch, mutation_id) -> terminal MutationBatchResult. Contract: a
-    # given key must denote the SAME logical request; duplicate ids return the
-    # first outcome (no payload fingerprint / request hash in this version).
+    # (document_epoch, mutation_id) -> {"result": terminal MutationBatchResult,
+    # "payload_hash": logical request fingerprint}. A duplicate id with a different
+    # payload is a protocol violation, not a replay. The hash intentionally
+    # excludes expected_revision / document_epoch: rebase changes the CAS attempt
+    # but not the logical operation.
     completed_mutations: "OrderedDict[Any, Any]" = field(default_factory=OrderedDict)
 
     def __post_init__(self):
@@ -105,24 +107,60 @@ class PPTSession:
         self,
         mutation_id: str,
         document_epoch: Optional[str] = None,
+        payload_hash: Optional[str] = None,
     ) -> Optional[Any]:
-        """Returns a deep copy of a terminal outcome, or None. Refreshes LRU order."""
+        """Returns a deep copy of a terminal outcome, or None. Refreshes LRU order.
+
+        When both the stored and requested payload hashes are present and differ,
+        this returns None (a miss); callers that need to surface the protocol
+        violation should call `cached_mutation_payload_mismatch` first.
+        """
         key = self._mutation_cache_key(mutation_id, document_epoch)
-        result = self.completed_mutations.get(key)
-        if result is None:
+        entry = self.completed_mutations.get(key)
+        if entry is None:
             return None
+        if isinstance(entry, dict):
+            stored_hash = entry.get("payload_hash")
+            if payload_hash is not None and stored_hash is not None and stored_hash != payload_hash:
+                return None
+            result = entry.get("result")
+        else:
+            result = entry
         self.completed_mutations.move_to_end(key)
         return copy.deepcopy(result)
+
+    def cached_mutation_payload_mismatch(
+        self,
+        mutation_id: str,
+        document_epoch: Optional[str] = None,
+        payload_hash: Optional[str] = None,
+    ) -> bool:
+        """True when the same id was already used with a different logical payload."""
+        entry = self.completed_mutations.get(
+            self._mutation_cache_key(mutation_id, document_epoch)
+        )
+        if not isinstance(entry, dict):
+            return False
+        stored_hash = entry.get("payload_hash")
+        return (
+            payload_hash is not None
+            and stored_hash is not None
+            and stored_hash != payload_hash
+        )
 
     def remember_mutation_result(
         self,
         mutation_id: str,
         result: Any,
         document_epoch: Optional[str] = None,
+        payload_hash: Optional[str] = None,
     ) -> None:
         """Stores a deep-copied terminal outcome, evicting the oldest over the limit."""
         key = self._mutation_cache_key(mutation_id, document_epoch)
-        self.completed_mutations[key] = copy.deepcopy(result)
+        self.completed_mutations[key] = {
+            "result": copy.deepcopy(result),
+            "payload_hash": payload_hash,
+        }
         self.completed_mutations.move_to_end(key)
         while len(self.completed_mutations) > COMPLETED_MUTATION_LIMIT:
             self.completed_mutations.popitem(last=False)

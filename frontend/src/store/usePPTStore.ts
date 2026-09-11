@@ -12,6 +12,7 @@ import type {
   MutationStatus,
   ContextUsageData
 } from '../types/ppt'
+import type { CanonicalSnapshot, UIContextWire } from '../types/protocol'
 import {
   cloneElement,
   isConnector,
@@ -33,12 +34,93 @@ export interface MutationOperation {
   payload: Record<string, any>
 }
 
+export type MutationPrecondition =
+  | { kind: 'field'; elementId: string; fields: Record<string, any> }
+  | {
+      kind: 'structure'
+      elementId: string
+      slideId: string
+      elementType: string
+      // Group ids from outermost down to the element's immediate parent.
+      ancestorPath: string[]
+      // For group targets: child ids observed at authoring time.
+      childIds?: string[]
+    }
+  | {
+      kind: 'slide'
+      slideId: string
+      // Top-level element ids observed at authoring time. Used by destructive
+      // slide operations (clear / delete / duplicate / layout) so a remote
+      // content change is detected instead of silently overwritten.
+      elementIds?: string[]
+      // Slide background observed at authoring time (set_slide_background).
+      background?: any
+    }
+
+// How a mutation may be replayed onto a newer authoritative snapshot.
+// - 'safe': purely additive / idempotent; replay unconditionally.
+// - 'preconditioned': replay only when every captured precondition still holds.
+// - 'never': never auto-replay on stale; treat as a conflict (fail safe).
+export type RebasePolicy = 'safe' | 'preconditioned' | 'never'
+
+const REBASE_POLICY: Record<string, RebasePolicy> = {
+  create_slide: 'safe',
+  update_element: 'preconditioned',
+  delete_element: 'preconditioned',
+  duplicate_element: 'preconditioned',
+  group_elements: 'preconditioned',
+  ungroup_elements: 'preconditioned',
+  delete_slide: 'preconditioned',
+  duplicate_slide: 'preconditioned',
+  clear_slide_elements: 'preconditioned',
+  generate_slide_layout: 'preconditioned',
+  align_elements: 'preconditioned',
+  set_slide_background: 'preconditioned',
+  optimize_layout: 'never',
+  apply_theme: 'never',
+  undo: 'never',
+  redo: 'never'
+}
+
+const rebasePolicyFor = (operationName: string): RebasePolicy =>
+  REBASE_POLICY[operationName] ?? 'never'
+
+// A field write already CONFIRMED by the server for THIS client. Used during a
+// stale rebase to recognise a snapshot value caused by our own prior mutation,
+// so an earlier same-field edit is not misclassified as a foreign conflict.
+// `mutationId` / `clientSequence` / `confirmedRevision` make the ledger
+// CAUSALLY scoped: only an effect from an EARLIER mutation in this client's own
+// ordered chain may excuse a remote value.
+export interface LocalEffect {
+  elementId: string
+  field: string
+  value: any
+  mutationId?: string
+  clientSequence?: number
+  confirmedRevision?: number
+}
+
 export interface PendingMutation {
   mutationId: string
   operations: MutationOperation[]
   description?: string
   documentEpoch?: string | null
-  expectedRevision?: number | null
+  // Wire CAS stamp for the CURRENT attempt only. `undefined` means this logical
+  // mutation has never been sent; the first dispatch stamps `confirmedRevision`.
+  // A rebase establishes ONE new attempt (per queue position); a plain
+  // retry-without-stale (network drop / lost ACK) reuses this exact stamp.
+  attemptExpectedRevision?: number | null
+  // Frozen at authoring: the canonical revision the user saw when creating this
+  // logical operation. Retry and rebase must never change it.
+  authoredBaseRevision?: number | null
+  // Per-client logical ordering. Never mutated.
+  clientSequence?: number
+  // Field-level conflict detection used when rebasing onto an authoritative deck.
+  precondition?: MutationPrecondition
+  // Structural conflict detection for a multi-op batch.
+  preconditions?: MutationPrecondition[]
+  // The original wire message, retained so a rebased entry can be re-dispatched.
+  lastMessage?: Record<string, any>
 }
 
 interface OutboxEntry {
@@ -68,6 +150,286 @@ const existsInElements = (elements: ElementIR[], id: string | null | undefined):
     if (isGroup(el) && existsInElements(el.children, id)) return true
   }
   return false
+}
+
+const findElementById = (elements: ElementIR[], id: string): ElementIR | null => {
+  for (const el of elements) {
+    if (el.id === id) return el
+    if (isGroup(el)) {
+      const found = findElementById(el.children, id)
+      if (found) return found
+    }
+  }
+  return null
+}
+
+const findElementInPresentation = (
+  pres: PresentationIR | null | undefined,
+  id: string
+): ElementIR | null => {
+  if (!pres) return null
+  for (const slide of pres.slides) {
+    const found = findElementById(slide.elements, id)
+    if (found) return found
+  }
+  return null
+}
+
+// Bounded, newest-last. Only our own server-confirmed `update_element` field
+// writes are recorded, so a rebase can tell "our earlier mutation" apart from a
+// foreign change without ever touching `authoredBaseRevision`.
+const LOCAL_EFFECT_LIMIT = 256
+
+const recordLocalEffects = (
+  ledger: LocalEffect[],
+  mutation: PendingMutation | undefined,
+  confirmedRevision?: number
+): LocalEffect[] => {
+  if (!mutation) return ledger
+  let next = ledger
+  for (const op of mutation.operations) {
+    if (op.name !== 'update_element' || !op.payload?.element_id) continue
+    const elementId = String(op.payload.element_id)
+    for (const [field, value] of Object.entries(op.payload)) {
+      if (field === 'element_id' || field === 'slide_id') continue
+      next = [...next, {
+        elementId,
+        field,
+        value,
+        mutationId: mutation.mutationId,
+        clientSequence: mutation.clientSequence,
+        confirmedRevision
+      }]
+    }
+  }
+  if (next === ledger) return ledger
+  return next.length > LOCAL_EFFECT_LIMIT
+    ? next.slice(next.length - LOCAL_EFFECT_LIMIT)
+    : next
+}
+
+const isOwnLocalEffect = (
+  ledger: LocalEffect[],
+  elementId: string,
+  field: string,
+  value: any,
+  pendingSequence?: number
+): boolean =>
+  ledger.some(
+    (effect) =>
+      effect.elementId === elementId &&
+      effect.field === field &&
+      JSON.stringify(effect.value) === JSON.stringify(value) &&
+      // Causal scope: the effect must come from an EARLIER mutation in this
+      // client's own ordered chain - never from a later/foreign write.
+      (pendingSequence === undefined ||
+        (effect.clientSequence !== undefined && effect.clientSequence < pendingSequence))
+  )
+
+const findElementRecord = (
+  elements: ElementIR[],
+  id: string,
+  ancestors: string[] = []
+): { element: ElementIR; ancestorPath: string[] } | null => {
+  for (const el of elements) {
+    if (el.id === id) return { element: el, ancestorPath: ancestors }
+    if (isGroup(el)) {
+      const found = findElementRecord(el.children, id, [...ancestors, el.id])
+      if (found) return found
+    }
+  }
+  return null
+}
+
+const slideOf = (
+  pres: PresentationIR | null | undefined,
+  slideId: string | null | undefined
+): SlideIR | null => {
+  if (!pres) return null
+  const target = slideId || pres.active_slide_id || pres.slides[0]?.id
+  return pres.slides.find((s) => s.id === target) ?? null
+}
+
+// Structure fingerprint frozen at authoring: existence, element type, slide id,
+// ancestor/group path, and (for groups) child ids.
+const captureStructurePrecondition = (
+  pres: PresentationIR | null,
+  slideId: string | null | undefined,
+  elementId: string
+): MutationPrecondition | null => {
+  const slide = slideOf(pres, slideId)
+  if (!slide) return null
+  const record = findElementRecord(slide.elements, elementId)
+  if (!record) return null
+  const precondition: MutationPrecondition = {
+    kind: 'structure',
+    elementId,
+    slideId: slide.id,
+    elementType: record.element.type,
+    ancestorPath: record.ancestorPath
+  }
+  if (isGroup(record.element)) {
+    precondition.childIds = record.element.children.map((c) => c.id)
+  }
+  return precondition
+}
+
+const captureSlidePrecondition = (slideId: string): MutationPrecondition => ({
+  kind: 'slide',
+  slideId
+})
+
+// Destructive slide operations freeze the slide's top-level element ids so a
+// remote content change is a conflict rather than a silent overwrite.
+const captureSlideFingerprint = (
+  pres: PresentationIR | null,
+  slideId: string | null | undefined
+): MutationPrecondition | null => {
+  const slide = slideOf(pres, slideId)
+  if (!slide) return null
+  return { kind: 'slide', slideId: slide.id, elementIds: slide.elements.map((e) => e.id) }
+}
+
+const captureBackgroundPrecondition = (
+  pres: PresentationIR | null,
+  slideId: string | null | undefined
+): MutationPrecondition | null => {
+  const slide = slideOf(pres, slideId)
+  if (!slide) return null
+  return { kind: 'slide', slideId: slide.id, background: slide.background }
+}
+
+const captureFieldPrecondition = (
+  pres: PresentationIR | null,
+  slideId: string | null | undefined,
+  elementId: string,
+  fields: string[]
+): MutationPrecondition | null => {
+  const el = findElementInPresentation(pres, elementId)
+  if (!el) return null
+  const slide = slideOf(pres, slideId)
+  if (!slide) return null
+  return {
+    kind: 'field',
+    elementId,
+    fields: Object.fromEntries(fields.map((key) => [key, (el as any)[key]]))
+  }
+}
+
+const preconditionConflicts = (
+  authoritative: PresentationIR,
+  pre: MutationPrecondition,
+  ledger: LocalEffect[],
+  pendingSequence?: number
+): boolean => {
+  if (pre.kind === 'field') {
+    const remoteEl = findElementInPresentation(authoritative, pre.elementId)
+    if (!remoteEl) return true
+    return Object.keys(pre.fields).some((key) => {
+      if (JSON.stringify((remoteEl as any)[key]) === JSON.stringify(pre.fields[key])) return false
+      return !isOwnLocalEffect(ledger, pre.elementId, key, (remoteEl as any)[key], pendingSequence)
+    })
+  }
+  if (pre.kind === 'structure') {
+    const slide = authoritative.slides.find((s) => s.id === pre.slideId)
+    if (!slide) return true
+    const record = findElementRecord(slide.elements, pre.elementId)
+    if (!record) return true
+    if (record.element.type !== pre.elementType) return true
+    if (record.ancestorPath.join('/') !== pre.ancestorPath.join('/')) return true
+    if (pre.childIds && isGroup(record.element)) {
+      const ids = record.element.children.map((c) => c.id).join('/')
+      if (ids !== pre.childIds.join('/')) return true
+    }
+    return false
+  }
+  // slide precondition: existence plus the captured per-operation fingerprint.
+  const slide = authoritative.slides.find((s) => s.id === pre.slideId)
+  if (!slide) return true
+  if (pre.elementIds) {
+    const ids = slide.elements.map((e) => e.id).join('/')
+    if (ids !== pre.elementIds.join('/')) return true
+  }
+  if (pre.background !== undefined) {
+    if (JSON.stringify(slide.background) !== JSON.stringify(pre.background)) return true
+  }
+  return false
+}
+
+// Best-effort local replay so a stale structural edit does not flicker. Operations
+// whose result id is server-generated (group / duplicate) are left to the ACK.
+const applyOperationOptimistic = (
+  pres: PresentationIR,
+  op: MutationOperation
+): PresentationIR => {
+  const payload = op.payload ?? {}
+  if (op.name === 'update_element') {
+    if (!payload.element_id) return pres
+    const { slide_id, element_id, ...fields } = payload
+    return applyUpdateToPresentation(pres, slide_id, element_id, fields)
+  }
+  if (op.name === 'delete_element') {
+    const slideId = payload.slide_id || pres.active_slide_id || pres.slides[0]?.id
+    if (!payload.element_id) return pres
+    const ids = new Set<string>([String(payload.element_id)])
+    return {
+      ...pres,
+      slides: pres.slides.map((s) =>
+        s.id === slideId ? { ...s, elements: removeElementsById(s.elements, ids) } : s
+      )
+    }
+  }
+  if (op.name === 'delete_slide') {
+    const sid = typeof payload.slide_id === 'string' ? payload.slide_id : undefined
+    if (!sid) return pres
+    return { ...pres, slides: pres.slides.filter((s) => s.id !== sid) }
+  }
+  if (op.name === 'ungroup_elements') {
+    const groupId = payload.group_id
+    const slideId = payload.slide_id || pres.active_slide_id || pres.slides[0]?.id
+    if (!groupId) return pres
+    return {
+      ...pres,
+      slides: pres.slides.map((s) => {
+        if (s.id !== slideId) return s
+        const out: ElementIR[] = []
+        for (const el of s.elements) {
+          if (isGroup(el) && el.id === groupId) out.push(...el.children)
+          else out.push(el)
+        }
+        return { ...s, elements: out }
+      })
+    }
+  }
+  return pres
+}
+
+const rebuildOptimistic = (
+  pres: PresentationIR,
+  mutations: PendingMutation[]
+): PresentationIR => {
+  let next = pres
+  for (const m of mutations) {
+    for (const op of m.operations) next = applyOperationOptimistic(next, op)
+  }
+  return next
+}
+
+const applyUpdateToPresentation = (
+  pres: PresentationIR,
+  slideId: string | null | undefined,
+  elemId: string,
+  updates: Record<string, any>
+): PresentationIR => {
+  const targetSlideId = slideId || pres.active_slide_id || pres.slides[0]?.id
+  return {
+    ...pres,
+    slides: pres.slides.map((s) =>
+      s.id === targetSlideId
+        ? { ...s, elements: s.elements.map((el) => applyElementUpdate(el, elemId, updates)) }
+        : s
+    )
+  }
 }
 
 const removeElementsById = (elements: ElementIR[], ids: Set<string>): ElementIR[] => {
@@ -293,13 +655,19 @@ interface PPTState {
   // Agent can bind deictic references ("这个") to explicit element ids.
   clientId: string
   uiContextRevision: number
+  // Monotonic per-client logical mutation ordering.
+  clientSequence: number
+  // Bounded ledger of this client's OWN confirmed field writes. A stale rebase
+  // uses it to avoid treating our own committed effect as a remote conflict.
+  // Never feeds `authoredBaseRevision`; it only explains a snapshot delta.
+  localEffectLedger: LocalEffect[]
   contextUsage: ContextUsageData | null
   setContextUsage: (usage: ContextUsageData | null) => void
 
   // Actions
   setSessionId: (id: string) => void
   setPresentation: (pres: PresentationIR) => void
-  adoptCanonicalSnapshot: (snapshot: any) => void
+  adoptCanonicalSnapshot: (snapshot: CanonicalSnapshot) => void
   setActiveSlideId: (id: string) => void
   setSelectedElementId: (id: string | null) => void
   setSelectedElementIds: (ids: string[]) => void
@@ -330,12 +698,24 @@ interface PPTState {
   executeDirectAction: (
     action: string,
     payload?: Record<string, any>,
-    options?: { selectTargetOnAck?: boolean }
+    options?: {
+      selectTargetOnAck?: boolean
+      precondition?: MutationPrecondition
+      preconditions?: MutationPrecondition[]
+    }
   ) => void
-  sendMutationBatch: (operations: MutationOperation[], description?: string) => void
+  sendMutationBatch: (
+    operations: MutationOperation[],
+    description?: string,
+    preconditions?: MutationPrecondition[]
+  ) => void
   sendOrQueueMutation: (message: Record<string, any>, mutation: PendingMutation) => void
   dispatchNextMutation: () => void
   flushOutbox: () => void
+  // Resolves only when all local mutations are committed server-side and a
+  // server revision is known. Rejects with code LOCAL_CHANGES_NOT_SYNCED when
+  // offline, failed, rolled back, or the timeout elapses.
+  awaitDirectSyncBarrier: (options?: { timeoutMs?: number }) => Promise<void>
   addNewSlide: (backgroundColor?: string) => void
   deleteSlide: (slideIdOrNum: string | number) => void
   duplicateSlide: (slideId: string) => void
@@ -354,7 +734,7 @@ interface PPTState {
   // API / WS
   ws: WebSocket | null
   initWebSocket: () => void
-  sendChatMessage: (text: string) => void
+  sendChatMessage: (text: string) => Promise<void>
   triggerUndo: () => void
   triggerRedo: () => void
   updateElementDirect: (elemId: string, updates: Record<string, any>) => void
@@ -414,6 +794,8 @@ export const usePPTStore = create<PPTState>((set, get) => ({
     return `client_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`
   })(),
   uiContextRevision: 0,
+  clientSequence: 0,
+  localEffectLedger: [],
   contextUsage: {
     current_tokens: 1200,
     max_tokens: 256 * 1024,
@@ -433,7 +815,8 @@ export const usePPTStore = create<PPTState>((set, get) => ({
   setPresentation: (pres) => set({
     presentation: pres,
     confirmedPresentation: pres,
-    activeSlideId: pres.active_slide_id || (pres.slides[0] ? pres.slides[0].id : null)
+    activeSlideId: pres.active_slide_id || (pres.slides[0] ? pres.slides[0].id : null),
+    localEffectLedger: []
   }),
 
   // The single entry point for adopting a server document. Installs the
@@ -489,6 +872,7 @@ export const usePPTStore = create<PPTState>((set, get) => ({
         documentEpoch: loadedEpoch ?? state.documentEpoch,
         confirmedRevision: loadedRevision,
         hasServerRevision: true,
+        localEffectLedger: epochChanged ? [] : state.localEffectLedger,
         mutationStatus: hasPending ? 'pending' : 'idle'
       }
     })
@@ -639,15 +1023,21 @@ export const usePPTStore = create<PPTState>((set, get) => ({
   }),
 
   sendOrQueueMutation: (message, mutation) => {
-    const { ws, documentEpoch } = get()
+    const state = get()
+    const { ws, documentEpoch } = state
+    const sequence = mutation.clientSequence ?? (state.clientSequence + 1)
     const stampedMutation: PendingMutation = {
       ...mutation,
-      documentEpoch
+      documentEpoch,
+      authoredBaseRevision: mutation.authoredBaseRevision ?? state.confirmedRevision,
+      clientSequence: sequence,
+      lastMessage: message
     }
     const online = !!ws && ws.readyState === WebSocket.OPEN
-    set((state) => ({
-      pendingMutations: [...state.pendingMutations, stampedMutation],
-      outbox: [...state.outbox, { message, mutation: stampedMutation }],
+    set((s) => ({
+      pendingMutations: [...s.pendingMutations, stampedMutation],
+      outbox: [...s.outbox, { message, mutation: stampedMutation }],
+      clientSequence: sequence,
       mutationStatus: online ? 'pending' : 'offline'
     }))
     get().dispatchNextMutation()
@@ -659,23 +1049,30 @@ export const usePPTStore = create<PPTState>((set, get) => ({
     } = get()
     if (inFlightMutationId !== null) return
     if (!ws || ws.readyState !== WebSocket.OPEN || outbox.length === 0) return
+    // Every direct mutation is mutation-bearing and MUST carry CAS stamps. Until
+    // the canonical snapshot has established a document identity, the client has
+    // no stamp to send: keep the edit queued rather than emit an unstamped write
+    // the gateway will (correctly) reject.
+    if (!hasServerRevision || documentEpoch == null) return
 
     const [head] = outbox
     // A retried mutation must reuse the CAS stamp it was first sent with: the
     // server may have already committed it (idempotent replay) or rejected it as
     // stale. Re-stamping here would let a stale retry pass CAS against a deck it
-    // never observed. `expectedRevision === undefined` means "never sent".
-    const alreadySent = head.mutation.expectedRevision !== undefined
+    // never observed. `attemptExpectedRevision === undefined` means "never sent".
+    const alreadySent = head.mutation.attemptExpectedRevision !== undefined
     const sendEpoch = alreadySent
       ? (head.mutation.documentEpoch ?? documentEpoch)
       : documentEpoch
     const expectedRevision = alreadySent
-      ? (head.mutation.expectedRevision ?? null)
+      ? (head.mutation.attemptExpectedRevision ?? null)
       : (hasServerRevision ? confirmedRevision : null)
     const payload: Record<string, any> = {
       ...head.message,
       mutation_id: head.mutation.mutationId,
-      document_epoch: sendEpoch
+      document_epoch: sendEpoch,
+      client_id: get().clientId,
+      client_sequence: head.mutation.clientSequence ?? 0
     }
     if (expectedRevision !== null) payload.expected_revision = expectedRevision
 
@@ -684,7 +1081,7 @@ export const usePPTStore = create<PPTState>((set, get) => ({
       outbox: state.outbox.slice(1),
       pendingMutations: state.pendingMutations.map((m) =>
         m.mutationId === head.mutation.mutationId
-          ? { ...m, documentEpoch: sendEpoch, expectedRevision }
+          ? { ...m, documentEpoch: sendEpoch, attemptExpectedRevision: expectedRevision }
           : m
       ),
       inFlightMutationId: head.mutation.mutationId,
@@ -697,16 +1094,62 @@ export const usePPTStore = create<PPTState>((set, get) => ({
     get().dispatchNextMutation()
   },
 
-  sendMutationBatch: (operations, description) => {
+  awaitDirectSyncBarrier: (options) => {
+    const timeoutMs = options?.timeoutMs ?? 10000
+    const isSynced = () => {
+      const s = get()
+      return (
+        s.pendingMutations.length === 0 &&
+        s.outbox.length === 0 &&
+        s.inFlightMutationId === null &&
+        s.hasServerRevision &&
+        s.mutationStatus !== 'failed' &&
+        s.mutationStatus !== 'rolled_back'
+      )
+    }
+    if (isSynced()) return Promise.resolve()
+
+    return new Promise<void>((resolve, reject) => {
+      const deadline = Date.now() + timeoutMs
+      let timer: number | undefined
+      const fail = () => {
+        if (timer !== undefined) window.clearTimeout(timer)
+        reject(Object.assign(new Error('LOCAL_CHANGES_NOT_SYNCED'), {
+          code: 'LOCAL_CHANGES_NOT_SYNCED'
+        }))
+      }
+      const tick = () => {
+        const s = get()
+        if (isSynced()) {
+          if (timer !== undefined) window.clearTimeout(timer)
+          resolve()
+          return
+        }
+        if (s.mutationStatus === 'failed' || s.mutationStatus === 'rolled_back') {
+          fail()
+          return
+        }
+        const offline = !s.ws || s.ws.readyState !== WebSocket.OPEN
+        if (offline || Date.now() >= deadline) {
+          fail()
+          return
+        }
+        timer = window.setTimeout(tick, 25)
+      }
+      timer = window.setTimeout(tick, 0)
+    })
+  },
+
+  sendMutationBatch: (operations, description, preconditions) => {
     if (operations.length === 0) return
     if (operations.length === 1) {
       const operation = operations[0]
-      get().executeDirectAction(operation.name, operation.payload)
+      get().executeDirectAction(operation.name, operation.payload, { preconditions })
       return
     }
     const { sessionId } = get()
     const mutationId = newMutationId()
-    const mutation: PendingMutation = { mutationId, operations, description }
+    const mutation: PendingMutation = { mutationId, operations, description, preconditions }
     get().sendOrQueueMutation(
       {
         type: 'batch_mutation',
@@ -726,7 +1169,9 @@ export const usePPTStore = create<PPTState>((set, get) => ({
     const finalPayload = { slide_id: activeSlideId, ...payload }
     const mutation: PendingMutation = {
       mutationId,
-      operations: [{ name: action, payload: finalPayload }]
+      operations: [{ name: action, payload: finalPayload }],
+      precondition: options?.precondition,
+      preconditions: options?.preconditions
     }
     get().sendOrQueueMutation(
       {
@@ -748,29 +1193,53 @@ export const usePPTStore = create<PPTState>((set, get) => ({
   },
 
   deleteSlide: (slideIdOrNum: string | number) => {
-    get().executeDirectAction('delete_slide', {
-      slide_id_or_num: String(slideIdOrNum)
-    })
+    const { activeSlideId, confirmedPresentation, presentation } = get()
+    const base = confirmedPresentation ?? presentation
+    // Resolve a 1-based slide number to its STABLE id at authoring time using the
+    // same predicate the backend uses (`id === ref || slide_num === ref`), first
+    // match in a single ordered pass and NO index fallback. The wire call always
+    // carries the resolved stable id so a remote reorder cannot delete the wrong
+    // slide.
+    const ref = String(slideIdOrNum)
+    const resolved = base?.slides.find((s) => s.id === ref || String(s.slide_num) === ref)
+    const slideId = resolved?.id ?? (typeof slideIdOrNum === 'string' ? slideIdOrNum : activeSlideId)
+    if (!slideId) return
+    get().executeDirectAction(
+      'delete_slide',
+      { slide_id_or_num: slideId },
+      { precondition: captureSlideFingerprint(base, slideId) ?? captureSlidePrecondition(slideId) }
+    )
   },
 
   duplicateSlide: (slideId: string) => {
-    get().executeDirectAction('duplicate_slide', { slide_id: slideId })
+    const base = get().confirmedPresentation ?? get().presentation
+    get().executeDirectAction(
+      'duplicate_slide',
+      { slide_id: slideId },
+      { precondition: captureSlideFingerprint(base, slideId) ?? captureSlidePrecondition(slideId) }
+    )
   },
 
   clearSlideElements: (slideId?: string, keepTitle = true) => {
-    get().executeDirectAction('clear_slide_elements', {
-      slide_id: slideId ?? get().activeSlideId,
-      keep_title: keepTitle
-    })
+    const { activeSlideId, confirmedPresentation, presentation } = get()
+    const target = slideId ?? activeSlideId
+    const base = confirmedPresentation ?? presentation
+    get().executeDirectAction(
+      'clear_slide_elements',
+      { slide_id: target, keep_title: keepTitle },
+      { precondition: target ? captureSlideFingerprint(base, target) ?? undefined : undefined }
+    )
   },
 
   deleteSelectedElement: () => {
-    const { selectedElementId, activeSlideId } = get()
+    const { selectedElementId, activeSlideId, confirmedPresentation, presentation } = get()
     if (!selectedElementId) return
-    get().executeDirectAction('delete_element', {
-      element_id: selectedElementId,
-      slide_id: activeSlideId
-    })
+    const base = confirmedPresentation ?? presentation
+    get().executeDirectAction(
+      'delete_element',
+      { element_id: selectedElementId, slide_id: activeSlideId },
+      { precondition: captureStructurePrecondition(base, activeSlideId, selectedElementId) ?? undefined }
+    )
     set({ selectedElementId: null, selectedElementIds: [], editingElementId: null })
   },
 
@@ -787,51 +1256,66 @@ export const usePPTStore = create<PPTState>((set, get) => ({
       set({ presentation: { ...presentation, slides: updatedSlides } })
     }
 
+    const base = get().confirmedPresentation ?? get().presentation
     get().sendMutationBatch(
       selectedElementIds.map((id) => ({
         name: 'delete_element',
         payload: { slide_id: activeSlideId, element_id: id }
       })),
-      '批量删除图元'
+      '批量删除图元',
+      selectedElementIds
+        .map((id) => captureStructurePrecondition(base, activeSlideId, id))
+        .filter((p): p is MutationPrecondition => p !== null)
     )
     set({ selectedElementId: null, selectedElementIds: [], editingElementId: null })
   },
 
   duplicateSelectedElement: () => {
-    const { selectedElementId, activeSlideId } = get()
+    const { selectedElementId, activeSlideId, confirmedPresentation, presentation } = get()
     if (!selectedElementId) return
+    const base = confirmedPresentation ?? presentation
     get().executeDirectAction(
       'duplicate_element',
+      { element_id: selectedElementId, slide_id: activeSlideId },
       {
-        element_id: selectedElementId,
-        slide_id: activeSlideId
-      },
-      { selectTargetOnAck: true }
+        selectTargetOnAck: true,
+        precondition: captureStructurePrecondition(base, activeSlideId, selectedElementId) ?? undefined
+      }
     )
   },
 
   duplicateSelectedElements: () => {
     const { selectedElementIds, activeSlideId } = get()
     if (selectedElementIds.length === 0) return
+    const base = get().confirmedPresentation ?? get().presentation
     get().sendMutationBatch(
       selectedElementIds.map((id) => ({
         name: 'duplicate_element',
         payload: { slide_id: activeSlideId, element_id: id }
       })),
-      '批量复制图元'
+      '批量复制图元',
+      selectedElementIds
+        .map((id) => captureStructurePrecondition(base, activeSlideId, id))
+        .filter((p): p is MutationPrecondition => p !== null)
     )
   },
 
   groupSelectedElements: (groupName = '组合') => {
-    const { selectedElementIds } = get()
+    const { selectedElementIds, activeSlideId, confirmedPresentation, presentation } = get()
     if (selectedElementIds.length < 2) return
+    const base = confirmedPresentation ?? presentation
     get().executeDirectAction(
       'group_elements',
       {
         element_ids: selectedElementIds,
         group_name: groupName
       },
-      { selectTargetOnAck: true }
+      {
+        selectTargetOnAck: true,
+        preconditions: selectedElementIds
+          .map((id) => captureStructurePrecondition(base, activeSlideId, id))
+          .filter((p): p is MutationPrecondition => p !== null)
+      }
     )
     set({ selectedElementId: null, selectedElementIds: [], editingElementId: null })
   },
@@ -839,24 +1323,38 @@ export const usePPTStore = create<PPTState>((set, get) => ({
   ungroupSelectedElement: () => {
     const elem = get().getSelectedElement()
     if (!elem || elem.type !== 'group') return
-    get().executeDirectAction('ungroup_elements', { group_id: elem.id })
+    const base = get().confirmedPresentation ?? get().presentation
+    get().executeDirectAction(
+      'ungroup_elements',
+      { group_id: elem.id },
+      { precondition: captureStructurePrecondition(base, get().activeSlideId, elem.id) ?? undefined }
+    )
   },
 
   alignSelectedElements: (alignment: AlignMode) => {
-    const { selectedElementIds } = get()
+    const { selectedElementIds, activeSlideId, confirmedPresentation, presentation } = get()
     if (selectedElementIds.length < 2) return
-    get().executeDirectAction('align_elements', {
-      alignment,
-      element_ids: selectedElementIds
-    })
+    const base = confirmedPresentation ?? presentation
+    // Align rewrites geometry on every involved element: freeze each element's
+    // x/y so a remote geometry change is a conflict, not a silent overwrite.
+    const preconditions = selectedElementIds
+      .map((id) => captureFieldPrecondition(base, activeSlideId, id, ['x', 'y']))
+      .filter((p): p is MutationPrecondition => p !== null)
+    get().executeDirectAction(
+      'align_elements',
+      { alignment, element_ids: selectedElementIds },
+      { preconditions }
+    )
   },
 
   setSlideBackgroundDirect: (color: string) => {
-    const { activeSlideId } = get()
-    get().executeDirectAction('set_slide_background', {
-      color,
-      slide_id: activeSlideId
-    })
+    const { activeSlideId, confirmedPresentation, presentation } = get()
+    const base = confirmedPresentation ?? presentation
+    get().executeDirectAction(
+      'set_slide_background',
+      { color, slide_id: activeSlideId },
+      { precondition: captureBackgroundPrecondition(base, activeSlideId) ?? undefined }
+    )
   },
 
   optimizeLayoutDirect: () => {
@@ -1072,6 +1570,20 @@ export const usePPTStore = create<PPTState>((set, get) => ({
               ? state.editingElementId
               : null
 
+            const epochChanged = typeof data.document_epoch === 'string'
+              && state.documentEpoch !== null
+              && data.document_epoch !== state.documentEpoch
+            const acked = ackId
+              ? state.pendingMutations.find((p) => p.mutationId === ackId)
+              : undefined
+            const localEffectLedger = epochChanged
+              ? []
+              : recordLocalEffects(
+                  state.localEffectLedger,
+                  acked,
+                  typeof data.version === 'number' ? data.version : state.confirmedRevision
+                )
+
             return {
               sessionId: data.session_id || state.sessionId,
               presentation,
@@ -1093,6 +1605,7 @@ export const usePPTStore = create<PPTState>((set, get) => ({
               selectedElementIds: selectedIds,
               selectedElementId: selectedId,
               editingElementId: editingId,
+              localEffectLedger,
               activeRightTab: selectedId ? 'inspector' : state.activeRightTab
             }
           })
@@ -1111,38 +1624,139 @@ export const usePPTStore = create<PPTState>((set, get) => ({
           const error: string = data.error ?? ''
           const isStale = error === 'stale_mutation' || error === 'document_epoch_mismatch'
           if (isStale) {
-            // The server's revision moved on. Our whole optimistic baseline is
-            // obsolete: drop the rejected head and the queued tail (no auto-rebase)
-            // and adopt the authoritative snapshot shipped with the rejection.
             const authoritative: PresentationIR | undefined = data.presentation
-            set((state) => {
-              for (const p of state.pendingMutations) selectTargetOnAck.delete(p.mutationId)
-              const nextPres = authoritative ?? state.confirmedPresentation ?? state.presentation
-              return {
-                pendingMutations: [],
-                outbox: [],
-                inFlightMutationId: null,
-                inFlightMessage: null,
-                presentation: nextPres,
-                confirmedPresentation: nextPres,
-                activeSlideId:
-                  data.active_slide_id
-                  ?? nextPres?.active_slide_id
-                  ?? nextPres?.slides?.[0]?.id
-                  ?? state.activeSlideId,
-                documentEpoch: data.document_epoch ?? state.documentEpoch,
-                confirmedRevision:
-                  typeof data.version === 'number' ? data.version : state.confirmedRevision,
-                hasServerRevision: true,
-                canUndo: data.can_undo ?? state.canUndo,
-                canRedo: data.can_redo ?? state.canRedo,
-                selectedElementId: null,
-                selectedElementIds: [],
-                selectionScope: [],
-                editingElementId: null,
-                mutationStatus: 'resynced'
+            const preState = get()
+            const priorEpoch = preState.documentEpoch
+            const serverEpoch = data.document_epoch ?? priorEpoch
+            const epochChanged = !!priorEpoch && !!serverEpoch && priorEpoch !== serverEpoch
+
+            if (epochChanged || !authoritative) {
+              // Different document identity (or no snapshot to rebase onto):
+              // auto-replay is forbidden because it is not the same deck anymore.
+              set((state) => {
+                for (const p of state.pendingMutations) selectTargetOnAck.delete(p.mutationId)
+                const nextPres = authoritative ?? state.confirmedPresentation ?? state.presentation
+                return {
+                  pendingMutations: [],
+                  outbox: [],
+                  inFlightMutationId: null,
+                  inFlightMessage: null,
+                  presentation: nextPres,
+                  confirmedPresentation: nextPres,
+                  activeSlideId:
+                    data.active_slide_id
+                    ?? nextPres?.active_slide_id
+                    ?? nextPres?.slides?.[0]?.id
+                    ?? state.activeSlideId,
+                  documentEpoch: serverEpoch ?? state.documentEpoch,
+                  confirmedRevision:
+                    typeof data.version === 'number' ? data.version : state.confirmedRevision,
+                  hasServerRevision: true,
+                  canUndo: data.can_undo ?? state.canUndo,
+                  canRedo: data.can_redo ?? state.canRedo,
+                  selectedElementId: null,
+                  selectedElementIds: [],
+                  selectionScope: [],
+                  editingElementId: null,
+                  mutationStatus: 'resynced'
+                }
+              })
+              get().addMessage({
+                id: `sys_${Date.now()}`,
+                role: 'assistant',
+                content: '文档已被替换（epoch 变化），本地未提交的修改无法安全重放，已丢弃。请重新编辑。',
+                timestamp: Date.now()
+              })
+              return
+            }
+
+            // Same epoch: explicit rebase. Install the authoritative snapshot,
+            // drop only foreign conflicts, replay the rest optimistically, and
+            // establish a NEW CAS attempt for the queue HEAD ONLY. Tail survivors
+            // keep `attemptExpectedRevision === undefined`; each is stamped with
+            // the then-current confirmed revision after the preceding ACK, so a
+            // local ordered queue can never stale itself. `authoredBaseRevision`
+            // is frozen and never rewritten.
+            const baseRevision = typeof data.version === 'number' ? data.version : preState.confirmedRevision
+            const conflicts: string[] = []
+            const surviving: PendingMutation[] = []
+            for (const m of preState.pendingMutations) {
+              const preconditions: MutationPrecondition[] = [
+                ...(m.precondition ? [m.precondition] : []),
+                ...(m.preconditions ?? [])
+              ]
+              // RebasePolicy is enforced HERE, centrally, never per-call-site.
+              // Any op that is not explicitly replayable makes the whole
+              // mutation a conflict; 'preconditioned' ops with no captured
+              // precondition also fail safe (missing precondition == conflict).
+              const policies = m.operations.map((op) => rebasePolicyFor(op.name))
+              let conflicted: boolean
+              if (policies.some((p) => p === 'never')) {
+                conflicted = true
+              } else if (policies.every((p) => p === 'safe')) {
+                conflicted = false
+              } else {
+                conflicted = preconditions.length === 0 || preconditions.some((pre) =>
+                  preconditionConflicts(
+                    authoritative, pre, preState.localEffectLedger, m.clientSequence
+                  )
+                )
               }
+              if (conflicted) {
+                const label = preconditions
+                  .map((p) => (p.kind === 'field' || p.kind === 'structure' ? p.elementId : p.slideId))
+                  .filter(Boolean)
+                conflicts.push(...label)
+                selectTargetOnAck.delete(m.mutationId)
+                continue
+              }
+              surviving.push({ ...m, documentEpoch: serverEpoch })
+            }
+            if (surviving.length) {
+              surviving[0] = { ...surviving[0], attemptExpectedRevision: baseRevision }
+            }
+
+            const optimistic = rebuildOptimistic(authoritative, surviving)
+
+            const localActiveSurvives = !!preState.activeSlideId &&
+              optimistic.slides.some((s) => s.id === preState.activeSlideId)
+
+            set({
+              presentation: optimistic,
+              confirmedPresentation: authoritative,
+              activeSlideId: localActiveSurvives
+                ? preState.activeSlideId
+                : (authoritative.active_slide_id ?? optimistic.slides[0]?.id ?? preState.activeSlideId),
+              documentEpoch: serverEpoch,
+              confirmedRevision: baseRevision,
+              hasServerRevision: true,
+              canUndo: data.can_undo ?? preState.canUndo,
+              canRedo: data.can_redo ?? preState.canRedo,
+              pendingMutations: surviving,
+              outbox: surviving.map((m) => ({ message: m.lastMessage ?? {}, mutation: m })),
+              inFlightMutationId: null,
+              inFlightMessage: null,
+              // A conflict means the authoritative deck changed under the
+              // selection: drop stale selection/scope so it cannot point at a
+              // removed or regrouped object.
+              selectedElementId: conflicts.length ? null : preState.selectedElementId,
+              selectedElementIds: conflicts.length ? [] : preState.selectedElementIds,
+              selectionScope: conflicts.length ? [] : preState.selectionScope,
+              editingElementId: conflicts.length ? null : preState.editingElementId,
+              mutationStatus: surviving.length ? 'pending' : 'resynced'
             })
+
+            if (conflicts.length) {
+              get().addMessage({
+                id: `sys_${Date.now()}`,
+                role: 'assistant',
+                content: `检测到与服务器修改的字段冲突，已跳过 ${conflicts.length} 个元素：${conflicts.join(', ')}。`,
+                timestamp: Date.now()
+              })
+            }
+            if (surviving.length) {
+              get().dispatchNextMutation()
+            }
             return
           }
           set((state) => {
@@ -1219,7 +1833,7 @@ export const usePPTStore = create<PPTState>((set, get) => ({
     }
   },
 
-  sendChatMessage: (text) => {
+  sendChatMessage: async (text) => {
     const {
       ws, addMessage, sessionId, selectedElementIds, selectedElementId,
       selectionScope, editingElementId, activeSlideId, confirmedRevision,
@@ -1227,9 +1841,23 @@ export const usePPTStore = create<PPTState>((set, get) => ({
     } = get()
     if (!text.trim()) return
 
+    // The Agent must observe every committed local edit before planning or the
+    // turn could target a revision that no longer exists.
+    try {
+      await get().awaitDirectSyncBarrier({ timeoutMs: 10000 })
+    } catch {
+      addMessage({
+        id: `barrier_${Date.now()}`,
+        role: 'assistant',
+        content: '本地修改尚未同步完成，已取消本次发送。请等待同步完成或重试。',
+        timestamp: Date.now()
+      })
+      return
+    }
+
     // Request-scoped UI context: never written into the document, it lets the
     // Agent bind "这个/它" to the elements this client currently has selected.
-    const uiContext = {
+    const uiContext: UIContextWire = {
       client_id: clientId,
       ui_context_revision: uiContextRevision,
       active_slide_id: activeSlideId,
@@ -1325,7 +1953,7 @@ export const usePPTStore = create<PPTState>((set, get) => ({
   },
 
   updateElementDirect: (elemId, updates) => {
-    const { activeSlideId, presentation, sessionId } = get()
+    const { activeSlideId, presentation, confirmedPresentation, sessionId } = get()
 
     if (presentation) {
       const slideId = activeSlideId || presentation.slides[0]?.id
@@ -1342,10 +1970,23 @@ export const usePPTStore = create<PPTState>((set, get) => ({
       element_id: elemId,
       ...updates
     }
+    // Precondition is captured from the last server-CONFIRMED state (not the
+    // optimistic view) so a rebase compares against what the server actually had.
+    const canonicalEl = findElementInPresentation(confirmedPresentation ?? presentation, elemId)
+    const precondition: MutationPrecondition | undefined = canonicalEl
+      ? {
+          kind: 'field',
+          elementId: elemId,
+          fields: Object.fromEntries(
+            Object.keys(updates).map((key) => [key, (canonicalEl as any)[key]])
+          )
+        }
+      : undefined
     const mutationId = newMutationId()
     const mutation: PendingMutation = {
       mutationId,
-      operations: [{ name: 'update_element', payload }]
+      operations: [{ name: 'update_element', payload }],
+      precondition
     }
     get().sendOrQueueMutation(
       {
