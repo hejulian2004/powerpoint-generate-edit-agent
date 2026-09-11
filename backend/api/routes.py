@@ -15,6 +15,7 @@ from ..ir.svg_renderer import SVGRenderer
 from ..config import settings, AppSettings
 from ..session.session import PPTSession
 from ..agent.mutation_gateway import MutationGateway
+from ..protocol.presentation import build_canonical_snapshot, build_presentation_event
 
 logger = logging.getLogger(__name__)
 
@@ -37,8 +38,16 @@ def _resolve_session(session_id: Optional[str] = None) -> PPTSession:
 
 @router.get("/presentation")
 async def get_presentation(session_id: Optional[str] = Query(None)):
+    """Legacy raw IR. Do not use to correct canonical client state."""
     session = _resolve_session(session_id)
     return session.pres.model_dump()
+
+
+@router.get("/presentation/snapshot")
+async def get_presentation_snapshot(session_id: Optional[str] = Query(None)):
+    """Canonical document snapshot: the only shape the frontend may adopt."""
+    session = _resolve_session(session_id)
+    return build_canonical_snapshot(session)
 
 
 @router.post("/presentation/active-slide")
@@ -194,11 +203,14 @@ async def upload_pptx(
                     "current document."
                 ),
             )
-        await store.broadcast({
-            "type": "presentation_loaded",
-            "session_id": session.session_id,
-            "presentation": pres.model_dump()
-        }, session_id=session.session_id)
+        await store.broadcast(
+            build_presentation_event(
+                session,
+                "presentation_loaded",
+                extra={"checkpoints_count": len(session.checkpoints)},
+            ),
+            session_id=session.session_id,
+        )
         importer_used = pres.metadata.get("importer_used", "unknown")
         fallback_reason = pres.metadata.get("importer_fallback_reason")
         return {
@@ -213,7 +225,7 @@ async def upload_pptx(
             "fallback_reason": fallback_reason,
             "warnings": pres.metadata.get("parser_warnings", []),
             "capabilities": dict(pres.capabilities),
-            "presentation": pres.model_dump()
+            **build_canonical_snapshot(session),
         }
     except HTTPException:
         raise
@@ -388,16 +400,16 @@ async def chat_interaction(
         request_base_revision=request_revision,
     )
 
-    # Broadcast updated presentation
-    await store.broadcast({
-        "type": "presentation_updated",
-        "session_id": session.session_id,
-        "presentation": session.pres.model_dump(),
-        "version": session.pres.version,
-        "document_epoch": getattr(session, "document_epoch", None),
-    }, session_id=session.session_id)
+    # Broadcast canonical updated presentation
+    await store.broadcast(
+        build_presentation_event(session, "presentation_updated"),
+        session_id=session.session_id,
+    )
 
-    return result
+    if isinstance(result, dict):
+        result.update(build_canonical_snapshot(session))
+        return result
+    return {"result": result, **build_canonical_snapshot(session)}
 
 
 @router.get("/confirm/pending")
@@ -616,20 +628,20 @@ async def api_generate_from_pptspec(payload: Dict[str, Any] = Body(...)):
             detail=f"Generation failed: {gen_result.get('error') or 'Unknown generation error'}"
         )
 
-    # Broadcast presentation state to all connected session clients
-    await store.broadcast({
-        "type": "presentation_loaded",
-        "session_id": session_id,
-        "presentation": session.pres.model_dump(),
-        "active_slide_id": session.active_slide_id,
-        "can_undo": session.history.can_undo(),
-        "can_redo": session.history.can_redo(),
-    }, session_id=session_id)
+    # Broadcast canonical presentation state to all connected session clients
+    await store.broadcast(
+        build_presentation_event(
+            session,
+            "presentation_loaded",
+            extra={"checkpoints_count": len(session.checkpoints)},
+        ),
+        session_id=session_id,
+    )
 
     return {
         "success": True,
         "session_id": session_id,
-        "presentation": session.pres.model_dump(),
         "summary": artifact.summary,
         "asset_requirements": [r.model_dump() for r in artifact.asset_requirements],
+        **build_canonical_snapshot(session),
     }

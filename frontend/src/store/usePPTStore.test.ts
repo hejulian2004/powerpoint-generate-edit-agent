@@ -565,4 +565,42 @@ describe('usePPTStore mutation pipeline', () => {
       vi.unstubAllGlobals()
     }
   })
+
+  it('adoptCanonicalSnapshot installs epoch/version and drops the old-epoch queue', () => {
+    const slide = makeSlide([makeShape('s1', 0, 0)])
+    const presA = makePresentation([slide], 5)
+    usePPTStore.getState().setPresentation(presA)
+    const ws = connect()
+    ws.emit('presentation_loaded', {
+      presentation: presA,
+      active_slide_id: slide.id,
+      version: 5,
+      document_epoch: 'epoch_A'
+    })
+
+    // A mutation is authored while offline against epoch_A.
+    ws.readyState = FakeWebSocket.CLOSED
+    usePPTStore.getState().updateElementDirect('s1', { x: 10 })
+    expect(usePPTStore.getState().outbox).toHaveLength(1)
+    ws.readyState = FakeWebSocket.OPEN
+
+    const newSlide = makeSlide([makeShape('s2', 0, 0)])
+    const presB = makePresentation([newSlide], 1)
+    usePPTStore.getState().adoptCanonicalSnapshot({
+      session_id: 'sess',
+      presentation: presB,
+      document_epoch: 'epoch_B',
+      version: 1,
+      active_slide_id: newSlide.id,
+      can_undo: false,
+      can_redo: false
+    })
+
+    expect(usePPTStore.getState().documentEpoch).toBe('epoch_B')
+    expect(usePPTStore.getState().confirmedRevision).toBe(1)
+    expect(usePPTStore.getState().confirmedPresentation).toStrictEqual(presB)
+    expect(usePPTStore.getState().presentation).toStrictEqual(presB)
+    expect(usePPTStore.getState().outbox).toHaveLength(0)
+    expect(usePPTStore.getState().pendingMutations).toHaveLength(0)
+  })
 })

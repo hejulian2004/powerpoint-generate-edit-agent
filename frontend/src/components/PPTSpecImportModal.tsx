@@ -31,7 +31,7 @@ interface NormalizationResult {
 }
 
 export const PPTSpecImportModal: React.FC = () => {
-  const { pptspecModalOpen, setPptspecModalOpen, sessionId, setPresentation } = usePPTStore()
+  const { pptspecModalOpen, setPptspecModalOpen, sessionId, adoptCanonicalSnapshot } = usePPTStore()
 
   const [rawInput, setRawInput] = useState('')
   const [copyFeedback, setCopyFeedback] = useState<string | null>(null)
@@ -103,7 +103,8 @@ export const PPTSpecImportModal: React.FC = () => {
 
       const data = await res.json()
       if (data.presentation) {
-        setPresentation(data.presentation)
+        // The generation response is canonical: adopt epoch + revision + deck together.
+        adoptCanonicalSnapshot(data)
       }
       setPptspecModalOpen(false)
     } catch (err: any) {

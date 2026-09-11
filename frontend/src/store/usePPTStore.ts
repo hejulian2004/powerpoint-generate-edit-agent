@@ -291,6 +291,7 @@ interface PPTState {
   // Actions
   setSessionId: (id: string) => void
   setPresentation: (pres: PresentationIR) => void
+  adoptCanonicalSnapshot: (snapshot: any) => void
   setActiveSlideId: (id: string) => void
   setSelectedElementId: (id: string | null) => void
   setSelectedElementIds: (ids: string[]) => void
@@ -418,6 +419,58 @@ export const usePPTStore = create<PPTState>((set, get) => ({
     confirmedPresentation: pres,
     activeSlideId: pres.active_slide_id || (pres.slides[0] ? pres.slides[0].id : null)
   }),
+
+  // The single entry point for adopting a server document. Installs the
+  // authoritative snapshot and reconciles any pending/outbox mutations by epoch,
+  // so a replacement (generate/upload/restore) never leaves a stale CAS token.
+  adoptCanonicalSnapshot: (snapshot) => {
+    if (!snapshot || !snapshot.presentation) return
+    set((state) => {
+      const loadedEpoch: string | null = snapshot.document_epoch ?? null
+      const loadedRevision: number =
+        typeof snapshot.version === 'number'
+          ? snapshot.version
+          : (snapshot.presentation.version ?? state.confirmedRevision)
+      const epochChanged = loadedEpoch !== null
+        && state.documentEpoch !== null
+        && loadedEpoch !== state.documentEpoch
+      let outbox = state.outbox
+      let pendingMutations = state.pendingMutations
+      if (epochChanged) {
+        outbox = outbox.filter(
+          (entry) => entry.mutation.documentEpoch == null || entry.mutation.documentEpoch === loadedEpoch
+        )
+        pendingMutations = pendingMutations.filter(
+          (m) => m.documentEpoch == null || m.documentEpoch === loadedEpoch
+        )
+      }
+      const hasPending = pendingMutations.length > 0
+      const inFlightSurvives = pendingMutations.some(
+        (m) => m.mutationId === state.inFlightMutationId
+      )
+      return {
+        sessionId: snapshot.session_id || state.sessionId,
+        presentation: hasPending ? state.presentation : snapshot.presentation,
+        confirmedPresentation: snapshot.presentation,
+        activeSlideId: snapshot.active_slide_id || snapshot.presentation.slides?.[0]?.id || null,
+        canUndo: snapshot.can_undo ?? state.canUndo,
+        canRedo: snapshot.can_redo ?? state.canRedo,
+        selectedElementId: hasPending ? state.selectedElementId : null,
+        selectedElementIds: hasPending ? state.selectedElementIds : [],
+        selectionScope: hasPending ? state.selectionScope : [],
+        editingElementId: null,
+        outbox,
+        pendingMutations,
+        inFlightMutationId: inFlightSurvives ? state.inFlightMutationId : null,
+        inFlightMessage: inFlightSurvives ? state.inFlightMessage : null,
+        documentEpoch: loadedEpoch ?? state.documentEpoch,
+        confirmedRevision: loadedRevision,
+        hasServerRevision: true,
+        mutationStatus: hasPending ? 'pending' : 'idle'
+      }
+    })
+    get().dispatchNextMutation()
+  },
 
   setActiveSlideId: (id) => {
     set({
@@ -882,50 +935,10 @@ export const usePPTStore = create<PPTState>((set, get) => ({
         const type = data.type
 
         if (type === 'presentation_loaded') {
-          set((state) => {
-            const loadedEpoch: string | null = data.document_epoch ?? null
-            const loadedRevision: number = data.version ?? data.presentation?.version ?? state.confirmedRevision
-            const epochChanged = loadedEpoch !== null
-              && state.documentEpoch !== null
-              && loadedEpoch !== state.documentEpoch
-            let outbox = state.outbox
-            let pendingMutations = state.pendingMutations
-            if (epochChanged) {
-              // The deck was replaced (checkpoint restore / new document). Any
-              // queued or in-flight mutation bound to the old epoch is obsolete.
-              outbox = outbox.filter(
-                (entry) => entry.mutation.documentEpoch == null || entry.mutation.documentEpoch === loadedEpoch
-              )
-              pendingMutations = pendingMutations.filter(
-                (m) => m.documentEpoch == null || m.documentEpoch === loadedEpoch
-              )
-            }
-            const hasPending = pendingMutations.length > 0
-            const inFlightSurvives = pendingMutations.some(
-              (m) => m.mutationId === state.inFlightMutationId
-            )
-            return {
-              sessionId: data.session_id || state.sessionId,
-              presentation: hasPending ? state.presentation : data.presentation,
-              confirmedPresentation: data.presentation,
-              activeSlideId: data.active_slide_id || data.presentation.slides[0]?.id,
-              canUndo: data.can_undo ?? false,
-              canRedo: data.can_redo ?? false,
-              selectedElementId: hasPending ? state.selectedElementId : null,
-              selectedElementIds: hasPending ? state.selectedElementIds : [],
-              selectionScope: hasPending ? state.selectionScope : [],
-              editingElementId: null,
-              outbox,
-              pendingMutations,
-              inFlightMutationId: inFlightSurvives ? state.inFlightMutationId : null,
-              inFlightMessage: inFlightSurvives ? state.inFlightMessage : null,
-              documentEpoch: loadedEpoch ?? state.documentEpoch,
-              confirmedRevision: loadedRevision,
-              hasServerRevision: true,
-              mutationStatus: hasPending ? 'pending' : 'idle'
-            }
-          })
-          get().dispatchNextMutation()
+          // Adopt through the SAME canonical path as every other server document
+          // (ACK, CAS rejection, REST, upload). A bespoke branch here would be a
+          // second source of truth for epoch/revision reconciliation.
+          get().adoptCanonicalSnapshot(data)
         } else if (type === 'preview_update') {
           set({
             previewSvg: data.svg,
@@ -1148,9 +1161,9 @@ export const usePPTStore = create<PPTState>((set, get) => ({
             toolCalls: data.tools_executed,
             visionCritique: data.vision_critique
           })
-          fetch(`/api/presentation?session_id=${encodeURIComponent(sessionId)}`)
+          fetch(`/api/presentation/snapshot?session_id=${encodeURIComponent(sessionId)}`)
             .then((r) => r.json())
-            .then((p) => set({ presentation: p }))
+            .then((snap) => get().adoptCanonicalSnapshot(snap))
         })
         .catch((err) => {
           set({ isAgentThinking: false })
