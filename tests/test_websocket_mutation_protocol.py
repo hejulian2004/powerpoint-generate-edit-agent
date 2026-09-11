@@ -136,3 +136,60 @@ def test_batch_mutation_rolls_back_on_failure():
         assert ev["type"] == "presentation_updated"
         after = _find_element(ev["presentation"], "slide_01", "title_main")
         assert abs(after["x"] - title["x"]) < 0.01
+
+
+def test_undo_routes_through_gateway_with_mutation_id_and_cas():
+    client = TestClient(app)
+    _seed_demo_session("ws_proto_undo_gateway")
+    with client.websocket_connect("/ws?session_id=ws_proto_undo_gateway") as ws:
+        loaded = ws.receive_json()
+        ws.receive_json()  # preview_update
+        title = _find_element(loaded["presentation"], "slide_01", "title_main")
+
+        ws.send_json({
+            "type": "direct_update_element",
+            "mutation_id": "mut_edit_1",
+            "payload": {"slide_id": "slide_01", "element_id": "title_main", "x": title["x"] + 42},
+        })
+        edit_ev = ws.receive_json()
+        assert edit_ev["type"] == "presentation_updated"
+        ws.receive_json()  # preview_update
+        moved_version = edit_ev["version"]
+
+        ws.send_json({
+            "type": "undo",
+            "mutation_id": "mut_undo_1",
+            "document_epoch": loaded.get("document_epoch"),
+            "expected_revision": moved_version,
+        })
+        undo_ev = ws.receive_json()
+        assert undo_ev["type"] == "presentation_updated"
+        assert undo_ev["last_mutation_id"] == "mut_undo_1"
+        assert undo_ev["version"] == moved_version + 1
+        restored = _find_element(undo_ev["presentation"], "slide_01", "title_main")
+        assert abs(restored["x"] - title["x"]) < 0.01
+        ws.receive_json()  # preview_update
+
+        # A stale expected_revision is refused by CAS instead of replaying blindly.
+        ws.send_json({
+            "type": "redo",
+            "mutation_id": "mut_redo_stale",
+            "expected_revision": moved_version,
+        })
+        rejected = ws.receive_json()
+        assert rejected["type"] == "mutation_rejected"
+        assert rejected["mutation_id"] == "mut_redo_stale"
+        assert rejected["error"] == "stale_mutation"
+
+
+def test_undo_with_empty_history_is_acknowledged_noop():
+    client = TestClient(app)
+    _seed_demo_session("ws_proto_undo_noop")
+    with client.websocket_connect("/ws?session_id=ws_proto_undo_noop") as ws:
+        ws.receive_json()
+        ws.receive_json()
+
+        ws.send_json({"type": "undo", "mutation_id": "mut_noop"})
+        ev = ws.receive_json()
+        assert ev["type"] == "presentation_updated"
+        assert ev["last_mutation_id"] == "mut_noop"

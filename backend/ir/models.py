@@ -539,17 +539,46 @@ class SlideIR(BaseModel):
         group_id: Optional[str] = None,
         group_name: str = "Group"
     ) -> Optional[GroupElementIR]:
-        """Groups the specified elements into a new GroupElementIR container."""
-        if not element_ids or len(element_ids) < 2:
+        """Groups the specified elements into a new GroupElementIR container.
+
+        Elements may be nested inside an existing group. All targets must share
+        the same parent container (otherwise the operation fails closed rather
+        than silently flattening across hierarchies). The new group is inserted
+        at the position of the earliest target and enclosing group bounds are
+        recomputed.
+        """
+        # Deduplicate while preserving caller order.
+        ordered_ids: List[str] = []
+        seen_ids: set = set()
+        for eid in element_ids or []:
+            if eid not in seen_ids:
+                seen_ids.add(eid)
+                ordered_ids.append(eid)
+        if len(ordered_ids) < 2:
             return None
 
-        # Find target elements from top-level elements
-        target_ids_set = set(element_ids)
-        targets = [el for el in self.elements if el.id in target_ids_set]
-        if len(targets) < 2:
-            return None
+        target_ids_set = set(ordered_ids)
+        located_targets = []
+        parent_container: Optional[List[ElementIR]] = None
+        parent_key: Optional[str] = None
+        parent_ancestors: List[GroupElementIR] = []
+        for position, eid in enumerate(ordered_ids):
+            located = self.locate_element(eid)
+            if located is None:
+                return None
+            container, index, ancestors = located
+            key = ancestors[-1].id if ancestors else None
+            if position == 0:
+                parent_container = container
+                parent_key = key
+                parent_ancestors = ancestors
+            elif key != parent_key or container is not parent_container:
+                # Cross-parent grouping is ambiguous: fail closed.
+                return None
+            located_targets.append((index, container[index]))
 
-        remaining = [el for el in self.elements if el.id not in target_ids_set]
+        targets = [t[1] for t in located_targets]
+        insert_at = min(t[0] for t in located_targets)
 
         min_x = min(t.x for t in targets)
         min_y = min(t.y for t in targets)
@@ -567,26 +596,34 @@ class SlideIR(BaseModel):
             children=targets
         )
 
-        remaining.append(new_grp)
-        self.elements = remaining
+        remaining = [el for el in parent_container if el.id not in target_ids_set]
+        remaining.insert(min(insert_at, len(remaining)), new_grp)
+        # Mutate the container in place so held references stay valid.
+        parent_container[:] = remaining
+
+        for group in reversed(parent_ancestors):
+            group.recompute_bounds()
         return new_grp
 
     def ungroup_elements(self, group_id: str) -> List[ElementIR]:
-        """Dissolves the specified group and restores its children to slide top-level elements."""
-        grp_idx = None
-        for idx, el in enumerate(self.elements):
-            if el.id == group_id and isinstance(el, GroupElementIR):
-                grp_idx = idx
-                break
+        """Dissolves a group at any nesting depth, restoring its children in place.
 
-        if grp_idx is None:
+        Children are spliced back into the group's parent container (slide root
+        or an enclosing group) and ancestor group bounds are recomputed.
+        """
+        located = self.locate_element(group_id)
+        if located is None:
+            return []
+        container, index, ancestors = located
+        grp = container[index]
+        if not isinstance(grp, GroupElementIR):
             return []
 
-        grp = self.elements.pop(grp_idx)
-        # Children coordinates are in absolute slide canvas pixels; restore in-place
-        for offset, c in enumerate(grp.children):
-            self.elements.insert(grp_idx + offset, c)
-        return grp.children
+        children = list(grp.children)
+        container[index:index + 1] = children
+        for group in reversed(ancestors):
+            group.recompute_bounds()
+        return children
 
 
 @dataclass

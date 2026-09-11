@@ -5,6 +5,7 @@ import io
 import json
 import logging
 import urllib.parse
+import uuid
 from typing import Dict, Any, Optional
 from fastapi import APIRouter, UploadFile, File, Response, HTTPException, Body, Query
 from fastapi.responses import StreamingResponse
@@ -13,6 +14,7 @@ from ..state.store import store
 from ..ir.svg_renderer import SVGRenderer
 from ..config import settings, AppSettings
 from ..session.session import PPTSession
+from ..agent.mutation_gateway import MutationGateway
 
 logger = logging.getLogger(__name__)
 
@@ -66,6 +68,40 @@ async def get_slide_svg(slide_id: str, session_id: Optional[str] = Query(None)):
     return Response(content=svg_code, media_type="image/svg+xml")
 
 
+async def _run_history_action(session: PPTSession, action: str) -> Dict[str, Any]:
+    """Routes REST undo/redo through the MutationGateway (single writer + CAS)."""
+    mutation_id = f"mut_{uuid.uuid4().hex[:10]}"
+    batch = await MutationGateway.execute_tool_calls(
+        [{"name": action, "arguments": {}, "id": f"call_{uuid.uuid4().hex[:6]}"}],
+        session.pres,
+        session.history,
+        session=session,
+        bypass_confirmation=True,
+        source="rest",
+        mutation_id=mutation_id,
+    )
+    res = batch.first_result()
+    if batch.error or (isinstance(res, dict) and res.get("error")):
+        return {"success": False, "message": batch.error or res.get("error")}
+    await store.broadcast({
+        "type": "presentation_updated",
+        "session_id": session.session_id,
+        "presentation": session.pres.model_dump(),
+        "can_undo": session.history.can_undo(),
+        "can_redo": session.history.can_redo(),
+        "active_slide_id": session.active_slide_id,
+        "last_target_id": session.last_target_id,
+        "version": session.pres.version,
+        "document_epoch": getattr(session, "document_epoch", None),
+        "last_mutation_id": mutation_id,
+    }, session_id=session.session_id)
+    return {
+        "success": True,
+        "patch": {"action": action},
+        "message": res.get("message") if isinstance(res, dict) else None,
+    }
+
+
 @router.post("/action/undo")
 async def undo_action(
     session_id: Optional[str] = Query(None),
@@ -73,18 +109,7 @@ async def undo_action(
 ):
     sid = session_id or (payload.get("session_id") if payload else None)
     session = _resolve_session(sid)
-    async with session.mutation_lock:
-        cmd = session.undo()
-    if cmd:
-        patch = cmd.to_dict() if hasattr(cmd, "to_dict") else dict(cmd)
-        await store.broadcast({
-            "type": "presentation_updated",
-            "session_id": session.session_id,
-            "presentation": session.pres.model_dump(),
-            "patch": patch
-        }, session_id=session.session_id)
-        return {"success": True, "patch": patch}
-    return {"success": False, "message": "Nothing to undo"}
+    return await _run_history_action(session, "undo")
 
 
 @router.post("/action/redo")
@@ -94,18 +119,7 @@ async def redo_action(
 ):
     sid = session_id or (payload.get("session_id") if payload else None)
     session = _resolve_session(sid)
-    async with session.mutation_lock:
-        cmd = session.redo()
-    if cmd:
-        patch = cmd.to_dict() if hasattr(cmd, "to_dict") else dict(cmd)
-        await store.broadcast({
-            "type": "presentation_updated",
-            "session_id": session.session_id,
-            "presentation": session.pres.model_dump(),
-            "patch": patch
-        }, session_id=session.session_id)
-        return {"success": True, "patch": patch}
-    return {"success": False, "message": "Nothing to redo"}
+    return await _run_history_action(session, "redo")
 
 
 @router.get("/history")

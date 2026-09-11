@@ -552,23 +552,15 @@ def _apply_slide_dump(slide: SlideIR, dump: Dict[str, Any]) -> bool:
 def _apply_pres_dump(pres: PresentationIR, dump: Dict[str, Any]) -> bool:
     """In-place restore of a presentation's content from a serialized dump.
 
+    Delegates to ``PresentationIR.restore_snapshot`` so slide/element object
+    identity held by callers (canvas renderers, active selections) stays valid.
     `version` is intentionally preserved: the undo/redo stack owns versioning.
     """
     if not dump:
         return False
-    rebuilt = PresentationIR.model_validate(dump)
-    pres.id = rebuilt.id
-    pres.title = rebuilt.title
-    pres.width = rebuilt.width
-    pres.height = rebuilt.height
-    pres.theme = copy.deepcopy(rebuilt.theme)
-    pres.master = copy.deepcopy(rebuilt.master)
-    pres.slides = [copy.deepcopy(s) for s in rebuilt.slides]
-    pres.active_slide_id = rebuilt.active_slide_id
-    pres.assets = copy.deepcopy(rebuilt.assets)
-    pres.asset_metadata = copy.deepcopy(rebuilt.asset_metadata)
-    pres.metadata = copy.deepcopy(rebuilt.metadata)
-    pres.capabilities = copy.deepcopy(rebuilt.capabilities)
+    version = pres.version
+    pres.restore_snapshot(copy.deepcopy(dump))
+    pres.version = version
     return True
 
 

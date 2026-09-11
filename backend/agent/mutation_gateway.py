@@ -28,12 +28,12 @@ import asyncio
 import inspect
 import logging
 import uuid
+from contextlib import nullcontext
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence
 
 from .risk_policy import ConfirmationGate, RiskEnricher
 from .tools import tools
-from ..history.command import BatchMutationCommand
 from ..ir.models import PresentationIR
 
 logger = logging.getLogger(__name__)
@@ -450,24 +450,32 @@ class MutationGateway:
             return batch
 
         if atomic:
-            before_undo_depth = len(getattr(history, "undo_stack", []) or [])
             before_texts = cls._capture_texts(pres) if enforce_grounding else {}
-            with pres.transaction(f"mutation_batch:{batch.mutation_id}", history=history) as tx:
-                cls._run_calls(
-                    calls, pres, history,
-                    emit=emit, session=session, memory=memory, confirmed=confirmed,
-                    source=source, subagent=subagent, bypass_confirmation=bypass_confirmation,
-                    batch=batch, tx=tx, atomic=True,
-                    grounding_source=grounding_source, enforce_grounding=enforce_grounding,
-                    before_texts=before_texts,
+            use_batch = history is not None and hasattr(history, "batch")
+            batch_ctx = (
+                history.batch(
+                    description="批量编辑 (单步撤销)",
+                    source="mutation_gateway",
                 )
-                if batch.error:
-                    tx.rollback(reason=batch.error)
+                if use_batch
+                else nullcontext(None)
+            )
+            with pres.transaction(f"mutation_batch:{batch.mutation_id}", history=history) as tx:
+                with batch_ctx as hb:
+                    cls._run_calls(
+                        calls, pres, history,
+                        emit=emit, session=session, memory=memory, confirmed=confirmed,
+                        source=source, subagent=subagent, bypass_confirmation=bypass_confirmation,
+                        batch=batch, tx=tx, atomic=True,
+                        grounding_source=grounding_source, enforce_grounding=enforce_grounding,
+                        before_texts=before_texts,
+                    )
+                    if batch.error:
+                        tx.rollback(reason=batch.error)
+                        if hb is not None:
+                            hb.rollback()
             if tx.is_aborted:
                 batch.rolled_back = True
-            elif batch.success:
-                # The whole envelope collapses into a single undo step.
-                cls._coalesce_history(history, before_undo_depth, batch.mutation_id)
         else:
             cls._run_calls(
                 calls, pres, history,
@@ -592,7 +600,6 @@ class MutationGateway:
             })
 
             # 3. Transactional execution (shared tx when atomic).
-            undo_depth_before = len(getattr(history, "undo_stack", []) or [])
             res = cls._execute_single(fn_name, args, pres, history, session=session, tx=tx)
 
             # 4. Post-generation grounding: re-validate committed IR text, not just args.
@@ -688,37 +695,6 @@ class MutationGateway:
         from .grounding import data_claim_numbers
 
         return data_claim_numbers(text, source_text)
-
-    # ------------------------------------------------------------------
-    # History coalescing
-    # ------------------------------------------------------------------
-
-    @classmethod
-    def _coalesce_history(
-        cls,
-        history: Optional[Any],
-        before_depth: int,
-        mutation_id: Optional[str],
-    ) -> None:
-        """Wraps commands pushed since `before_depth` into one composite undo step."""
-        if history is None or not hasattr(history, "undo_stack"):
-            return
-        stack = history.undo_stack
-        if before_depth < 0:
-            before_depth = 0
-        if before_depth >= len(stack):
-            return
-        new_cmds = list(stack[before_depth:])
-        if len(new_cmds) <= 1:
-            return
-        del stack[before_depth:]
-        composite = BatchMutationCommand(
-            commands=new_cmds,
-            description="批量编辑 (单步撤销)",
-            source="mutation_gateway",
-            command_id=f"cmd_{mutation_id}" if mutation_id else None,
-        )
-        history.push(composite)
 
     # ------------------------------------------------------------------
     # Single-call execution

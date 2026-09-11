@@ -16,7 +16,6 @@ from ..ir.models import (
     GradientFill, GradientStop
 )
 from ..ir.patch import HistoryManager
-from ..history.command import BatchMutationCommand
 
 
 # =====================================================================
@@ -77,38 +76,29 @@ class ToolRegistry:
         """Executes multiple operations atomically as a single undo step.
 
         Each operation is shaped as ``{"name": ..., "payload": {...}}``. If any
-        operation fails, the exact pre-batch state (content and nested group
-        bounds) is restored and no history entry is retained.
+        operation fails, the exact pre-batch state (content, version, and
+        history) is restored and no history entry is retained.
         """
         if not operations:
             return {"success": False, "error": "Empty batch"}
 
-        version_before = pres.version
-        depth = len(history.undo_stack)
         results: List[Dict[str, Any]] = []
-        for operation in operations:
-            name = operation.get("name") or operation.get("action") or ""
-            args = operation.get("payload") or operation.get("args") or {}
-            result = self.execute(name, args, pres, history)
-            results.append({"name": name, "result": result})
-            if not result.get("success"):
-                # Invert the already-applied commands in place (preserves object
-                # identity of slides/elements held by callers) and drop them.
-                for cmd in reversed(history.undo_stack[depth:]):
-                    cmd.undo(pres)
-                del history.undo_stack[depth:]
-                history.redo_stack.clear()
-                pres.version = version_before
-                return {
-                    "success": False,
-                    "error": result.get("error", f"Batch operation failed: {name}"),
-                    "results": results
-                }
-
-        commands = history.undo_stack[depth:]
-        if commands:
-            del history.undo_stack[depth:]
-            history.push(BatchMutationCommand(commands=commands, description=description))
+        with pres.transaction("tool_batch", history=history) as tx:
+            with history.batch(description=description, source="tool_batch") as hb:
+                for operation in operations:
+                    name = operation.get("name") or operation.get("action") or ""
+                    args = operation.get("payload") or operation.get("args") or {}
+                    result = self.execute(name, args, pres, history)
+                    results.append({"name": name, "result": result})
+                    if not result.get("success"):
+                        error = result.get("error", f"Batch operation failed: {name}")
+                        tx.rollback(reason=error)
+                        hb.rollback()
+                        return {
+                            "success": False,
+                            "error": error,
+                            "results": results
+                        }
         return {"success": True, "count": len(operations), "results": results}
 
 
@@ -859,7 +849,7 @@ def group_elements(
     before_dump = slide.model_dump()
     grp = slide.group_elements(element_ids, group_name=group_name)
     if not grp:
-        return {"success": False, "error": "Could not group specified elements (need at least 2 valid top-level elements)"}
+        return {"success": False, "error": "Could not group specified elements (need at least 2 valid siblings sharing the same parent)"}
 
     pres.version += 1
     history.record(
