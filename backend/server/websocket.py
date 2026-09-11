@@ -21,7 +21,11 @@ from ..session.manager import session_manager
 from ..session.session import PPTSession
 from ..ir.svg_renderer import SVGRenderer
 from ..quality import QualityService
-from ..agent.mutation_gateway import MutationGateway
+from ..agent.mutation_gateway import (
+    MutationGateway,
+    STALE_MUTATION,
+    DOCUMENT_EPOCH_MISMATCH,
+)
 
 logger = logging.getLogger(__name__)
 ws_router = APIRouter()
@@ -114,7 +118,7 @@ def _rejection_payload(session: PPTSession, mutation_id: str, batch: Any) -> Dic
         error = batch.first_result().get("error") or "mutation_failed"
     else:
         error = "mutation_failed"
-    return {
+    payload: Dict[str, Any] = {
         "type": "mutation_rejected",
         "session_id": session.session_id,
         "mutation_id": mutation_id,
@@ -122,6 +126,16 @@ def _rejection_payload(session: PPTSession, mutation_id: str, batch: Any) -> Dic
         "version": session.pres.version,
         "document_epoch": getattr(session, "document_epoch", None),
     }
+    # CAS-class rejections mean the client's baseline is stale. Ship the
+    # authoritative snapshot in the same message so the client can resync
+    # atomically (no extra round-trip that could itself race). Ordinary schema /
+    # business failures stay lightweight.
+    if error in (STALE_MUTATION, DOCUMENT_EPOCH_MISMATCH):
+        payload["presentation"] = session.pres.model_dump()
+        payload["active_slide_id"] = session.active_slide_id
+        payload["can_undo"] = session.history.can_undo()
+        payload["can_redo"] = session.history.can_redo()
+    return payload
 
 
 async def _broadcast_state(session: PPTSession, *, last_mutation_id: Optional[str] = None) -> None:

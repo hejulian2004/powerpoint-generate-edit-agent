@@ -68,9 +68,16 @@ async def get_slide_svg(slide_id: str, session_id: Optional[str] = Query(None)):
     return Response(content=svg_code, media_type="image/svg+xml")
 
 
-async def _run_history_action(session: PPTSession, action: str) -> Dict[str, Any]:
+async def _run_history_action(
+    session: PPTSession,
+    action: str,
+    *,
+    mutation_id: Optional[str] = None,
+    document_epoch: Optional[str] = None,
+    expected_revision: Optional[int] = None,
+) -> Dict[str, Any]:
     """Routes REST undo/redo through the MutationGateway (single writer + CAS)."""
-    mutation_id = f"mut_{uuid.uuid4().hex[:10]}"
+    resolved_mutation_id = mutation_id or f"mut_{uuid.uuid4().hex[:10]}"
     batch = await MutationGateway.execute_tool_calls(
         [{"name": action, "arguments": {}, "id": f"call_{uuid.uuid4().hex[:6]}"}],
         session.pres,
@@ -78,7 +85,9 @@ async def _run_history_action(session: PPTSession, action: str) -> Dict[str, Any
         session=session,
         bypass_confirmation=True,
         source="rest",
-        mutation_id=mutation_id,
+        mutation_id=resolved_mutation_id,
+        document_epoch=document_epoch,
+        expected_revision=expected_revision,
     )
     res = batch.first_result()
     if batch.error or (isinstance(res, dict) and res.get("error")):
@@ -93,7 +102,7 @@ async def _run_history_action(session: PPTSession, action: str) -> Dict[str, Any
         "last_target_id": session.last_target_id,
         "version": session.pres.version,
         "document_epoch": getattr(session, "document_epoch", None),
-        "last_mutation_id": mutation_id,
+        "last_mutation_id": resolved_mutation_id,
     }, session_id=session.session_id)
     return {
         "success": True,
@@ -107,9 +116,15 @@ async def undo_action(
     session_id: Optional[str] = Query(None),
     payload: Optional[Dict[str, Any]] = Body(None),
 ):
-    sid = session_id or (payload.get("session_id") if payload else None)
-    session = _resolve_session(sid)
-    return await _run_history_action(session, "undo")
+    body = payload or {}
+    session = _resolve_session(session_id or body.get("session_id"))
+    return await _run_history_action(
+        session,
+        "undo",
+        mutation_id=body.get("mutation_id"),
+        document_epoch=body.get("document_epoch"),
+        expected_revision=body.get("expected_revision"),
+    )
 
 
 @router.post("/action/redo")
@@ -117,9 +132,15 @@ async def redo_action(
     session_id: Optional[str] = Query(None),
     payload: Optional[Dict[str, Any]] = Body(None),
 ):
-    sid = session_id or (payload.get("session_id") if payload else None)
-    session = _resolve_session(sid)
-    return await _run_history_action(session, "redo")
+    body = payload or {}
+    session = _resolve_session(session_id or body.get("session_id"))
+    return await _run_history_action(
+        session,
+        "redo",
+        mutation_id=body.get("mutation_id"),
+        document_epoch=body.get("document_epoch"),
+        expected_revision=body.get("expected_revision"),
+    )
 
 
 @router.get("/history")

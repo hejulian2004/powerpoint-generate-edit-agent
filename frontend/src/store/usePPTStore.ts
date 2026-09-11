@@ -992,6 +992,42 @@ export const usePPTStore = create<PPTState>((set, get) => ({
         } else if (type === 'mutation_rejected') {
           const rejectedId: string | undefined = data.mutation_id
           if (rejectedId) selectTargetOnAck.delete(rejectedId)
+          const error: string = data.error ?? ''
+          const isStale = error === 'stale_mutation' || error === 'document_epoch_mismatch'
+          if (isStale) {
+            // The server's revision moved on. Our whole optimistic baseline is
+            // obsolete: drop the rejected head and the queued tail (no auto-rebase)
+            // and adopt the authoritative snapshot shipped with the rejection.
+            const authoritative: PresentationIR | undefined = data.presentation
+            set((state) => {
+              for (const p of state.pendingMutations) selectTargetOnAck.delete(p.mutationId)
+              const nextPres = authoritative ?? state.confirmedPresentation ?? state.presentation
+              return {
+                pendingMutations: [],
+                outbox: [],
+                inFlightMutationId: null,
+                inFlightMessage: null,
+                presentation: nextPres,
+                confirmedPresentation: nextPres,
+                activeSlideId:
+                  data.active_slide_id
+                  ?? nextPres?.active_slide_id
+                  ?? nextPres?.slides?.[0]?.id
+                  ?? state.activeSlideId,
+                documentEpoch: data.document_epoch ?? state.documentEpoch,
+                confirmedRevision:
+                  typeof data.version === 'number' ? data.version : state.confirmedRevision,
+                hasServerRevision: true,
+                canUndo: data.can_undo ?? state.canUndo,
+                canRedo: data.can_redo ?? state.canRedo,
+                selectedElementId: null,
+                selectedElementIds: [],
+                editingElementId: null,
+                mutationStatus: 'resynced'
+              }
+            })
+            return
+          }
           set((state) => {
             const pending = rejectedId
               ? state.pendingMutations.filter((p) => p.mutationId !== rejectedId)
