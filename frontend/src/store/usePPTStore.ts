@@ -52,8 +52,14 @@ let mutationCounter = 0
 
 const selectTargetOnAck = new Set<string>()
 
-const newMutationId = () =>
-  `mut_${Date.now().toString(36)}_${(mutationCounter += 1).toString(36)}`
+const newMutationId = () => {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return `mut_${crypto.randomUUID()}`
+  }
+  // Test / legacy-runtime fallback only. The UUID path is the production
+  // implementation and guarantees session-wide cross-client uniqueness.
+  return `mut_${Date.now().toString(36)}_${(mutationCounter += 1).toString(36)}`
+}
 
 const existsInElements = (elements: ElementIR[], id: string | null | undefined): boolean => {
   if (!id) return false
@@ -559,14 +565,22 @@ export const usePPTStore = create<PPTState>((set, get) => ({
     if (!ws || ws.readyState !== WebSocket.OPEN || outbox.length === 0) return
 
     const [head] = outbox
+    // A retried mutation must reuse the CAS stamp it was first sent with: the
+    // server may have already committed it (idempotent replay) or rejected it as
+    // stale. Re-stamping here would let a stale retry pass CAS against a deck it
+    // never observed. `expectedRevision === undefined` means "never sent".
+    const alreadySent = head.mutation.expectedRevision !== undefined
+    const sendEpoch = alreadySent
+      ? (head.mutation.documentEpoch ?? documentEpoch)
+      : documentEpoch
+    const expectedRevision = alreadySent
+      ? (head.mutation.expectedRevision ?? null)
+      : (hasServerRevision ? confirmedRevision : null)
     const payload: Record<string, any> = {
       ...head.message,
       mutation_id: head.mutation.mutationId,
-      document_epoch: documentEpoch
+      document_epoch: sendEpoch
     }
-    // Only attach CAS once the server has told us the real revision; a mutation
-    // computed before the first `presentation_loaded` must not be falsely stale.
-    const expectedRevision = hasServerRevision ? confirmedRevision : null
     if (expectedRevision !== null) payload.expected_revision = expectedRevision
 
     ws.send(JSON.stringify(payload))
@@ -574,7 +588,7 @@ export const usePPTStore = create<PPTState>((set, get) => ({
       outbox: state.outbox.slice(1),
       pendingMutations: state.pendingMutations.map((m) =>
         m.mutationId === head.mutation.mutationId
-          ? { ...m, documentEpoch, expectedRevision }
+          ? { ...m, documentEpoch: sendEpoch, expectedRevision }
           : m
       ),
       inFlightMutationId: head.mutation.mutationId,
@@ -1022,6 +1036,7 @@ export const usePPTStore = create<PPTState>((set, get) => ({
                 canRedo: data.can_redo ?? state.canRedo,
                 selectedElementId: null,
                 selectedElementIds: [],
+                selectionScope: [],
                 editingElementId: null,
                 mutationStatus: 'resynced'
               }

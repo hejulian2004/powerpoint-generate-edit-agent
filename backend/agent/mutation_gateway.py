@@ -429,8 +429,12 @@ class MutationGateway:
             and session is not None
             and hasattr(session, "get_cached_mutation_result")
         ):
+            # Namespace the lookup by the REQUEST's document_epoch (falling back
+            # to the live epoch when absent) so a replay claiming a different
+            # epoch misses the cache and is still subject to the epoch CAS check.
+            cache_epoch = document_epoch if document_epoch is not None else live_epoch
             cached = session.get_cached_mutation_result(
-                caller_mutation_id, document_epoch=live_epoch
+                caller_mutation_id, document_epoch=cache_epoch
             )
             if cached is not None:
                 if pres is not None:
