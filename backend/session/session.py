@@ -4,6 +4,7 @@ from __future__ import annotations
 import uuid
 import copy
 import asyncio
+from collections import OrderedDict
 from datetime import datetime, timezone
 from dataclasses import dataclass, field
 from typing import Dict, Any, Optional, List
@@ -12,6 +13,10 @@ from ..ir.models import PresentationIR, SlideIR
 from ..history.undo_stack import UndoRedoStack
 from ..history.command import MutationCommand
 from .checkpoint import SessionCheckpoint, CheckpointManager
+
+# Bounded idempotency window for caller-supplied mutation ids. This is a short
+# retry/dedup buffer, not a mutation history, so it stays small.
+COMPLETED_MUTATION_LIMIT = 256
 
 
 def _default_agent_memory():
@@ -41,11 +46,56 @@ class PPTSession:
     # confirmations can never act on a different deck that happens to share a version.
     document_epoch: str = field(default_factory=lambda: uuid.uuid4().hex)
     mutation_lock: asyncio.Lock = field(default_factory=asyncio.Lock, repr=False)
+    # (document_epoch, mutation_id) -> terminal MutationBatchResult. Contract: a
+    # given key must denote the SAME logical request; duplicate ids return the
+    # first outcome (no payload fingerprint / request hash in this version).
+    completed_mutations: "OrderedDict[Any, Any]" = field(default_factory=OrderedDict)
 
     def __post_init__(self):
         self.checkpoint_mgr = CheckpointManager(session_id=self.session_id)
         # Create initial baseline checkpoint
         self.checkpoint_mgr.create(self.pres, description="Initial session state")
+
+    # ------------------------------------------------------------------
+    # Idempotency cache (caller-supplied mutation ids)
+    # ------------------------------------------------------------------
+
+    def _mutation_cache_key(
+        self,
+        mutation_id: str,
+        document_epoch: Optional[str] = None,
+    ):
+        """Effective key; a None epoch resolves to the live document epoch."""
+        return (
+            document_epoch if document_epoch is not None else self.document_epoch,
+            mutation_id,
+        )
+
+    def get_cached_mutation_result(
+        self,
+        mutation_id: str,
+        document_epoch: Optional[str] = None,
+    ) -> Optional[Any]:
+        """Returns a deep copy of a terminal outcome, or None. Refreshes LRU order."""
+        key = self._mutation_cache_key(mutation_id, document_epoch)
+        result = self.completed_mutations.get(key)
+        if result is None:
+            return None
+        self.completed_mutations.move_to_end(key)
+        return copy.deepcopy(result)
+
+    def remember_mutation_result(
+        self,
+        mutation_id: str,
+        result: Any,
+        document_epoch: Optional[str] = None,
+    ) -> None:
+        """Stores a deep-copied terminal outcome, evicting the oldest over the limit."""
+        key = self._mutation_cache_key(mutation_id, document_epoch)
+        self.completed_mutations[key] = copy.deepcopy(result)
+        self.completed_mutations.move_to_end(key)
+        while len(self.completed_mutations) > COMPLETED_MUTATION_LIMIT:
+            self.completed_mutations.popitem(last=False)
 
     # ------------------------------------------------------------------
     # Pending confirmation lifecycle (PR6-hardening round 2)
@@ -113,6 +163,7 @@ class PPTSession:
         self.pres = pres
         self.document_epoch = uuid.uuid4().hex
         self.clear_pending_confirmations()
+        self.completed_mutations.clear()
         self.last_target_id = None
         self.last_action_type = None
         if clear_history:
@@ -190,6 +241,7 @@ class PPTSession:
             # confirmations that were bound to the previous revision.
             self.document_epoch = uuid.uuid4().hex
             self.clear_pending_confirmations()
+            self.completed_mutations.clear()
             if clear_history:
                 self.history.clear()
             else:

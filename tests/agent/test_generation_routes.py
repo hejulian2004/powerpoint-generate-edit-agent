@@ -233,6 +233,49 @@ def test_rest_undo_uses_requested_session():
     session_manager.delete_session(sid)
 
 
+def test_rest_undo_forwards_cas():
+    from backend.ir.models import PresentationIR, SlideIR, TextElementIR, TextContentIR
+
+    sid = "sess_undo_cas"
+    sess = session_manager.get_or_create(sid)
+    sess.pres = PresentationIR(
+        title="Undo CAS Deck",
+        slides=[SlideIR(id="s1", slide_num=1, elements=[
+            TextElementIR(id="elem_t1", x=100, y=100, width=200, height=50,
+                          text_content=TextContentIR.from_plain_text("Initial"))
+        ])],
+    )
+    sess.history.record(
+        action="update_element",
+        description="Update element text",
+        slide_id="s1",
+        element_id="elem_t1",
+        before={"x": 100.0},
+        after={"x": 200.0},
+    )
+
+    # Stale expected_revision is refused by CAS (no history consumed).
+    stale = client.post(
+        f"/api/action/undo?session_id={sid}",
+        json={"session_id": sid, "expected_revision": 999999},
+    )
+    assert stale.status_code == 200
+    assert stale.json()["success"] is False
+    assert sess.history.can_undo() is True
+
+    # Correct expected_revision is accepted.
+    current = sess.pres.version
+    ok = client.post(
+        f"/api/action/undo?session_id={sid}",
+        json={"session_id": sid, "expected_revision": current},
+    )
+    assert ok.status_code == 200
+    assert ok.json()["success"] is True
+    assert sess.history.can_undo() is False
+
+    session_manager.delete_session(sid)
+
+
 def test_upload_uses_requested_session():
     from backend.state.store import store
     from backend.ir.models import PresentationIR, SlideIR

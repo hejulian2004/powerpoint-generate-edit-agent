@@ -180,6 +180,9 @@ def test_undo_routes_through_gateway_with_mutation_id_and_cas():
         assert rejected["type"] == "mutation_rejected"
         assert rejected["mutation_id"] == "mut_redo_stale"
         assert rejected["error"] == "stale_mutation"
+        # CAS-class rejections must carry the authoritative snapshot for atomic resync.
+        assert rejected["presentation"] is not None
+        assert rejected["active_slide_id"] == "slide_01"
 
 
 def test_undo_with_empty_history_is_acknowledged_noop():
@@ -193,3 +196,69 @@ def test_undo_with_empty_history_is_acknowledged_noop():
         ev = ws.receive_json()
         assert ev["type"] == "presentation_updated"
         assert ev["last_mutation_id"] == "mut_noop"
+
+
+def test_replayed_mutation_id_is_idempotent():
+    """A committed mutation whose ACK was lost must not execute twice on replay."""
+    client = TestClient(app)
+    _seed_demo_session("ws_proto_idem")
+    with client.websocket_connect("/ws?session_id=ws_proto_idem") as ws:
+        loaded = ws.receive_json()
+        ws.receive_json()  # preview_update
+        slides_before = len(loaded["presentation"]["slides"])
+
+        payload = {
+            "type": "direct_action",
+            "mutation_id": "mut_create_1",
+            "action": "create_slide",
+            "payload": {"title": "新增"},
+        }
+        ws.send_json(payload)
+        first = ws.receive_json()
+        assert first["type"] == "presentation_updated"
+        assert first["last_mutation_id"] == "mut_create_1"
+        assert len(first["presentation"]["slides"]) == slides_before + 1
+        version_after = first["version"]
+        ws.receive_json()  # preview_update
+
+        # Replay the exact same mutation_id (ACK loss / reconnect).
+        ws.send_json(payload)
+        second = ws.receive_json()
+        assert second["type"] == "presentation_updated"
+        assert second["last_mutation_id"] == "mut_create_1"
+        assert len(second["presentation"]["slides"]) == slides_before + 1
+        assert second["version"] == version_after
+
+
+def test_replayed_empty_undo_stays_noop_even_after_new_history():
+    """An acknowledged empty-history undo is a terminal no-op under replay."""
+    client = TestClient(app)
+    session = _seed_demo_session("ws_proto_idem_undo")
+    with client.websocket_connect("/ws?session_id=ws_proto_idem_undo") as ws:
+        ws.receive_json()
+        ws.receive_json()
+
+        ws.send_json({"type": "undo", "mutation_id": "mut_noop_1"})
+        first = ws.receive_json()
+        assert first["type"] == "presentation_updated"
+        assert first["last_mutation_id"] == "mut_noop_1"
+        ws.receive_json()  # preview_update
+
+        # History gains an entry after the no-op was acknowledged.
+        session.history.record(
+            action="update_element",
+            description="later edit",
+            slide_id="slide_01",
+            element_id="title_main",
+            before={"x": 1.0},
+            after={"x": 2.0},
+        )
+        assert session.history.can_undo() is True
+
+        # Replaying the same mutation_id must stay the original no-op.
+        ws.send_json({"type": "undo", "mutation_id": "mut_noop_1"})
+        second = ws.receive_json()
+        assert second["type"] == "presentation_updated"
+        assert second["last_mutation_id"] == "mut_noop_1"
+        assert session.history.can_undo() is True
+        assert session.history.undo_stack[-1].description == "later edit"

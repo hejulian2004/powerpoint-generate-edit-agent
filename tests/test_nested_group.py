@@ -101,6 +101,18 @@ def test_ungroup_nested_group_restores_siblings():
     assert outer.width == 500.0
 
 
+def test_group_children_preserve_container_order_not_selection_order():
+    """Selection order must not change the resulting group's stacking order."""
+    pres, slide, history = _three_shapes()
+    result = tools.execute(
+        "group_elements", {"element_ids": ["c", "a"]}, pres, history
+    )
+    assert result["success"] is True
+    grp = slide.get_element(result["group_id"])
+    assert isinstance(grp, GroupElementIR)
+    assert [child.id for child in grp.children] == ["a", "c"]
+
+
 def test_group_across_parents_fails_closed():
     pres, slide, history = _three_shapes()
 

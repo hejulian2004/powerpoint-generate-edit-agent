@@ -155,6 +155,48 @@ describe('usePPTStore mutation pipeline', () => {
     expect(usePPTStore.getState().mutationStatus).toBe('rolled_back')
   })
 
+  it('stale rejection resyncs to the authoritative snapshot and never sends the queued tail', () => {
+    const slide = makeSlide([makeShape('s1', 0, 0), makeShape('s2', 200, 0)])
+    const pres = makePresentation([slide], 10)
+    usePPTStore.getState().setPresentation(pres)
+    const ws = connect()
+    ws.emit('presentation_loaded', {
+      presentation: pres,
+      active_slide_id: slide.id,
+      version: 10,
+      document_epoch: 'epoch_A'
+    })
+
+    usePPTStore.getState().updateElementDirect('s1', { x: 40 })
+    usePPTStore.getState().updateElementDirect('s2', { x: 260 })
+
+    const sent = ws.sentMessages().filter((m) => m.type === 'direct_update_element')
+    expect(sent).toHaveLength(1)
+
+    const authoritative = makePresentation(
+      [makeSlide([makeShape('s1', 999, 0), makeShape('s2', 260, 0)])],
+      11
+    )
+    ws.emit('mutation_rejected', {
+      mutation_id: sent[0].mutation_id,
+      error: 'stale_mutation',
+      version: 11,
+      document_epoch: 'epoch_A',
+      presentation: authoritative,
+      active_slide_id: slide.id
+    })
+
+    // The queued tail is discarded and never dispatched against the new revision.
+    expect(ws.sentMessages().filter((m) => m.type === 'direct_update_element')).toHaveLength(1)
+    expect(usePPTStore.getState().pendingMutations).toHaveLength(0)
+    expect(usePPTStore.getState().outbox).toHaveLength(0)
+    expect(usePPTStore.getState().inFlightMutationId).toBeNull()
+    expect(usePPTStore.getState().presentation).toStrictEqual(authoritative)
+    expect(usePPTStore.getState().confirmedPresentation).toStrictEqual(authoritative)
+    expect(usePPTStore.getState().confirmedRevision).toBe(11)
+    expect(usePPTStore.getState().mutationStatus).toBe('resynced')
+  })
+
   it('sends one atomic batch when deleting a multi-selection', () => {
     const slide = makeSlide([makeShape('s1', 0, 0), makeShape('s2', 200, 0)])
     usePPTStore.getState().setPresentation(makePresentation([slide]))

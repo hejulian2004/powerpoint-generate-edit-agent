@@ -577,8 +577,11 @@ class SlideIR(BaseModel):
                 return None
             located_targets.append((index, container[index]))
 
+        # Preserve the container's original stacking order, not the caller's
+        # selection order (which is arbitrary for shift/marquee selection).
+        located_targets.sort(key=lambda item: item[0])
         targets = [t[1] for t in located_targets]
-        insert_at = min(t[0] for t in located_targets)
+        insert_at = located_targets[0][0]
 
         min_x = min(t.x for t in targets)
         min_y = min(t.y for t in targets)

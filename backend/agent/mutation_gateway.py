@@ -410,13 +410,33 @@ class MutationGateway:
     ) -> MutationBatchResult:
         calls = list(tool_calls or [])
         live_epoch = getattr(session, "document_epoch", None) if session is not None else None
+        caller_mutation_id = mutation_id
+        effective_mutation_id = mutation_id or f"mut_{uuid.uuid4().hex[:10]}"
         batch = MutationBatchResult(
             attempted=len(calls),
             last_target_id=getattr(session, "last_target_id", None) if session else None,
             version=pres.version if pres else 1,
             document_epoch=live_epoch,
-            mutation_id=mutation_id or f"mut_{uuid.uuid4().hex[:10]}",
+            mutation_id=effective_mutation_id,
         )
+
+        # 0a. Idempotent replay: return the first terminal outcome for a
+        # caller-supplied id BEFORE CAS. A replayed mutation may carry an
+        # expected_revision from before its original commit, which CAS would
+        # wrongly reject as stale. Gateway-generated ids are never cached.
+        if (
+            caller_mutation_id is not None
+            and session is not None
+            and hasattr(session, "get_cached_mutation_result")
+        ):
+            cached = session.get_cached_mutation_result(
+                caller_mutation_id, document_epoch=live_epoch
+            )
+            if cached is not None:
+                if pres is not None:
+                    cached.version = pres.version
+                cached.document_epoch = live_epoch
+                return cached
 
         # 0. Compare-and-swap: reject a stale plan / offline mutation before writing.
         cas_error = cls._check_cas(
@@ -490,6 +510,21 @@ class MutationGateway:
         batch.last_target_id = (
             getattr(session, "last_target_id", None) if session is not None else batch.last_target_id
         )
+
+        # Cache only terminal ACK outcomes (success / atomic success / undo-redo
+        # success, including the acknowledged empty-history no-op). Stale CAS,
+        # blocked confirmations, rolled-back transactions, and transient errors
+        # stay uncached so a corrected retry can still execute.
+        if (
+            caller_mutation_id is not None
+            and session is not None
+            and hasattr(session, "remember_mutation_result")
+            and batch.success
+            and not batch.rolled_back
+        ):
+            session.remember_mutation_result(
+                caller_mutation_id, batch, document_epoch=live_epoch
+            )
         return batch
 
     @classmethod
@@ -711,7 +746,9 @@ class MutationGateway:
         session: Optional[Any] = None,
         tx: Optional[Any] = None,
     ) -> Dict[str, Any]:
-        # Undo / redo are already atomic history operations.
+        # Undo / redo are already atomic history operations. They are always
+        # "acknowledged": an empty history is a successful no-op (applied=False),
+        # not a failure, so ACK-loss replay can be made idempotent.
         if fn_name == "undo":
             if session and hasattr(session, "undo"):
                 patch = session.undo()
@@ -720,7 +757,8 @@ class MutationGateway:
             else:
                 patch = None
             return {
-                "success": bool(patch),
+                "success": True,
+                "applied": bool(patch),
                 "message": "已成功撤销上一步操作" if patch else "当前无历史操作可撤销",
             }
         if fn_name == "redo":
@@ -731,7 +769,8 @@ class MutationGateway:
             else:
                 patch = None
             return {
-                "success": bool(patch),
+                "success": True,
+                "applied": bool(patch),
                 "message": "已成功重做操作" if patch else "当前无历史操作可重做",
             }
 
