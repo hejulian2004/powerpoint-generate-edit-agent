@@ -451,7 +451,7 @@ def test_websocket_duplicate_element_reports_new_target():
 def test_websocket_local_view_hint_is_mutation_scoped():
     """Only slide-creating direct actions carry a navigation hint, not edits."""
     client = TestClient(app)
-    _seed_demo_session("ws_view_hint")
+    session = _seed_demo_session("ws_view_hint")
     with client.websocket_connect("/ws?session_id=ws_view_hint") as ws:
         ws.receive_json()  # presentation_loaded
         ws.receive_json()  # preview_update
@@ -461,7 +461,8 @@ def test_websocket_local_view_hint_is_mutation_scoped():
             "type": "direct_action",
             "action": "create_slide",
             "mutation_id": "mut_create_1",
-            "payload": {"title": "新页"}
+            "payload": {"title": "新页"},
+            **_stamp(session),
         })
         ev_create = ws.receive_json()
         assert ev_create["type"] == "presentation_updated"
@@ -475,7 +476,8 @@ def test_websocket_local_view_hint_is_mutation_scoped():
         ws.send_json({
             "type": "direct_update_element",
             "mutation_id": "mut_edit_1",
-            "payload": {"slide_id": "slide_01", "element_id": "title_main", "x": 260.0}
+            "payload": {"slide_id": "slide_01", "element_id": "title_main", "x": 260.0},
+            **_stamp(session),
         })
         ev_edit = ws.receive_json()
         assert ev_edit["type"] == "presentation_updated"

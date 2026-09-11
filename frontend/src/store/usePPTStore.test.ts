@@ -27,6 +27,10 @@ const resetStore = () => {
     documentEpoch: null,
     confirmedRevision: 0,
     hasServerRevision: false,
+    clientId: 'client_test',
+    uiContextRevision: 0,
+    clientSequence: 0,
+    localEffectLedger: [],
     mutationStatus: 'idle'
   })
 }
@@ -65,6 +69,12 @@ describe('usePPTStore mutation pipeline', () => {
     const pres = makePresentation([slide])
     usePPTStore.getState().setPresentation(pres)
     const ws = connect()
+    ws.emit('presentation_loaded', {
+      presentation: pres,
+      active_slide_id: slide.id,
+      version: 1,
+      document_epoch: 'epoch_A'
+    })
 
     usePPTStore.getState().updateElementDirect('s1', { x: 40, y: 25 })
 
@@ -126,6 +136,12 @@ describe('usePPTStore mutation pipeline', () => {
     const slide = makeSlide([makeShape('s1', 0, 0)])
     usePPTStore.getState().setPresentation(makePresentation([slide]))
     const ws = connect()
+    ws.emit('presentation_loaded', {
+      presentation: makePresentation([slide]),
+      active_slide_id: slide.id,
+      version: 1,
+      document_epoch: 'epoch_A'
+    })
     ws.readyState = FakeWebSocket.CLOSED
 
     usePPTStore.getState().updateElementDirect('s1', { x: 12 })
@@ -148,13 +164,19 @@ describe('usePPTStore mutation pipeline', () => {
     const pres = makePresentation([slide])
     usePPTStore.getState().setPresentation(pres)
     const ws = connect()
+    ws.emit('presentation_loaded', {
+      presentation: pres,
+      active_slide_id: slide.id,
+      version: 1,
+      document_epoch: 'epoch_A'
+    })
 
     usePPTStore.getState().updateElementDirect('s1', { x: 99 })
     const sent = ws.sentMessages().find((m) => m.type === 'direct_update_element')!
 
     ws.emit('mutation_rejected', { mutation_id: sent.mutation_id, error: 'boom' })
 
-    expect(usePPTStore.getState().presentation).toBe(pres)
+    expect(usePPTStore.getState().presentation).toStrictEqual(pres)
     expect(usePPTStore.getState().pendingMutations).toHaveLength(0)
     expect(usePPTStore.getState().mutationStatus).toBe('rolled_back')
   })
@@ -277,6 +299,12 @@ describe('usePPTStore mutation pipeline', () => {
     const slide = makeSlide([makeShape('s1', 0, 0), makeShape('s2', 200, 0)])
     usePPTStore.getState().setPresentation(makePresentation([slide]))
     const ws = connect()
+    ws.emit('presentation_loaded', {
+      presentation: makePresentation([slide]),
+      active_slide_id: slide.id,
+      version: 1,
+      document_epoch: 'epoch_A'
+    })
 
     usePPTStore.getState().setSelectedElementIds(['s1', 's2'])
     usePPTStore.getState().deleteSelectedElements()
@@ -427,6 +455,12 @@ describe('usePPTStore mutation pipeline', () => {
     const slide = makeSlide([makeText('t0')])
     usePPTStore.getState().setPresentation(makePresentation([slide]))
     const ws = connect()
+    ws.emit('presentation_loaded', {
+      presentation: makePresentation([slide]),
+      active_slide_id: slide.id,
+      version: 1,
+      document_epoch: 'epoch_A'
+    })
 
     usePPTStore.getState().addShapeQuick('roundRect', 10, 20)
     const sent = ws.sentMessages().find((m) => m.type === 'direct_action')!
@@ -608,7 +642,7 @@ describe('usePPTStore mutation pipeline', () => {
     expect(usePPTStore.getState().pendingMutations).toHaveLength(0)
   })
 
-  it('chat carries UIContext and the confirmed base revision', () => {
+  it('chat carries UIContext and the confirmed base revision', async () => {
     const slide = makeSlide([makeShape('s1', 0, 0)])
     const pres = makePresentation([slide], 9)
     usePPTStore.getState().setPresentation(pres)
@@ -621,7 +655,7 @@ describe('usePPTStore mutation pipeline', () => {
     })
 
     usePPTStore.getState().setSelectedElementId('s1')
-    usePPTStore.getState().sendChatMessage('把这个改红')
+    await usePPTStore.getState().sendChatMessage('把这个改红')
 
     const chat = ws.sentMessages().find((m) => m.type === 'chat')!
     expect(chat).toBeTruthy()
@@ -676,5 +710,541 @@ describe('usePPTStore mutation pipeline', () => {
     await usePPTStore.getState().sendChatMessage('把这个改红')
     const chat = ws.sentMessages().find((m) => m.type === 'chat')!
     expect(chat.ui_context.active_slide_id).toBe('slide_7')
+  })
+
+  it('rebase replay preserves pending edits when the remote changed a different field', () => {
+    const slide = makeSlide([makeShape('s1', 0, 0), makeShape('s2', 0, 0)])
+    const pres = makePresentation([slide], 10)
+    usePPTStore.getState().setPresentation(pres)
+    const ws = connect()
+    ws.emit('presentation_loaded', {
+      presentation: pres,
+      active_slide_id: slide.id,
+      version: 10,
+      document_epoch: 'epoch_A'
+    })
+
+    usePPTStore.getState().updateElementDirect('s1', { x: 40 })
+    usePPTStore.getState().updateElementDirect('s2', { y: 50 })
+
+    const first = ws.sentMessages().filter((m) => m.type === 'direct_update_element')
+    expect(first).toHaveLength(1)
+    const headId = first[0].mutation_id
+
+    // The remote edited s2.x (a different field than our pending s2.y), so both
+    // pending operations survive the rebase.
+    const authoritative = makePresentation(
+      [makeSlide([makeShape('s1', 0, 0), { ...makeShape('s2', 999, 0), y: 0 }])],
+      11
+    )
+    ws.emit('mutation_rejected', {
+      mutation_id: headId,
+      error: 'stale_mutation',
+      version: 11,
+      document_epoch: 'epoch_A',
+      presentation: authoritative,
+      active_slide_id: slide.id
+    })
+
+    const replayed = ws.sentMessages().filter((m) => m.type === 'direct_update_element')
+    expect(replayed).toHaveLength(2)
+    expect(replayed[1].mutation_id).toBe(headId)
+    expect(replayed[1].expected_revision).toBe(11)
+    expect(replayed[1].document_epoch).toBe('epoch_A')
+    expect(usePPTStore.getState().confirmedRevision).toBe(11)
+    // Optimistic view keeps our edits on top of the authoritative base.
+    const active = usePPTStore.getState().getActiveSlide()
+    const elements = active ? active.elements : []
+    expect((elements.find((e) => e.id === 's1') as any).x).toBe(40)
+    expect((elements.find((e) => e.id === 's2') as any).x).toBe(999)
+    expect((elements.find((e) => e.id === 's2') as any).y).toBe(50)
+  })
+
+  it('rebase drops a pending edit when the same field changed remotely', () => {
+    const slide = makeSlide([makeShape('s1', 0, 0)])
+    const pres = makePresentation([slide], 10)
+    usePPTStore.getState().setPresentation(pres)
+    const ws = connect()
+    ws.emit('presentation_loaded', {
+      presentation: pres,
+      active_slide_id: slide.id,
+      version: 10,
+      document_epoch: 'epoch_A'
+    })
+
+    usePPTStore.getState().updateElementDirect('s1', { x: 40 })
+    const headId = ws.sentMessages().find((m) => m.type === 'direct_update_element')!.mutation_id
+
+    const authoritative = makePresentation([makeSlide([makeShape('s1', 700, 0)])], 11)
+    ws.emit('mutation_rejected', {
+      mutation_id: headId,
+      error: 'stale_mutation',
+      version: 11,
+      document_epoch: 'epoch_A',
+      presentation: authoritative,
+      active_slide_id: slide.id
+    })
+
+    expect(usePPTStore.getState().pendingMutations).toHaveLength(0)
+    expect(usePPTStore.getState().outbox).toHaveLength(0)
+    expect(usePPTStore.getState().mutationStatus).toBe('resynced')
+    const conflicted = usePPTStore.getState().getActiveSlide()
+    expect((conflicted ? conflicted.elements[0] : null) as any as { x: number }).toMatchObject({ x: 700 })
+    expect(usePPTStore.getState().messages.some((m) => m.content.includes('字段冲突'))).toBe(true)
+  })
+
+  it('rebases an ordered queue with serial CAS attempts (M1@10 -> ACK11 -> M2@11)', () => {
+    const slide = makeSlide([makeShape('s1', 0, 0), makeShape('s2', 200, 0)])
+    const pres = makePresentation([slide], 10)
+    usePPTStore.getState().setPresentation(pres)
+    const ws = connect()
+    ws.emit('presentation_loaded', {
+      presentation: pres,
+      active_slide_id: slide.id,
+      version: 10,
+      document_epoch: 'epoch_A'
+    })
+
+    usePPTStore.getState().updateElementDirect('s1', { x: 40 })
+    usePPTStore.getState().updateElementDirect('s2', { x: 260 })
+
+    const firstSent = ws.sentMessages().filter((m) => m.type === 'direct_update_element')
+    expect(firstSent).toHaveLength(1)
+    const m1 = firstSent[0]
+    expect(m1.expected_revision).toBe(10)
+
+    // A stale rejection with an unchanged authoritative deck: both pending
+    // operations survive, but only the head gets a fresh CAS attempt.
+    const authoritative = makePresentation(
+      [makeSlide([makeShape('s1', 0, 0), makeShape('s2', 200, 0)])],
+      10
+    )
+    ws.emit('mutation_rejected', {
+      mutation_id: m1.mutation_id,
+      error: 'stale_mutation',
+      version: 10,
+      document_epoch: 'epoch_A',
+      presentation: authoritative,
+      active_slide_id: slide.id
+    })
+
+    let sent = ws.sentMessages().filter((m) => m.type === 'direct_update_element')
+    expect(sent).toHaveLength(2)
+    expect(sent[1].mutation_id).toBe(m1.mutation_id)
+    expect(sent[1].expected_revision).toBe(10)
+    // The tail must NOT have been sent against the stale revision.
+    expect(sent.filter((m) => m.mutation_id !== m1.mutation_id)).toHaveLength(0)
+
+    // M1 ACK raises the server revision; only now does the tail establish rev 11.
+    ws.emit('presentation_updated', {
+      presentation: makePresentation(
+        [makeSlide([makeShape('s1', 40, 0), makeShape('s2', 200, 0)])],
+        11
+      ),
+      active_slide_id: slide.id,
+      last_mutation_id: m1.mutation_id,
+      version: 11
+    })
+
+    sent = ws.sentMessages().filter((m) => m.type === 'direct_update_element')
+    expect(sent).toHaveLength(3)
+    const m2 = sent[2]
+    expect(m2.mutation_id).not.toBe(m1.mutation_id)
+    expect(m2.expected_revision).toBe(11)
+    expect(m2.expected_revision).not.toBe(10)
+  })
+
+  it('rebase keeps a same-client sequential queue alive (x=100 then x=120)', () => {
+    const slide = makeSlide([makeShape('s1', 0, 0)])
+    const pres = makePresentation([slide], 10)
+    usePPTStore.getState().setPresentation(pres)
+    const ws = connect()
+    ws.emit('presentation_loaded', {
+      presentation: pres,
+      active_slide_id: slide.id,
+      version: 10,
+      document_epoch: 'epoch_A'
+    })
+
+    usePPTStore.getState().updateElementDirect('s1', { x: 100 })
+    usePPTStore.getState().updateElementDirect('s1', { x: 120 })
+
+    const firstSent = ws.sentMessages().filter((m) => m.type === 'direct_update_element')
+    expect(firstSent).toHaveLength(1)
+    const m1 = firstSent[0]
+
+    const authoritative = makePresentation([makeSlide([makeShape('s1', 0, 0)])], 10)
+    ws.emit('mutation_rejected', {
+      mutation_id: m1.mutation_id,
+      error: 'stale_mutation',
+      version: 10,
+      document_epoch: 'epoch_A',
+      presentation: authoritative,
+      active_slide_id: slide.id
+    })
+
+    // Neither pending edit is dropped: the second is not a foreign conflict.
+    expect(usePPTStore.getState().pendingMutations).toHaveLength(2)
+
+    // M1 commits at rev 11, then the tail must be dispatched at rev 11 (not 10).
+    ws.emit('presentation_updated', {
+      presentation: makePresentation([makeSlide([makeShape('s1', 100, 0)])], 11),
+      active_slide_id: slide.id,
+      last_mutation_id: m1.mutation_id,
+      version: 11
+    })
+
+    const sent = ws.sentMessages().filter((m) => m.type === 'direct_update_element')
+    const m2 = sent[sent.length - 1]
+    expect(m2.mutation_id).not.toBe(m1.mutation_id)
+    expect(m2.expected_revision).toBe(11)
+    expect((usePPTStore.getState().getActiveSlide()?.elements[0] as any).x).toBe(120)
+  })
+
+  it('structural rebase drops an ungroup whose group children changed remotely', () => {
+    const group = makeGroup('g1', 0, 0, 300, 200, [makeShape('s1', 0, 0), makeShape('s2', 150, 0)])
+    const slide = makeSlide([group])
+    const pres = makePresentation([slide], 5)
+    usePPTStore.getState().setPresentation(pres)
+    const ws = connect()
+    ws.emit('presentation_loaded', {
+      presentation: pres,
+      active_slide_id: slide.id,
+      version: 5,
+      document_epoch: 'epoch_A'
+    })
+
+    usePPTStore.getState().setSelectedElementId('g1')
+    usePPTStore.getState().ungroupSelectedElement()
+    const sent = ws.sentMessages().find((m) => m.action === 'ungroup_elements')!
+    expect(sent).toBeTruthy()
+
+    // Remote regrouped the same group: children no longer match the fingerprint.
+    const authoritative = makePresentation(
+      [makeSlide([makeGroup('g1', 0, 0, 200, 100, [makeShape('s1', 0, 0)])])],
+      6
+    )
+    ws.emit('mutation_rejected', {
+      mutation_id: sent.mutation_id,
+      error: 'stale_mutation',
+      version: 6,
+      document_epoch: 'epoch_A',
+      presentation: authoritative,
+      active_slide_id: slide.id
+    })
+
+    expect(usePPTStore.getState().pendingMutations).toHaveLength(0)
+    expect(usePPTStore.getState().outbox).toHaveLength(0)
+    expect(usePPTStore.getState().presentation).toStrictEqual(authoritative)
+    expect(usePPTStore.getState().mutationStatus).toBe('resynced')
+  })
+
+  it('structural rebase drops a delete whose target was removed remotely', () => {
+    const slide = makeSlide([makeShape('s1', 0, 0), makeShape('s2', 200, 0)])
+    const pres = makePresentation([slide], 5)
+    usePPTStore.getState().setPresentation(pres)
+    const ws = connect()
+    ws.emit('presentation_loaded', {
+      presentation: pres,
+      active_slide_id: slide.id,
+      version: 5,
+      document_epoch: 'epoch_A'
+    })
+
+    usePPTStore.getState().setSelectedElementId('s1')
+    usePPTStore.getState().deleteSelectedElement()
+    const sent = ws.sentMessages().find((m) => m.action === 'delete_element')!
+    expect(sent).toBeTruthy()
+
+    // The target no longer exists on the server.
+    const authoritative = makePresentation([makeSlide([makeShape('s2', 200, 0)])], 6)
+    ws.emit('mutation_rejected', {
+      mutation_id: sent.mutation_id,
+      error: 'stale_mutation',
+      version: 6,
+      document_epoch: 'epoch_A',
+      presentation: authoritative,
+      active_slide_id: slide.id
+    })
+
+    expect(usePPTStore.getState().pendingMutations).toHaveLength(0)
+    expect(usePPTStore.getState().outbox).toHaveLength(0)
+    expect(usePPTStore.getState().presentation).toStrictEqual(authoritative)
+    expect(usePPTStore.getState().mutationStatus).toBe('resynced')
+  })
+
+  it('sequencing barrier resolves immediately when already synced', async () => {
+    const ws = connect()
+    ws.emit('presentation_loaded', {
+      presentation: makePresentation([makeSlide([makeShape('s1', 0, 0)])], 1),
+      active_slide_id: 's1',
+      version: 1,
+      document_epoch: 'epoch_A'
+    })
+
+    await expect(
+      usePPTStore.getState().awaitDirectSyncBarrier({ timeoutMs: 200 })
+    ).resolves.toBeUndefined()
+  })
+
+  it('sequencing barrier waits for the in-flight mutation to be acked', async () => {
+    const slide = makeSlide([makeShape('s1', 0, 0)])
+    const pres = makePresentation([slide], 3)
+    usePPTStore.getState().setPresentation(pres)
+    const ws = connect()
+    ws.emit('presentation_loaded', {
+      presentation: pres,
+      active_slide_id: slide.id,
+      version: 3,
+      document_epoch: 'epoch_A'
+    })
+
+    usePPTStore.getState().updateElementDirect('s1', { x: 40 })
+    const sent = ws.sentMessages().find((m) => m.type === 'direct_update_element')!
+    const barrier = usePPTStore.getState().awaitDirectSyncBarrier({ timeoutMs: 1000 })
+
+    ws.emit('presentation_updated', {
+      presentation: makePresentation([makeSlide([makeShape('s1', 40, 0)])], 4),
+      active_slide_id: slide.id,
+      last_mutation_id: sent.mutation_id,
+      version: 4
+    })
+
+    await expect(barrier).resolves.toBeUndefined()
+    expect(usePPTStore.getState().pendingMutations).toHaveLength(0)
+  })
+
+  it('sequencing barrier rejects immediately when offline with unsynced edits', async () => {
+    const slide = makeSlide([makeShape('s1', 0, 0)])
+    usePPTStore.getState().setPresentation(makePresentation([slide]))
+    const ws = connect()
+    ws.readyState = FakeWebSocket.CLOSED
+    usePPTStore.getState().updateElementDirect('s1', { x: 12 })
+
+    await expect(
+      usePPTStore.getState().awaitDirectSyncBarrier({ timeoutMs: 1000 })
+    ).rejects.toMatchObject({ code: 'LOCAL_CHANGES_NOT_SYNCED' })
+  })
+
+  it('sequencing barrier times out when the ack never arrives', async () => {
+    const slide = makeSlide([makeShape('s1', 0, 0)])
+    const pres = makePresentation([slide], 3)
+    usePPTStore.getState().setPresentation(pres)
+    const ws = connect()
+    ws.emit('presentation_loaded', {
+      presentation: pres,
+      active_slide_id: slide.id,
+      version: 3,
+      document_epoch: 'epoch_A'
+    })
+    usePPTStore.getState().updateElementDirect('s1', { x: 40 })
+
+    await expect(
+      usePPTStore.getState().awaitDirectSyncBarrier({ timeoutMs: 40 })
+    ).rejects.toMatchObject({ code: 'LOCAL_CHANGES_NOT_SYNCED' })
+  })
+
+  it('sendChatMessage aborts and notifies when local edits are unsynced', async () => {
+    const slide = makeSlide([makeShape('s1', 0, 0)])
+    usePPTStore.getState().setPresentation(makePresentation([slide]))
+    const ws = connect()
+    ws.readyState = FakeWebSocket.CLOSED
+    usePPTStore.getState().updateElementDirect('s1', { x: 12 })
+
+    await usePPTStore.getState().sendChatMessage('把这个改红')
+
+    expect(ws.sentMessages().some((m) => m.type === 'chat')).toBe(false)
+    expect(usePPTStore.getState().messages.some((m) => m.content.includes('尚未同步完成'))).toBe(true)
+  })
+
+  it('deleteSlide resolves a slide number to its stable id before sending', () => {
+    const slide = makeSlide([makeShape('s1', 0, 0)], 'slide_1')
+    const pres = makePresentation([slide], 4)
+    usePPTStore.getState().setPresentation(pres)
+    const ws = connect()
+    ws.emit('presentation_loaded', {
+      presentation: pres,
+      active_slide_id: slide.id,
+      version: 4,
+      document_epoch: 'epoch_A'
+    })
+
+    usePPTStore.getState().deleteSlide(1)
+
+    const sent = ws.sentMessages().find((m) => m.action === 'delete_slide')!
+    expect(sent).toBeTruthy()
+    expect(sent.payload.slide_id_or_num).toBe('slide_1')
+  })
+
+  it('rebase drops a clear_slide_elements when the slide content changed remotely', () => {
+    const slide = makeSlide([makeShape('s1', 0, 0), makeShape('s2', 200, 0)], 'slide_1')
+    const pres = makePresentation([slide], 5)
+    usePPTStore.getState().setPresentation(pres)
+    const ws = connect()
+    ws.emit('presentation_loaded', {
+      presentation: pres,
+      active_slide_id: slide.id,
+      version: 5,
+      document_epoch: 'epoch_A'
+    })
+
+    usePPTStore.getState().clearSlideElements('slide_1', false)
+    const sent = ws.sentMessages().find((m) => m.action === 'clear_slide_elements')!
+    expect(sent).toBeTruthy()
+
+    // A remote element was added after we captured the fingerprint.
+    const authoritative = makePresentation(
+      [makeSlide([makeShape('s1', 0, 0), makeShape('s2', 200, 0), makeShape('s3', 40, 40)], 'slide_1')],
+      6
+    )
+    ws.emit('mutation_rejected', {
+      mutation_id: sent.mutation_id,
+      error: 'stale_mutation',
+      version: 6,
+      document_epoch: 'epoch_A',
+      presentation: authoritative,
+      active_slide_id: slide.id
+    })
+
+    expect(usePPTStore.getState().pendingMutations).toHaveLength(0)
+    expect(usePPTStore.getState().outbox).toHaveLength(0)
+    expect(usePPTStore.getState().presentation).toStrictEqual(authoritative)
+    expect(usePPTStore.getState().mutationStatus).toBe('resynced')
+  })
+
+  it('rebase drops a never-policy optimize_layout even with no preconditions', () => {
+    const slide = makeSlide([makeShape('s1', 0, 0)], 'slide_1')
+    const pres = makePresentation([slide], 5)
+    usePPTStore.getState().setPresentation(pres)
+    const ws = connect()
+    ws.emit('presentation_loaded', {
+      presentation: pres,
+      active_slide_id: slide.id,
+      version: 5,
+      document_epoch: 'epoch_A'
+    })
+
+    usePPTStore.getState().optimizeLayoutDirect()
+    const sent = ws.sentMessages().find((m) => m.action === 'optimize_layout')!
+    expect(sent).toBeTruthy()
+
+    const authoritative = makePresentation(
+      [makeSlide([makeShape('s1', 30, 30)], 'slide_1')],
+      6
+    )
+    ws.emit('mutation_rejected', {
+      mutation_id: sent.mutation_id,
+      error: 'stale_mutation',
+      version: 6,
+      document_epoch: 'epoch_A',
+      presentation: authoritative,
+      active_slide_id: slide.id
+    })
+
+    expect(usePPTStore.getState().pendingMutations).toHaveLength(0)
+    expect(usePPTStore.getState().outbox).toHaveLength(0)
+    expect(usePPTStore.getState().mutationStatus).toBe('resynced')
+  })
+
+  it('rebase drops an align whose element geometry changed remotely', () => {
+    const slide = makeSlide([makeShape('s1', 0, 0), makeShape('s2', 200, 0)], 'slide_1')
+    const pres = makePresentation([slide], 5)
+    usePPTStore.getState().setPresentation(pres)
+    const ws = connect()
+    ws.emit('presentation_loaded', {
+      presentation: pres,
+      active_slide_id: slide.id,
+      version: 5,
+      document_epoch: 'epoch_A'
+    })
+
+    usePPTStore.getState().setSelectedElementIds(['s1', 's2'])
+    usePPTStore.getState().alignSelectedElements('top')
+    const sent = ws.sentMessages().find((m) => m.action === 'align_elements')!
+    expect(sent).toBeTruthy()
+
+    // Remote moved s2 vertically: the captured x/y fingerprint no longer matches.
+    const authoritative = makePresentation(
+      [makeSlide([makeShape('s1', 0, 0), makeShape('s2', 200, 90)], 'slide_1')],
+      6
+    )
+    ws.emit('mutation_rejected', {
+      mutation_id: sent.mutation_id,
+      error: 'stale_mutation',
+      version: 6,
+      document_epoch: 'epoch_A',
+      presentation: authoritative,
+      active_slide_id: slide.id
+    })
+
+    expect(usePPTStore.getState().pendingMutations).toHaveLength(0)
+    expect(usePPTStore.getState().mutationStatus).toBe('resynced')
+  })
+
+  it('a local effect from a LATER mutation cannot excuse a foreign change', () => {
+    const slide = makeSlide([makeShape('s1', 0, 0)], 'slide_1')
+    const pres = makePresentation([slide], 10)
+    usePPTStore.getState().setPresentation(pres)
+    const ws = connect()
+    ws.emit('presentation_loaded', {
+      presentation: pres,
+      active_slide_id: slide.id,
+      version: 10,
+      document_epoch: 'epoch_A'
+    })
+
+    usePPTStore.getState().updateElementDirect('s1', { x: 40 })
+    const headId = ws.sentMessages().find((m) => m.type === 'direct_update_element')!.mutation_id
+
+    // Seed a ledger entry that belongs to a FUTURE mutation (sequence 99). Even
+    // though its value matches the authoritative snapshot, it must NOT excuse
+    // the remote change for our earlier pending edit.
+    usePPTStore.setState({
+      localEffectLedger: [{
+        elementId: 's1',
+        field: 'x',
+        value: 700,
+        mutationId: 'mut_future',
+        clientSequence: 99,
+        confirmedRevision: 12
+      }]
+    })
+
+    const authoritative = makePresentation([makeSlide([makeShape('s1', 700, 0)], 'slide_1')], 11)
+    ws.emit('mutation_rejected', {
+      mutation_id: headId,
+      error: 'stale_mutation',
+      version: 11,
+      document_epoch: 'epoch_A',
+      presentation: authoritative,
+      active_slide_id: slide.id
+    })
+
+    expect(usePPTStore.getState().pendingMutations).toHaveLength(0)
+    expect(usePPTStore.getState().mutationStatus).toBe('resynced')
+  })
+
+  it('direct mutations stay queued until a canonical server revision exists', () => {
+    const slide = makeSlide([makeShape('s1', 0, 0)], 'slide_1')
+    usePPTStore.getState().setPresentation(makePresentation([slide]))
+    const ws = connect()
+
+    usePPTStore.getState().updateElementDirect('s1', { x: 12 })
+
+    expect(ws.sentMessages()).toHaveLength(0)
+    expect(usePPTStore.getState().outbox).toHaveLength(1)
+    expect(usePPTStore.getState().pendingMutations).toHaveLength(1)
+
+    ws.emit('presentation_loaded', {
+      presentation: makePresentation([slide], 1),
+      active_slide_id: slide.id,
+      version: 1,
+      document_epoch: 'epoch_A'
+    })
+
+    const sent = ws.sentMessages().find((m) => m.type === 'direct_update_element')!
+    expect(sent).toBeTruthy()
+    expect(sent.expected_revision).toBe(1)
+    expect(sent.document_epoch).toBe('epoch_A')
   })
 })

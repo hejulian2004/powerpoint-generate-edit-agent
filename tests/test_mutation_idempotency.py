@@ -10,6 +10,7 @@ import asyncio
 
 from backend.agent.mutation_gateway import (
     DOCUMENT_EPOCH_MISMATCH,
+    MUTATION_ID_PAYLOAD_MISMATCH,
     MutationBatchResult,
     MutationGateway,
 )
@@ -57,6 +58,49 @@ def test_mutation_cache_key_binds_document_epoch():
 
     assert session.get_cached_mutation_result("m1", document_epoch=epoch) is not None
     assert session.get_cached_mutation_result("m1", document_epoch="other_epoch") is None
+
+
+def test_mutation_cache_rejects_payload_drift():
+    session = _session("idem_payload")
+    session.remember_mutation_result(
+        "m1", MutationBatchResult(mutation_id="m1"), payload_hash="hash_A"
+    )
+
+    assert session.get_cached_mutation_result("m1", payload_hash="hash_A") is not None
+    assert session.get_cached_mutation_result("m1", payload_hash="hash_B") is None
+    assert session.cached_mutation_payload_mismatch("m1", payload_hash="hash_B") is True
+    assert session.cached_mutation_payload_mismatch("m1", payload_hash="hash_A") is False
+
+
+def test_gateway_rejects_reused_id_with_different_payload():
+    session = _session("idem_gateway_payload")
+    slide_id = session.pres.slides[0].id
+    element = session.pres.slides[0].elements[0]
+    call = {
+        "name": "update_element",
+        "arguments": {"slide_id": slide_id, "element_id": element.id, "x": 10.0},
+        "id": "call_1",
+    }
+    drifted = {
+        "name": "update_element",
+        "arguments": {"slide_id": slide_id, "element_id": element.id, "x": 20.0},
+        "id": "call_2",
+    }
+
+    first = asyncio.run(MutationGateway.execute_tool_calls(
+        [call], session.pres, session.history, session=session,
+        bypass_confirmation=True, mutation_id="mut_payload",
+    ))
+    assert first.success
+    version_after_first = session.pres.version
+
+    replay = asyncio.run(MutationGateway.execute_tool_calls(
+        [drifted], session.pres, session.history, session=session,
+        bypass_confirmation=True, mutation_id="mut_payload",
+    ))
+    assert replay.error == MUTATION_ID_PAYLOAD_MISMATCH
+    assert replay.success is False
+    assert session.pres.version == version_after_first
 
 
 def test_gateway_replays_cached_result_and_skips_cas():
@@ -110,6 +154,42 @@ def test_gateway_cache_is_namespaced_by_request_epoch():
         bypass_confirmation=True, mutation_id="mut_X", document_epoch="wrong_epoch",
     ))
     assert replay.error == DOCUMENT_EPOCH_MISMATCH
+
+
+def test_gateway_rejects_reused_id_with_different_client_identity():
+    """Same id + same tool calls but a different client identity is a protocol violation."""
+    session = _session("idem_client_identity")
+    slide_id = session.pres.slides[0].id
+    element = session.pres.slides[0].elements[0]
+    call = {
+        "name": "update_element",
+        "arguments": {"slide_id": slide_id, "element_id": element.id, "x": 11.0},
+        "id": "call_1",
+    }
+
+    first = asyncio.run(MutationGateway.execute_tool_calls(
+        [call], session.pres, session.history, session=session,
+        bypass_confirmation=True, mutation_id="mut_client",
+        client_id="client_A", client_sequence=1,
+    ))
+    assert first.success
+
+    # A retry from the SAME client identity replays the cached outcome.
+    retry = asyncio.run(MutationGateway.execute_tool_calls(
+        [call], session.pres, session.history, session=session,
+        bypass_confirmation=True, mutation_id="mut_client",
+        client_id="client_A", client_sequence=1,
+    ))
+    assert retry.success
+
+    # An identical payload from a DIFFERENT client/sequence must not be a cache hit.
+    mismatch = asyncio.run(MutationGateway.execute_tool_calls(
+        [call], session.pres, session.history, session=session,
+        bypass_confirmation=True, mutation_id="mut_client",
+        client_id="client_B", client_sequence=1,
+    ))
+    assert mismatch.error == MUTATION_ID_PAYLOAD_MISMATCH
+    assert mismatch.success is False
 
 
 def test_gateway_generated_ids_are_not_cached():

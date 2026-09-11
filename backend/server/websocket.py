@@ -86,6 +86,8 @@ async def execute_direct_batch(
     atomic: bool = False,
     document_epoch: Optional[str] = None,
     expected_revision: Optional[int] = None,
+    client_id: Optional[str] = None,
+    client_sequence: Optional[int] = None,
     on_event: Optional[Any] = None,
 ):
     """Executes a direct (unambiguous user) mutation envelope through the gateway."""
@@ -101,6 +103,8 @@ async def execute_direct_batch(
         mutation_id=mutation_id,
         document_epoch=document_epoch,
         expected_revision=expected_revision,
+        client_id=client_id,
+        client_sequence=client_sequence,
         # Session-backed user writes MUST carry CAS stamps; an unstamped direct
         # mutation is rejected rather than silently applied to "current".
         require_stamps=True,
@@ -179,6 +183,8 @@ async def _handle_history_action(
         mutation_id=mutation_id,
         document_epoch=data.get("document_epoch"),
         expected_revision=data.get("expected_revision"),
+        client_id=data.get("client_id"),
+        client_sequence=data.get("client_sequence"),
     )
     res = batch.first_result()
     if batch.error or (isinstance(res, dict) and res.get("error")):
@@ -346,13 +352,19 @@ async def websocket_endpoint(websocket: WebSocket):
                     mutation_id=mutation_id,
                     document_epoch=data.get("document_epoch"),
                     expected_revision=data.get("expected_revision"),
+                    client_id=data.get("client_id"),
+                    client_sequence=data.get("client_sequence"),
                 )
                 if batch.error or not batch.success:
                     await websocket.send_json(_rejection_payload(session, mutation_id, batch))
                 else:
                     if args.get("element_id"):
                         session.last_target_id = args.get("element_id")
-                    await _broadcast_state(session, last_mutation_id=mutation_id)
+                    await _broadcast_state(
+                        session,
+                        last_mutation_id=mutation_id,
+                        preview_slide_id=args.get("slide_id"),
+                    )
 
             # Direct GUI manipulation (create slide, delete slide, add shape/text, delete element, etc.)
             # Decoupled from agent dialogue - does not append to chat messages
@@ -398,6 +410,8 @@ async def websocket_endpoint(websocket: WebSocket):
                     mutation_id=mutation_id,
                     document_epoch=data.get("document_epoch"),
                     expected_revision=data.get("expected_revision"),
+                    client_id=data.get("client_id"),
+                    client_sequence=data.get("client_sequence"),
                 )
 
                 if batch.error or not batch.success:
@@ -469,11 +483,18 @@ async def websocket_endpoint(websocket: WebSocket):
                     atomic=True,
                     document_epoch=data.get("document_epoch"),
                     expected_revision=data.get("expected_revision"),
+                    client_id=data.get("client_id"),
+                    client_sequence=data.get("client_sequence"),
                 )
                 if batch.error or not batch.success:
                     await websocket.send_json(_rejection_payload(session, mutation_id, batch))
                 else:
-                    await _broadcast_state(session, last_mutation_id=mutation_id)
+                    preview_sid = calls[0]["arguments"].get("slide_id") if calls else None
+                    await _broadcast_state(
+                        session,
+                        last_mutation_id=mutation_id,
+                        preview_slide_id=preview_sid or session.active_slide_id,
+                    )
 
             # Client requested immediate preview
             elif msg_type == "preview_request":

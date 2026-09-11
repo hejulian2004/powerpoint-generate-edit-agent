@@ -25,7 +25,9 @@ ExecutionPlan which the graph's `mutation_node` feeds to this gateway.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import inspect
+import json
 import logging
 import uuid
 from contextlib import nullcontext
@@ -55,6 +57,9 @@ STALE_EXECUTION_PLAN = "stale_execution_plan"
 INVALID_REPLACEMENT_ENVELOPE = "invalid_replacement_envelope"
 # A session-backed user mutation arrived without its required CAS stamps.
 MISSING_MUTATION_STAMP = "missing_mutation_stamp"
+# A client reused a mutation_id for a different logical operation. Retry (same
+# payload, possibly a stale expected_revision) is allowed; payload drift is not.
+MUTATION_ID_PAYLOAD_MISMATCH = "mutation_id_payload_mismatch"
 
 
 def _tool_name(call: Dict[str, Any]) -> str:
@@ -73,6 +78,40 @@ def _is_replacement_op(call: Dict[str, Any]) -> bool:
     if args is None:
         args = call.get("args") or {}
     return args.get("replace", True) is not False
+
+
+def _logical_payload_hash(
+    tool_calls: List[Dict[str, Any]],
+    client_id: Optional[str] = None,
+    client_sequence: Optional[int] = None,
+) -> str:
+    """Stable fingerprint of the logical operation(s) in a batch.
+
+    Includes per-client logical identity (`client_id`, `client_sequence`) so two
+    different clients reusing the same `mutation_id` are NOT treated as the same
+    logical operation. Excludes expected_revision / document_epoch on purpose: a
+    rebase retry keeps the same mutation_id and the same operation, only the CAS
+    attempt changes.
+    """
+    normalized = []
+    for raw in tool_calls or []:
+        call = dict(raw) if isinstance(raw, dict) else {}
+        name = call.get("name") or call.get("tool") or ""
+        args = call.get("arguments")
+        if args is None:
+            args = call.get("args") or {}
+        normalized.append({"name": name, "arguments": args})
+    blob = json.dumps(
+        {
+            "operations": normalized,
+            "client_id": client_id,
+            "client_sequence": client_sequence,
+        },
+        sort_keys=True,
+        ensure_ascii=False,
+        default=str,
+    )
+    return hashlib.sha256(blob.encode("utf-8")).hexdigest()
 
 
 def _fire_event(on_event: Optional[Callable], data: Dict[str, Any]) -> None:
@@ -145,6 +184,8 @@ class MutationEnvelope:
     document_epoch: Optional[str] = None
     expected_revision: Optional[int] = None
     mutation_id: str = field(default_factory=lambda: f"mut_{uuid.uuid4().hex[:10]}")
+    client_id: Optional[str] = None
+    client_sequence: Optional[int] = None
     grounding_source: Optional[str] = None
     enforce_grounding: bool = False
     # Caller ASSERTION only. The gateway derives replacement authority from the
@@ -165,6 +206,8 @@ class MutationEnvelope:
         document_epoch: Optional[str] = None,
         expected_revision: Optional[int] = None,
         mutation_id: Optional[str] = None,
+        client_id: Optional[str] = None,
+        client_sequence: Optional[int] = None,
         grounding_source: Optional[str] = None,
         enforce_grounding: bool = False,
         replaces_document: bool = False,
@@ -178,6 +221,8 @@ class MutationEnvelope:
             document_epoch=document_epoch,
             expected_revision=expected_revision,
             mutation_id=mutation_id or f"mut_{uuid.uuid4().hex[:10]}",
+            client_id=client_id,
+            client_sequence=client_sequence,
             grounding_source=grounding_source,
             enforce_grounding=enforce_grounding,
             replaces_document=replaces_document,
@@ -250,6 +295,8 @@ class MutationGateway:
         document_epoch: Optional[str] = None,
         expected_revision: Optional[int] = None,
         mutation_id: Optional[str] = None,
+        client_id: Optional[str] = None,
+        client_sequence: Optional[int] = None,
         grounding_source: Optional[str] = None,
         enforce_grounding: bool = False,
         replaces_document: bool = False,
@@ -274,6 +321,8 @@ class MutationGateway:
                 document_epoch=document_epoch,
                 expected_revision=expected_revision,
                 mutation_id=mutation_id,
+                client_id=client_id,
+                client_sequence=client_sequence,
                 grounding_source=grounding_source,
                 enforce_grounding=enforce_grounding,
                 replaces_document=replaces_document,
@@ -332,6 +381,8 @@ class MutationGateway:
             document_epoch=envelope.document_epoch,
             expected_revision=envelope.expected_revision,
             mutation_id=envelope.mutation_id,
+            client_id=envelope.client_id,
+            client_sequence=envelope.client_sequence,
             grounding_source=envelope.grounding_source,
             enforce_grounding=envelope.enforce_grounding,
             replaces_document=envelope.replaces_document,
@@ -356,6 +407,8 @@ class MutationGateway:
         document_epoch: Optional[str] = None,
         expected_revision: Optional[int] = None,
         mutation_id: Optional[str] = None,
+        client_id: Optional[str] = None,
+        client_sequence: Optional[int] = None,
         grounding_source: Optional[str] = None,
         enforce_grounding: bool = False,
         replaces_document: bool = False,
@@ -381,6 +434,8 @@ class MutationGateway:
             document_epoch=document_epoch,
             expected_revision=expected_revision,
             mutation_id=mutation_id,
+            client_id=client_id,
+            client_sequence=client_sequence,
             grounding_source=grounding_source,
             enforce_grounding=enforce_grounding,
             replaces_document=replaces_document,
@@ -459,12 +514,15 @@ class MutationGateway:
         document_epoch: Optional[str] = None,
         expected_revision: Optional[int] = None,
         mutation_id: Optional[str] = None,
+        client_id: Optional[str] = None,
+        client_sequence: Optional[int] = None,
         grounding_source: Optional[str] = None,
         enforce_grounding: bool = False,
         replaces_document: bool = False,
         require_stamps: bool = False,
     ) -> MutationBatchResult:
         calls = list(tool_calls or [])
+        payload_hash = _logical_payload_hash(calls, client_id, client_sequence)
         live_epoch = getattr(session, "document_epoch", None) if session is not None else None
         caller_mutation_id = mutation_id
         effective_mutation_id = mutation_id or f"mut_{uuid.uuid4().hex[:10]}"
@@ -536,8 +594,21 @@ class MutationGateway:
             # to the live epoch when absent) so a replay claiming a different
             # epoch misses the cache and is still subject to the epoch CAS check.
             cache_epoch = document_epoch if document_epoch is not None else live_epoch
+            if session.cached_mutation_payload_mismatch(
+                caller_mutation_id, document_epoch=cache_epoch, payload_hash=payload_hash
+            ):
+                batch.error = MUTATION_ID_PAYLOAD_MISMATCH
+                batch.failed = len(calls)
+                emit({
+                    "type": "mutation_rejected",
+                    "error": MUTATION_ID_PAYLOAD_MISMATCH,
+                    "mutation_id": batch.mutation_id,
+                    "version": batch.version,
+                    "document_epoch": batch.document_epoch,
+                })
+                return batch
             cached = session.get_cached_mutation_result(
-                caller_mutation_id, document_epoch=cache_epoch
+                caller_mutation_id, document_epoch=cache_epoch, payload_hash=payload_hash
             )
             if cached is not None:
                 if pres is not None:
@@ -650,7 +721,7 @@ class MutationGateway:
             and not batch.replaced_document
         ):
             session.remember_mutation_result(
-                caller_mutation_id, batch, document_epoch=live_epoch
+                caller_mutation_id, batch, document_epoch=live_epoch, payload_hash=payload_hash
             )
         return batch
 
