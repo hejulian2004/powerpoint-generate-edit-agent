@@ -16,6 +16,7 @@ from ..ir.models import (
     GradientFill, GradientStop
 )
 from ..ir.patch import HistoryManager
+from ..history.command import BatchMutationCommand
 
 
 # =====================================================================
@@ -65,6 +66,50 @@ class ToolRegistry:
             return self.handlers[name](pres, history, **args)
         except Exception as e:
             return {"success": False, "error": f"Execution error in {name}: {str(e)}"}
+
+    def execute_batch(
+        self,
+        operations: List[Dict[str, Any]],
+        pres: PresentationIR,
+        history: HistoryManager,
+        description: str = "批量图元操作"
+    ) -> Dict[str, Any]:
+        """Executes multiple operations atomically as a single undo step.
+
+        Each operation is shaped as ``{"name": ..., "payload": {...}}``. If any
+        operation fails, the exact pre-batch state (content and nested group
+        bounds) is restored and no history entry is retained.
+        """
+        if not operations:
+            return {"success": False, "error": "Empty batch"}
+
+        version_before = pres.version
+        depth = len(history.undo_stack)
+        results: List[Dict[str, Any]] = []
+        for operation in operations:
+            name = operation.get("name") or operation.get("action") or ""
+            args = operation.get("payload") or operation.get("args") or {}
+            result = self.execute(name, args, pres, history)
+            results.append({"name": name, "result": result})
+            if not result.get("success"):
+                # Invert the already-applied commands in place (preserves object
+                # identity of slides/elements held by callers) and drop them.
+                for cmd in reversed(history.undo_stack[depth:]):
+                    cmd.undo(pres)
+                del history.undo_stack[depth:]
+                history.redo_stack.clear()
+                pres.version = version_before
+                return {
+                    "success": False,
+                    "error": result.get("error", f"Batch operation failed: {name}"),
+                    "results": results
+                }
+
+        commands = history.undo_stack[depth:]
+        if commands:
+            del history.undo_stack[depth:]
+            history.push(BatchMutationCommand(commands=commands, description=description))
+        return {"success": True, "count": len(operations), "results": results}
 
 
 tools = ToolRegistry()
@@ -445,6 +490,10 @@ def add_connector(
                 "fill_color": {"type": "string", "description": "New fill color hex"},
                 "border_color": {"type": "string"},
                 "border_width": {"type": "number"},
+                "start_x": {"type": "number", "description": "Connector start point X in canvas px"},
+                "start_y": {"type": "number", "description": "Connector start point Y in canvas px"},
+                "end_x": {"type": "number", "description": "Connector end point X in canvas px"},
+                "end_y": {"type": "number", "description": "Connector end point Y in canvas px"},
                 "radius": {"type": "number", "description": "Corner radius in px"},
                 "opacity": {"type": "number", "description": "Opacity 0.0 to 1.0"},
                 "font_family": {"type": "string", "description": "Font family name e.g. 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', 'Inter', 'SimSun'"},
@@ -467,6 +516,10 @@ def update_element(
     y: Optional[float] = None,
     width: Optional[float] = None,
     height: Optional[float] = None,
+    start_x: Optional[float] = None,
+    start_y: Optional[float] = None,
+    end_x: Optional[float] = None,
+    end_y: Optional[float] = None,
     text: Optional[str] = None,
     fill_color: Optional[str] = None,
     border_color: Optional[str] = None,
@@ -500,6 +553,28 @@ def update_element(
             elem.scale(sx, sy)
         if dx != 0.0 or dy != 0.0:
             elem.translate(dx, dy)
+    elif isinstance(elem, ConnectorElementIR):
+        has_endpoints = any(v is not None for v in (start_x, start_y, end_x, end_y))
+        if has_endpoints:
+            if start_x is not None:
+                elem.start_x = start_x
+            if start_y is not None:
+                elem.start_y = start_y
+            if end_x is not None:
+                elem.end_x = end_x
+            if end_y is not None:
+                elem.end_y = end_y
+            elem.sync_bounds()
+        else:
+            dx = (x - elem.x) if x is not None else 0.0
+            dy = (y - elem.y) if y is not None else 0.0
+            sx = (width / elem.width) if (width is not None and elem.width > 0) else 1.0
+            sy = (height / elem.height) if (height is not None and elem.height > 0) else 1.0
+
+            if sx != 1.0 or sy != 1.0:
+                elem.scale(sx, sy)
+            if dx != 0.0 or dy != 0.0:
+                elem.translate(dx, dy)
     else:
         elem.set_geometry(x=x, y=y, width=width, height=height)
 
@@ -579,6 +654,8 @@ def update_element(
                         if italic is not None:
                             r.font.italic = italic
 
+    slide.recompute_ancestor_bounds(element_id)
+
     pres.version += 1
     after_state = elem.model_dump()
 
@@ -623,8 +700,13 @@ def delete_element(
     if not elem:
         return {"success": False, "error": f"Element {element_id} not found"}
 
+    located = slide.locate_element(element_id)
+    parent_id = located[2][-1].id if (located and located[2]) else None
+    parent_index = located[1] if located else None
     before_dump = elem.model_dump()
     slide.remove_element(element_id)
+    if parent_id:
+        slide.recompute_group_chain(parent_id)
     pres.version += 1
 
     history.record(
@@ -632,7 +714,9 @@ def delete_element(
         description=f"删除元素: {element_id}",
         slide_id=slide.id,
         element_id=element_id,
-        before=before_dump
+        before=before_dump,
+        parent_id=parent_id,
+        parent_index=parent_index
     )
 
     return {"success": True, "message": f"已成功删除元素 {element_id}"}
@@ -666,21 +750,27 @@ def duplicate_element(
     if not elem:
         return {"success": False, "error": "Element not found"}
 
-    new_dump = elem.model_dump()
-    new_dump["id"] = f"{elem.type}_{uuid.uuid4().hex[:6]}"
-    new_dump["x"] = elem.x + 20.0
-    new_dump["y"] = elem.y + 20.0
+    new_dump = copy.deepcopy(elem.model_dump())
 
-    from ..ir.models import ShapeElementIR, TextElementIR, ConnectorElementIR, ImageElementIR, TableElementIR
+    def _regenerate_ids(node: Dict[str, Any]) -> None:
+        node["id"] = f"{node.get('type', 'el')}_{uuid.uuid4().hex[:6]}"
+        for child in node.get("children") or []:
+            if isinstance(child, dict):
+                _regenerate_ids(child)
+
+    _regenerate_ids(new_dump)
+
     type_map = {
         "shape": ShapeElementIR,
         "text": TextElementIR,
         "connector": ConnectorElementIR,
         "image": ImageElementIR,
-        "table": TableElementIR
+        "table": TableElementIR,
+        "group": GroupElementIR,
     }
     cls = type_map.get(elem.type, ShapeElementIR)
     new_elem = cls(**new_dump)
+    new_elem.translate(20.0, 20.0)
     slide.add_element(new_elem)
     pres.version += 1
 
@@ -1701,30 +1791,35 @@ def align_elements(
         return {"success": False, "error": "No elements found to align"}
 
     before_dump = slide.model_dump()
+
+    def shift(e: ElementIR, dx: float, dy: float) -> None:
+        if abs(dx) > 0.001 or abs(dy) > 0.001:
+            e.translate(dx, dy)
+
     if alignment == "left":
         min_x = min(e.x for e in targets)
         for e in targets:
-            e.set_geometry(x=min_x)
+            shift(e, min_x - e.x, 0.0)
     elif alignment == "right":
         max_r = max(e.x + e.width for e in targets)
         for e in targets:
-            e.set_geometry(x=max_r - e.width)
+            shift(e, max_r - e.width - e.x, 0.0)
     elif alignment == "top":
         min_y = min(e.y for e in targets)
         for e in targets:
-            e.set_geometry(y=min_y)
+            shift(e, 0.0, min_y - e.y)
     elif alignment == "bottom":
         max_b = max(e.y + e.height for e in targets)
         for e in targets:
-            e.set_geometry(y=max_b - e.height)
+            shift(e, 0.0, max_b - e.height - e.y)
     elif alignment == "center":
         avg_cx = sum(e.x + e.width / 2.0 for e in targets) / len(targets)
         for e in targets:
-            e.set_geometry(x=avg_cx - e.width / 2.0)
+            shift(e, avg_cx - e.width / 2.0 - e.x, 0.0)
     elif alignment == "middle":
         avg_cy = sum(e.y + e.height / 2.0 for e in targets) / len(targets)
         for e in targets:
-            e.set_geometry(y=avg_cy - e.height / 2.0)
+            shift(e, 0.0, avg_cy - e.height / 2.0 - e.y)
     elif alignment == "distribute_h":
         targets.sort(key=lambda e: e.x)
         min_x = targets[0].x
@@ -1734,8 +1829,19 @@ def align_elements(
             gap = (max_x - min_x - total_elems_w) / (len(targets) - 1)
             curr_x = min_x
             for e in targets:
-                e.set_geometry(x=curr_x)
+                shift(e, curr_x - e.x, 0.0)
                 curr_x += e.width + gap
+    elif alignment == "distribute_v":
+        targets.sort(key=lambda e: e.y)
+        min_y = targets[0].y
+        max_y = targets[-1].y + targets[-1].height
+        total_elems_h = sum(e.height for e in targets)
+        if len(targets) > 1 and max_y - min_y > total_elems_h:
+            gap = (max_y - min_y - total_elems_h) / (len(targets) - 1)
+            curr_y = min_y
+            for e in targets:
+                shift(e, 0.0, curr_y - e.y)
+                curr_y += e.height + gap
 
     pres.version += 1
     history.record(

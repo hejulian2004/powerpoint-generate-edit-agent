@@ -224,6 +224,42 @@ class BaseElementIR(BaseModel):
             self.transform.height = self.height
             self.transform.rotation = self.rotation
 
+    def sync_transform(self) -> None:
+        """Push mutated flat geometry back into the paired TransformIR object."""
+        if self.transform is None:
+            self.transform = TransformIR(
+                x=self.x, y=self.y, width=self.width, height=self.height,
+                rotation=self.rotation,
+            )
+            return
+        self.transform.x = self.x
+        self.transform.y = self.y
+        self.transform.width = self.width
+        self.transform.height = self.height
+        self.transform.rotation = self.rotation
+
+    def translate(self, dx: float, dy: float) -> None:
+        """Shift this element by a canvas-space delta."""
+        self.x = round(self.x + dx, 2)
+        self.y = round(self.y + dy, 2)
+        self.sync_transform()
+
+    def scale(
+        self,
+        sx: float,
+        sy: float,
+        origin_x: Optional[float] = None,
+        origin_y: Optional[float] = None,
+    ) -> None:
+        """Scale this element around an origin (default its own top-left)."""
+        ox = self.x if origin_x is None else origin_x
+        oy = self.y if origin_y is None else origin_y
+        self.x = round(ox + (self.x - ox) * sx, 2)
+        self.y = round(oy + (self.y - oy) * sy, 2)
+        self.width = round(self.width * sx, 2)
+        self.height = round(self.height * sy, 2)
+        self.sync_transform()
+
 
 class ShapeElementIR(BaseElementIR):
     type: Literal["shape"] = "shape"
@@ -253,6 +289,38 @@ class ConnectorElementIR(BaseElementIR):
     arrow_start: Literal["none", "triangle", "stealth", "oval"] = "none"
     arrow_end: Literal["none", "triangle", "stealth", "oval"] = "triangle"
     line_type: Literal["straight", "elbow", "curved"] = "straight"
+
+    def sync_bounds(self) -> None:
+        """Recompute the axis-aligned bbox from the connector endpoints."""
+        self.x = round(min(self.start_x, self.end_x), 2)
+        self.y = round(min(self.start_y, self.end_y), 2)
+        self.width = round(max(abs(self.end_x - self.start_x), 1.0), 2)
+        self.height = round(max(abs(self.end_y - self.start_y), 1.0), 2)
+        self.sync_transform()
+
+    def translate(self, dx: float, dy: float) -> None:
+        """Shift both endpoints by a canvas-space delta."""
+        self.start_x = round(self.start_x + dx, 2)
+        self.start_y = round(self.start_y + dy, 2)
+        self.end_x = round(self.end_x + dx, 2)
+        self.end_y = round(self.end_y + dy, 2)
+        self.sync_bounds()
+
+    def scale(
+        self,
+        sx: float,
+        sy: float,
+        origin_x: Optional[float] = None,
+        origin_y: Optional[float] = None,
+    ) -> None:
+        """Scale both endpoints around an origin (default connector bbox top-left)."""
+        ox = self.x if origin_x is None else origin_x
+        oy = self.y if origin_y is None else origin_y
+        self.start_x = round(ox + (self.start_x - ox) * sx, 2)
+        self.start_y = round(oy + (self.start_y - oy) * sy, 2)
+        self.end_x = round(ox + (self.end_x - ox) * sx, 2)
+        self.end_y = round(oy + (self.end_y - oy) * sy, 2)
+        self.sync_bounds()
 
 
 class ImageElementIR(BaseElementIR):
@@ -318,22 +386,15 @@ class GroupElementIR(BaseElementIR):
         self.y = round(min_y, 2)
         self.width = round(max(max_x - min_x, 1.0), 2)
         self.height = round(max(max_y - min_y, 1.0), 2)
+        self.sync_transform()
 
     def translate(self, dx: float, dy: float) -> None:
         """Translates group origin and recursively shifts all children."""
         self.x = round(self.x + dx, 2)
         self.y = round(self.y + dy, 2)
         for child in self.children:
-            if isinstance(child, GroupElementIR):
-                child.translate(dx, dy)
-            else:
-                child.x = round(child.x + dx, 2)
-                child.y = round(child.y + dy, 2)
-                if isinstance(child, ConnectorElementIR):
-                    child.start_x = round(child.start_x + dx, 2)
-                    child.start_y = round(child.start_y + dy, 2)
-                    child.end_x = round(child.end_x + dx, 2)
-                    child.end_y = round(child.end_y + dy, 2)
+            child.translate(dx, dy)
+        self.sync_transform()
 
     def scale(self, sx: float, sy: float, origin_x: Optional[float] = None, origin_y: Optional[float] = None) -> None:
         """Scales group and all children relative to origin (default top-left of group)."""
@@ -346,18 +407,8 @@ class GroupElementIR(BaseElementIR):
         self.height = round(self.height * sy, 2)
 
         for child in self.children:
-            if isinstance(child, GroupElementIR):
-                child.scale(sx, sy, origin_x=ox, origin_y=oy)
-            else:
-                child.x = round(ox + (child.x - ox) * sx, 2)
-                child.y = round(oy + (child.y - oy) * sy, 2)
-                child.width = round(child.width * sx, 2)
-                child.height = round(child.height * sy, 2)
-                if isinstance(child, ConnectorElementIR):
-                    child.start_x = round(ox + (child.start_x - ox) * sx, 2)
-                    child.start_y = round(oy + (child.start_y - oy) * sy, 2)
-                    child.end_x = round(ox + (child.end_x - ox) * sx, 2)
-                    child.end_y = round(oy + (child.end_y - oy) * sy, 2)
+            child.scale(sx, sy, origin_x=ox, origin_y=oy)
+        self.sync_transform()
 
     @property
     def text_content(self) -> Optional[TextContentIR]:
@@ -433,37 +484,54 @@ class SlideIR(BaseModel):
         self.elements.append(element)
         return element
 
+    def locate_element(self, element_id: str):
+        """Locate an element at any nesting depth.
+
+        Returns ``(container_list, index, ancestors)`` where ``ancestors`` is the
+        ordered list of GroupElementIR instances enclosing the element (outermost
+        first), or ``None`` when the element does not exist.
+        """
+        def _search(items: List[ElementIR], ancestors: List["GroupElementIR"]):
+            for index, el in enumerate(items):
+                if el.id == element_id:
+                    return items, index, ancestors
+                if isinstance(el, GroupElementIR):
+                    found = _search(el.children, [*ancestors, el])
+                    if found is not None:
+                        return found
+            return None
+
+        return _search(self.elements, [])
+
+    def recompute_ancestor_bounds(self, element_id: str) -> None:
+        """Recomputes the bbox of every group containing element_id (innermost first)."""
+        located = self.locate_element(element_id)
+        if not located:
+            return
+        for group in reversed(located[2]):
+            group.recompute_bounds()
+
+    def recompute_group_chain(self, group_id: str) -> None:
+        """Recomputes group_id itself (when a group) and every ancestor group."""
+        located = self.locate_element(group_id)
+        if not located:
+            return
+        container, index, ancestors = located
+        groups = list(ancestors)
+        element = container[index]
+        if isinstance(element, GroupElementIR):
+            groups.append(element)
+        for group in reversed(groups):
+            group.recompute_bounds()
+
     def remove_element(self, element_id: str) -> bool:
-        """Remove an element by ID, searching top-level elements and inside groups."""
-        init_len = len(self.elements)
-        self.elements = [el for el in self.elements if el.id != element_id]
-        if len(self.elements) < init_len:
-            return True
-
-        # Search recursively within groups
-        for el in self.elements:
-            if isinstance(el, GroupElementIR):
-                child_init = len(el.children)
-                el.children = [c for c in el.children if c.id != element_id]
-                if len(el.children) < child_init:
-                    return True
-                # Recursive group search
-                for child in el.children:
-                    if isinstance(child, GroupElementIR):
-                        if self._remove_from_group(child, element_id):
-                            return True
-        return False
-
-    def _remove_from_group(self, group: GroupElementIR, element_id: str) -> bool:
-        child_init = len(group.children)
-        group.children = [c for c in group.children if c.id != element_id]
-        if len(group.children) < child_init:
-            return True
-        for child in group.children:
-            if isinstance(child, GroupElementIR):
-                if self._remove_from_group(child, element_id):
-                    return True
-        return False
+        """Remove an element by ID, searching top-level elements and any group depth."""
+        located = self.locate_element(element_id)
+        if not located:
+            return False
+        container, index, _ = located
+        container.pop(index)
+        return True
 
     def group_elements(
         self,
