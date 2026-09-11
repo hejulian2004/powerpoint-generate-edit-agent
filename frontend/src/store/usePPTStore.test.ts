@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { usePPTStore } from './usePPTStore'
 import { FakeWebSocket, installFakeWebSocket } from '../test/wsMock'
 import { makeGroup, makePresentation, makeShape, makeSlide } from '../test/factories'
@@ -169,6 +169,7 @@ describe('usePPTStore mutation pipeline', () => {
 
     usePPTStore.getState().updateElementDirect('s1', { x: 40 })
     usePPTStore.getState().updateElementDirect('s2', { x: 260 })
+    usePPTStore.getState().enterGroup('g1')
 
     const sent = ws.sentMessages().filter((m) => m.type === 'direct_update_element')
     expect(sent).toHaveLength(1)
@@ -194,7 +195,78 @@ describe('usePPTStore mutation pipeline', () => {
     expect(usePPTStore.getState().presentation).toStrictEqual(authoritative)
     expect(usePPTStore.getState().confirmedPresentation).toStrictEqual(authoritative)
     expect(usePPTStore.getState().confirmedRevision).toBe(11)
+    expect(usePPTStore.getState().selectionScope).toEqual([])
     expect(usePPTStore.getState().mutationStatus).toBe('resynced')
+  })
+
+  it('replays an in-flight mutation with its original CAS stamp after reconnect', () => {
+    vi.useFakeTimers()
+    try {
+      const slide = makeSlide([makeShape('s1', 0, 0), makeShape('s2', 200, 0)])
+      const pres = makePresentation([slide], 10)
+      usePPTStore.getState().setPresentation(pres)
+      const ws = connect()
+      ws.emit('presentation_loaded', {
+        presentation: pres,
+        active_slide_id: slide.id,
+        version: 10,
+        document_epoch: 'epoch_A'
+      })
+
+      usePPTStore.getState().updateElementDirect('s1', { x: 40 })
+      usePPTStore.getState().updateElementDirect('s2', { x: 260 })
+
+      const firstSent = ws.sentMessages().filter((m) => m.type === 'direct_update_element')
+      expect(firstSent).toHaveLength(1)
+      expect(firstSent[0].expected_revision).toBe(10)
+
+      // The ACK is lost: the socket drops while A is still in-flight.
+      ws.close()
+
+      // Reconnect and reload the same document at a newer revision.
+      const ws2 = connect()
+      const pres11 = makePresentation(
+        [makeSlide([makeShape('s1', 900, 0), makeShape('s2', 900, 0)])],
+        11
+      )
+      ws2.emit('presentation_loaded', {
+        presentation: pres11,
+        active_slide_id: slide.id,
+        version: 11,
+        document_epoch: 'epoch_A'
+      })
+
+      const replayed = ws2.sentMessages().filter((m) => m.type === 'direct_update_element')
+      expect(replayed).toHaveLength(1)
+      expect(replayed[0].mutation_id).toBe(firstSent[0].mutation_id)
+      // Retry must reuse the ORIGINAL stamp (10), not the freshly loaded revision.
+      expect(replayed[0].expected_revision).toBe(10)
+      expect(replayed[0].document_epoch).toBe('epoch_A')
+      // The queued tail stays behind the unacknowledged head.
+      expect(ws2.sentMessages().filter((m) => m.type === 'direct_update_element')).toHaveLength(1)
+
+      // Server rejects A as stale: the tail is dropped, never dispatched.
+      const authoritative = makePresentation(
+        [makeSlide([makeShape('s1', 999, 0), makeShape('s2', 999, 0)])],
+        11
+      )
+      ws2.emit('mutation_rejected', {
+        mutation_id: firstSent[0].mutation_id,
+        error: 'stale_mutation',
+        version: 11,
+        document_epoch: 'epoch_A',
+        presentation: authoritative,
+        active_slide_id: slide.id
+      })
+
+      expect(usePPTStore.getState().pendingMutations).toHaveLength(0)
+      expect(usePPTStore.getState().outbox).toHaveLength(0)
+      expect(usePPTStore.getState().presentation).toStrictEqual(authoritative)
+      expect(usePPTStore.getState().mutationStatus).toBe('resynced')
+      expect(ws2.sentMessages().filter((m) => m.type === 'direct_update_element')).toHaveLength(1)
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('sends one atomic batch when deleting a multi-selection', () => {
@@ -454,5 +526,43 @@ describe('usePPTStore mutation pipeline', () => {
     expect(usePPTStore.getState().outbox).toHaveLength(0)
     expect(usePPTStore.getState().pendingMutations).toHaveLength(1)
     expect(ws.sentMessages().filter((m) => m.type === 'direct_update_element')).toHaveLength(1)
+  })
+
+  it('generates session-unique mutation ids via crypto.randomUUID', () => {
+    const slide = makeSlide([makeShape('s1', 0, 0)])
+    usePPTStore.getState().setPresentation(makePresentation([slide]))
+    connect()
+
+    const randomUUID = vi.fn()
+      .mockReturnValueOnce('uuid-1')
+      .mockReturnValueOnce('uuid-2')
+    vi.stubGlobal('crypto', { randomUUID })
+    try {
+      usePPTStore.getState().updateElementDirect('s1', { x: 1 })
+      usePPTStore.getState().updateElementDirect('s1', { x: 2 })
+      const ids = usePPTStore.getState().pendingMutations.map((m) => m.mutationId)
+      expect(randomUUID).toHaveBeenCalledTimes(2)
+      expect(ids).toEqual(['mut_uuid-1', 'mut_uuid-2'])
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+
+  it('falls back to distinct monotonic ids when crypto.randomUUID is unavailable', () => {
+    const slide = makeSlide([makeShape('s1', 0, 0)])
+    usePPTStore.getState().setPresentation(makePresentation([slide]))
+    connect()
+
+    vi.stubGlobal('crypto', {})
+    try {
+      usePPTStore.getState().updateElementDirect('s1', { x: 1 })
+      usePPTStore.getState().updateElementDirect('s1', { x: 2 })
+      const ids = usePPTStore.getState().pendingMutations.map((m) => m.mutationId)
+      expect(ids).toHaveLength(2)
+      expect(ids[0]).toMatch(/^mut_/)
+      expect(ids[0]).not.toBe(ids[1])
+    } finally {
+      vi.unstubAllGlobals()
+    }
   })
 })

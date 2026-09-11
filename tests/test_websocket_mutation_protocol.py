@@ -201,7 +201,7 @@ def test_undo_with_empty_history_is_acknowledged_noop():
 def test_replayed_mutation_id_is_idempotent():
     """A committed mutation whose ACK was lost must not execute twice on replay."""
     client = TestClient(app)
-    _seed_demo_session("ws_proto_idem")
+    session = _seed_demo_session("ws_proto_idem")
     with client.websocket_connect("/ws?session_id=ws_proto_idem") as ws:
         loaded = ws.receive_json()
         ws.receive_json()  # preview_update
@@ -219,6 +219,7 @@ def test_replayed_mutation_id_is_idempotent():
         assert first["last_mutation_id"] == "mut_create_1"
         assert len(first["presentation"]["slides"]) == slides_before + 1
         version_after = first["version"]
+        undo_depth_after = len(session.history.undo_stack)
         ws.receive_json()  # preview_update
 
         # Replay the exact same mutation_id (ACK loss / reconnect).
@@ -228,6 +229,7 @@ def test_replayed_mutation_id_is_idempotent():
         assert second["last_mutation_id"] == "mut_create_1"
         assert len(second["presentation"]["slides"]) == slides_before + 1
         assert second["version"] == version_after
+        assert len(session.history.undo_stack) == undo_depth_after
 
 
 def test_replayed_empty_undo_stays_noop_even_after_new_history():

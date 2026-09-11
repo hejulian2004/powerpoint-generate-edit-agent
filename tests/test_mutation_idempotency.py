@@ -8,7 +8,11 @@ return that outcome on replay instead of executing again.
 
 import asyncio
 
-from backend.agent.mutation_gateway import MutationBatchResult, MutationGateway
+from backend.agent.mutation_gateway import (
+    DOCUMENT_EPOCH_MISMATCH,
+    MutationBatchResult,
+    MutationGateway,
+)
 from backend.session.manager import session_manager
 from backend.state.store import create_default_demo_presentation
 
@@ -80,6 +84,32 @@ def test_gateway_replays_cached_result_and_skips_cas():
     ))
     assert replay.success
     assert session.pres.version == version_after_first
+
+
+def test_gateway_cache_is_namespaced_by_request_epoch():
+    """A replay carrying a different request epoch must miss the cache and hit CAS."""
+    session = _session("idem_gateway_epoch")
+    slide_id = session.pres.slides[0].id
+    element = session.pres.slides[0].elements[0]
+    call = {
+        "name": "update_element",
+        "arguments": {"slide_id": slide_id, "element_id": element.id, "x": 77.0},
+        "id": "call_1",
+    }
+
+    first = asyncio.run(MutationGateway.execute_tool_calls(
+        [call], session.pres, session.history, session=session,
+        bypass_confirmation=True, mutation_id="mut_X",
+    ))
+    assert first.success
+
+    # Same id, but the request claims a different document epoch: the cache is
+    # namespaced by (document_epoch, mutation_id), so this must NOT be a hit.
+    replay = asyncio.run(MutationGateway.execute_tool_calls(
+        [call], session.pres, session.history, session=session,
+        bypass_confirmation=True, mutation_id="mut_X", document_epoch="wrong_epoch",
+    ))
+    assert replay.error == DOCUMENT_EPOCH_MISMATCH
 
 
 def test_gateway_generated_ids_are_not_cached():
