@@ -114,13 +114,15 @@ async def test_visual_repair_branch_executes(monkeypatch):
     )
 
     session_id = "test_vr_sess"
-    session_manager.get_or_create(session_id)
+    session = session_manager.get_or_create(session_id)
     initial_state: PPTGenerationState = {
         "raw_input": raw_text,
         "session_id": session_id,
         "canonical_spec": spec,
         "mode": "generate",
         "max_repair_iterations": 2,
+        "base_document_epoch": session.document_epoch,
+        "base_revision": session.pres.version,
     }
 
     result = await graph.ainvoke(initial_state)
@@ -559,7 +561,7 @@ async def test_e2e_unstructured_ai_output_llm_fallback_to_generation():
 
     # Step B: Cache in artifact store bound to session
     test_session_id = "test_e2e_sess_1"
-    session_manager.get_or_create(test_session_id)
+    session = session_manager.get_or_create(test_session_id)
     artifact = artifact_store.save(
         session_id=test_session_id,
         raw_input=raw_text,
@@ -574,6 +576,8 @@ async def test_e2e_unstructured_ai_output_llm_fallback_to_generation():
         "raw_input": artifact.raw_input,
         "canonical_spec": artifact.canonical_spec,
         "mode": "generate",
+        "base_document_epoch": session.document_epoch,
+        "base_revision": session.pres.version,
     }
     result = await generation_graph.ainvoke(initial_state)
 
@@ -598,7 +602,7 @@ async def test_e2e_visual_repair_loop_full_cycle():
     from backend.session.manager import session_manager
 
     session_id = "test_e2e_sess_repair"
-    session_manager.get_or_create(session_id)
+    session = session_manager.get_or_create(session_id)
 
     raw_text = "Paper Title. Our framework achieves 85% accuracy."
     spec = CanonicalPPTSpec(
@@ -620,6 +624,8 @@ async def test_e2e_visual_repair_loop_full_cycle():
         "canonical_spec": spec,
         "mode": "generate",
         "max_repair_iterations": 2,
+        "base_document_epoch": session.document_epoch,
+        "base_revision": session.pres.version,
     }
 
     result = await generation_graph.ainvoke(initial_state)

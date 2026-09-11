@@ -1,8 +1,11 @@
 """Phase 1.3: stale execution-plan detection.
 
 The GUI stays editable while the Executor LLM is planning. If the deck changes
-(revision bump or document-epoch rotation) after the plan was built, `mutation_node`
-must refuse to commit the stale plan and route back to the executor instead.
+after the plan was built, `mutation_node` behaves by identity:
+
+- same-epoch revision bump -> bounded stale replan (route back to executor);
+- document-epoch rotation -> terminal turn invalidation (never replan), because
+  the user's accepted request was bound to the old document identity.
 """
 
 import asyncio
@@ -58,7 +61,8 @@ def test_mutation_node_replans_when_revision_changed():
     asyncio.run(_run())
 
 
-def test_mutation_node_replans_when_epoch_rotated():
+def test_mutation_node_invalidates_turn_when_epoch_rotated():
+    """An epoch rotation during an accepted turn is terminal - never a replan."""
     async def _run():
         pres = _pres()
         history = HistoryManager(pres)
@@ -75,7 +79,35 @@ def test_mutation_node_replans_when_epoch_rotated():
             state, {"configurable": {"pres": pres, "history": history, "session": session}}
         )
 
-        assert result["stale_plan"] is True
+        assert result["turn_invalidated"] is True
+        assert result["stale_plan"] is False
+        assert result["execution_plan"] == []
+        assert pres.slides[0].get_element("a").x == 10.0, "invalidated turn must not commit"
+        assert should_route_mutation(result) == "summary_node"
+
+    asyncio.run(_run())
+
+
+def test_mutation_node_invalidates_turn_when_turn_epoch_rotated():
+    """The turn's admission epoch (not only the plan epoch) guards the commit."""
+    async def _run():
+        pres = _pres()
+        history = HistoryManager(pres)
+        session = PPTSession(session_id="sess_turn_epoch", pres=pres)
+        state = {
+            "intent": "modify_elements",
+            "execution_plan": _plan(),
+            "turn_base_revision": pres.version,
+            "turn_document_epoch": session.document_epoch,
+        }
+        session.document_epoch = "rotated_epoch"
+
+        result = await mutation_node(
+            state, {"configurable": {"pres": pres, "history": history, "session": session}}
+        )
+
+        assert result["turn_invalidated"] is True
+        assert result["execution_plan"] == []
         assert pres.slides[0].get_element("a").x == 10.0
 
     asyncio.run(_run())

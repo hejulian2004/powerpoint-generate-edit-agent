@@ -241,10 +241,6 @@ class PresentationStore:
     def presentation(self) -> PresentationIR:
         return self.active_session.pres
 
-    @presentation.setter
-    def presentation(self, pres: PresentationIR):
-        self.active_session.pres = pres
-
     @property
     def history(self):
         return self.active_session.history
@@ -259,14 +255,16 @@ class PresentationStore:
     def set_active_slide(self, slide_id: str) -> bool:
         return self.active_session.set_active_slide(slide_id)
 
-    def import_pptx_bytes(
+    def parse_pptx_bytes(
         self,
         data: bytes,
         filename: str = "imported.pptx",
-        session: Optional[PPTSession] = None,
     ) -> PresentationIR:
-        """Parses native PPTX bytes into PPT-IR for the given session (or active_session)."""
-        target_session = session or self.active_session
+        """Parses native PPTX bytes into PPT-IR without mutating any session.
+
+        Expensive parsing runs outside the mutation lock; the caller commits the
+        result through `session.commit_replacement(...)`.
+        """
         with tempfile.NamedTemporaryFile(suffix=".pptx", delete=False) as tmp:
             tmp.write(data)
             tmp_path = tmp.name
@@ -275,14 +273,7 @@ class PresentationStore:
             # Production import path: FidelityEngine/OOXMLParser (via import_pptx)
             ir_pres = import_pptx(tmp_path)
             ir_pres.title = filename.replace(".pptx", "")
-
-            target_session.replace_presentation(
-                ir_pres,
-                clear_history=True,
-                clear_checkpoints=True,
-                checkpoint_description=f"Imported from {filename}",
-            )
-            return target_session.pres
+            return ir_pres
         finally:
             if os.path.exists(tmp_path):
                 os.remove(tmp_path)

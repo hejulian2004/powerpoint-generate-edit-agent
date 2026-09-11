@@ -22,6 +22,7 @@ def test_websocket_session_broadcast_isolation():
     client = TestClient(app)
     _seed_demo_session("isolated_sess_A")
     _seed_demo_session("isolated_sess_B")
+    session_a = session_manager.get_or_create("isolated_sess_A")
 
     with client.websocket_connect("/ws?session_id=isolated_sess_A") as ws_a, \
          client.websocket_connect("/ws?session_id=isolated_sess_B") as ws_b:
@@ -42,7 +43,9 @@ def test_websocket_session_broadcast_isolation():
                 "slide_id": "slide_01",
                 "element_id": "title_main",
                 "x": 333.0
-            }
+            },
+            "document_epoch": session_a.document_epoch,
+            "expected_revision": session_a.pres.version,
         })
 
         # ws_a should receive presentation_updated and preview_update

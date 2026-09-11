@@ -316,16 +316,43 @@ async def persist_session_node(state: PPTGenerationState, config: RunnableConfig
     session_id = state.get("session_id")
 
     pres_ir = state.get("presentation_ir")
+    base_epoch = state.get("base_document_epoch")
+    base_revision = state.get("base_revision")
+    committed = False
+    commit_error: Optional[str] = None
+
     if session_id and pres_ir:
         session = session_manager.get_session(session_id)
         if session is not None:
-            session.replace_presentation(
+            # CAS commit: rejects when the user (or another writer) advanced the
+            # document while generation was running. Owns the mutation lock.
+            result = await session.commit_replacement(
                 pres_ir,
+                expected_epoch=base_epoch,
+                expected_revision=base_revision,
                 clear_history=True,
                 clear_checkpoints=True,
                 checkpoint_description="Generated from CanonicalPPTSpec (PR13)",
             )
-            logger.info(f"PresentationIR successfully persisted to session '{session_id}'")
+            committed = result.committed
+            commit_error = result.error
+            if not committed:
+                logger.info(
+                    f"Generation for session '{session_id}' discarded as stale "
+                    f"({result.error}); document revision advanced during generation."
+                )
+
+    if not committed:
+        await _safe_emit(on_event, {
+            "type": "generation_progress",
+            "status": "stale_generation",
+            "error": commit_error or "generation_not_committed",
+            "text": "生成期间文档已被修改，结果已丢弃，未覆盖用户的最新编辑。",
+        })
+        return {
+            "status": "stale_generation",
+            "error": None,
+        }
 
     await _safe_emit(on_event, {
         "type": "generation_progress",

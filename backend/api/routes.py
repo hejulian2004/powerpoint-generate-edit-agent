@@ -88,6 +88,7 @@ async def _run_history_action(
         mutation_id=resolved_mutation_id,
         document_epoch=document_epoch,
         expected_revision=expected_revision,
+        require_stamps=True,
     )
     res = batch.first_result()
     if batch.error or (isinstance(res, dict) and res.get("error")):
@@ -157,15 +158,42 @@ async def get_history(session_id: Optional[str] = Query(None)):
 async def upload_pptx(
     file: UploadFile = File(...),
     session_id: Optional[str] = Query(None),
+    expected_epoch: Optional[str] = Query(None),
+    expected_revision: Optional[int] = Query(None),
 ):
     if not file.filename.lower().endswith(".pptx"):
         raise HTTPException(status_code=400, detail="Only .pptx files are supported")
 
+    # Replacement is a concurrency transaction: the caller MUST supply the epoch
+    # and revision it actually observed. Fail closed BEFORE the (potentially slow)
+    # file read, and never fall back to the server's current stamp — doing so
+    # would reopen a "replace whatever is currently present" escape hatch.
+    if expected_epoch is None or expected_revision is None:
+        raise HTTPException(status_code=409, detail="MISSING_REPLACEMENT_STAMP")
+
     session = _resolve_session(session_id)
     content = await file.read()
     try:
-        async with session.mutation_lock:
-            pres = store.import_pptx_bytes(content, file.filename, session=session)
+        # Parse outside the lock; commit with the caller's stamp so an import
+        # cannot overwrite edits made while the file was being read or parsed.
+        pres = store.parse_pptx_bytes(content, file.filename)
+        result = await session.commit_replacement(
+            pres,
+            expected_epoch=expected_epoch,
+            expected_revision=expected_revision,
+            clear_history=True,
+            clear_checkpoints=True,
+            checkpoint_description=f"Imported from {file.filename}",
+        )
+        if not result.committed:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "STALE_IMPORT: the document changed while the file was being "
+                    "parsed; the import was discarded. Retry to replace the "
+                    "current document."
+                ),
+            )
         await store.broadcast({
             "type": "presentation_loaded",
             "session_id": session.session_id,
@@ -336,6 +364,13 @@ async def chat_interaction(
     session = _resolve_session(sid)
     confirmed_tool_ids = payload.get("confirmed_tool_ids") or []
 
+    # A chat turn is mutation-bearing: it must declare the document identity the
+    # client observed, or it could be interpreted against a deck it never saw.
+    request_epoch = payload.get("document_epoch")
+    request_revision = payload.get("base_revision", payload.get("expected_revision"))
+    if request_epoch is None or request_revision is None:
+        raise HTTPException(status_code=409, detail="MISSING_REQUEST_STAMP")
+
     async def on_event(event):
         event["session_id"] = session.session_id
         await store.broadcast(event, session_id=session.session_id)
@@ -349,13 +384,17 @@ async def chat_interaction(
         session=session,
         on_event=on_event,
         confirmed_tool_ids=confirmed_tool_ids,
+        request_document_epoch=request_epoch,
+        request_base_revision=request_revision,
     )
 
     # Broadcast updated presentation
     await store.broadcast({
         "type": "presentation_updated",
         "session_id": session.session_id,
-        "presentation": session.pres.model_dump()
+        "presentation": session.pres.model_dump(),
+        "version": session.pres.version,
+        "document_epoch": getattr(session, "document_epoch", None),
     }, session_id=session.session_id)
 
     return result
@@ -524,6 +563,12 @@ async def api_generate_from_pptspec(payload: Dict[str, Any] = Body(...)):
     # Session binding
     session = store.session_manager.get_or_create(session_id)
 
+    # Freeze the document identity at generation start. The final persist is a
+    # CAS commit against these values, so edits made during generation are never
+    # silently overwritten.
+    base_epoch = session.document_epoch
+    base_revision = session.pres.version
+
     async def on_event(event: Dict[str, Any]):
         event["session_id"] = session_id
         await store.broadcast(event, session_id=session_id)
@@ -534,6 +579,8 @@ async def api_generate_from_pptspec(payload: Dict[str, Any] = Body(...)):
         "canonical_spec": artifact.canonical_spec,
         "mode": "generate",
         "max_repair_iterations": 3,
+        "base_document_epoch": base_epoch,
+        "base_revision": base_revision,
     }
 
     try:
@@ -552,6 +599,16 @@ async def api_generate_from_pptspec(payload: Dict[str, Any] = Body(...)):
     except Exception as e:
         logger.exception("LangGraph generation execution error")
         raise HTTPException(status_code=500, detail=f"Generation pipeline error: {e}")
+
+    if gen_result.get("status") == "stale_generation":
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "STALE_GENERATION: the document was edited while generation was "
+                "running; the generated result was discarded instead of "
+                "overwriting your changes."
+            ),
+        )
 
     if gen_result.get("error") or not gen_result.get("presentation_ir"):
         raise HTTPException(

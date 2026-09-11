@@ -69,7 +69,7 @@ def test_session_lifecycle_and_checkpoints():
     title_elem.x = 888.0
 
     # 4. Restore checkpoint
-    success = session.restore_checkpoint(cp.id)
+    success = session._restore_checkpoint_unchecked(cp.id)
     assert success is True
     assert session.pres.slides[0].elements[0].x == 120.0
 

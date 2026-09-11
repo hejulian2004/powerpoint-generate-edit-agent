@@ -17,6 +17,14 @@ def _seed_demo_session(session_id: str) -> PPTSession:
     return session
 
 
+def _stamp(session: PPTSession) -> dict:
+    """CAS stamps for a synced client (current canonical epoch/revision)."""
+    return {
+        "document_epoch": session.document_epoch,
+        "expected_revision": session.pres.version,
+    }
+
+
 def test_build_preview_update_unit():
     """Verify build_preview_update produces valid SVG markup and layout score."""
     pres = create_default_demo_presentation()
@@ -69,7 +77,7 @@ def test_websocket_connection_and_preview_stream():
 def test_websocket_slide_selection_and_direct_update():
     """Verify select_slide and direct_update_element trigger preview_update."""
     client = TestClient(app)
-    _seed_demo_session("ws_slide_ops")
+    session = _seed_demo_session("ws_slide_ops")
     with client.websocket_connect("/ws?session_id=ws_slide_ops") as ws:
         # Drain initial loaded & preview
         ws.receive_json()
@@ -92,7 +100,8 @@ def test_websocket_slide_selection_and_direct_update():
                 "slide_id": "slide_02",
                 "element_id": "s2_title",
                 "x": 200.0
-            }
+            },
+            **_stamp(session),
         })
         ev_upd = ws.receive_json()
         assert ev_upd["type"] == "presentation_updated"
@@ -105,7 +114,7 @@ def test_websocket_slide_selection_and_direct_update():
 def test_websocket_undo_redo_preview():
     """Verify WebSocket undo and redo trigger preview_update."""
     client = TestClient(app)
-    _seed_demo_session("ws_undo_redo")
+    session = _seed_demo_session("ws_undo_redo")
     with client.websocket_connect("/ws?session_id=ws_undo_redo") as ws:
         # Drain initial loaded & preview
         ws.receive_json()
@@ -118,13 +127,14 @@ def test_websocket_undo_redo_preview():
                 "slide_id": "slide_01",
                 "element_id": "title_main",
                 "x": 350.0
-            }
+            },
+            **_stamp(session),
         })
         ws.receive_json()  # presentation_updated
         ws.receive_json()  # preview_update
 
         # Send Undo
-        ws.send_json({"type": "undo"})
+        ws.send_json({"type": "undo", **_stamp(session)})
         ev_undo_pres = ws.receive_json()
         assert ev_undo_pres["type"] == "presentation_updated"
 
@@ -135,7 +145,7 @@ def test_websocket_undo_redo_preview():
 def test_websocket_group_align_ungroup_direct_actions():
     """Verify group_elements / align_elements / ungroup_elements via direct_action."""
     client = TestClient(app)
-    _seed_demo_session("ws_group_align")
+    session = _seed_demo_session("ws_group_align")
     with client.websocket_connect("/ws?session_id=ws_group_align") as ws:
         ws.receive_json()  # presentation_loaded
         ws.receive_json()  # preview_update
@@ -148,7 +158,8 @@ def test_websocket_group_align_ungroup_direct_actions():
                 "slide_id": "slide_01",
                 "element_ids": ["card_ir", "card_agent"],
                 "group_name": "Test Group"
-            }
+            },
+            **_stamp(session),
         })
         ev_group = ws.receive_json()
         assert ev_group["type"] == "presentation_updated"
@@ -170,7 +181,8 @@ def test_websocket_group_align_ungroup_direct_actions():
                 "slide_id": "slide_01",
                 "alignment": "top",
                 "element_ids": ["card_preview", group_id]
-            }
+            },
+            **_stamp(session),
         })
         ev_align = ws.receive_json()
         assert ev_align["type"] == "presentation_updated"
@@ -188,7 +200,8 @@ def test_websocket_group_align_ungroup_direct_actions():
         ws.send_json({
             "type": "direct_action",
             "action": "ungroup_elements",
-            "payload": {"slide_id": "slide_01", "group_id": group_id}
+            "payload": {"slide_id": "slide_01", "group_id": group_id},
+            **_stamp(session),
         })
         ev_ungroup = ws.receive_json()
         assert ev_ungroup["type"] == "presentation_updated"
@@ -203,7 +216,7 @@ def test_websocket_group_align_ungroup_direct_actions():
 def test_websocket_duplicate_and_clear_slide_direct_actions():
     """Verify duplicate_slide and clear_slide_elements via direct_action."""
     client = TestClient(app)
-    _seed_demo_session("ws_slide_actions")
+    session = _seed_demo_session("ws_slide_actions")
     with client.websocket_connect("/ws?session_id=ws_slide_actions") as ws:
         ws.receive_json()  # presentation_loaded
         ws.receive_json()  # preview_update
@@ -212,7 +225,8 @@ def test_websocket_duplicate_and_clear_slide_direct_actions():
         ws.send_json({
             "type": "direct_action",
             "action": "duplicate_slide",
-            "payload": {"slide_id": "slide_01"}
+            "payload": {"slide_id": "slide_01"},
+            **_stamp(session),
         })
         ev_dup = ws.receive_json()
         assert ev_dup["type"] == "presentation_updated"
@@ -228,7 +242,8 @@ def test_websocket_duplicate_and_clear_slide_direct_actions():
         ws.send_json({
             "type": "direct_action",
             "action": "clear_slide_elements",
-            "payload": {"slide_id": duplicate_id, "keep_title": True}
+            "payload": {"slide_id": duplicate_id, "keep_title": True},
+            **_stamp(session),
         })
         ev_clear = ws.receive_json()
         assert ev_clear["type"] == "presentation_updated"
@@ -241,7 +256,7 @@ def test_websocket_duplicate_and_clear_slide_direct_actions():
 def test_websocket_generate_slide_layout_direct_action():
     """Verify generate_slide_layout via direct_action populates the target slide."""
     client = TestClient(app)
-    _seed_demo_session("ws_layout_archetype")
+    session = _seed_demo_session("ws_layout_archetype")
     with client.websocket_connect("/ws?session_id=ws_layout_archetype") as ws:
         ws.receive_json()  # presentation_loaded
         ws.receive_json()  # preview_update
@@ -259,7 +274,8 @@ def test_websocket_generate_slide_layout_direct_action():
                     {"title": "阶段二", "description": "架构研发"},
                     {"title": "阶段三", "description": "质检上线"}
                 ]
-            }
+            },
+            **_stamp(session),
         })
         ev = ws.receive_json()
         assert ev["type"] == "presentation_updated"
@@ -273,7 +289,7 @@ def test_websocket_generate_slide_layout_direct_action():
 def test_websocket_direct_update_echoes_mutation_id_and_version():
     """Verify mutation_id / version ack so the client can retire pending optimistic patches."""
     client = TestClient(app)
-    _seed_demo_session("ws_mutation_ack")
+    session = _seed_demo_session("ws_mutation_ack")
     with client.websocket_connect("/ws?session_id=ws_mutation_ack") as ws:
         ws.receive_json()  # presentation_loaded
         ws.receive_json()  # preview_update
@@ -285,7 +301,8 @@ def test_websocket_direct_update_echoes_mutation_id_and_version():
                 "slide_id": "slide_01",
                 "element_id": "title_main",
                 "x": 260.0
-            }
+            },
+            **_stamp(session),
         })
 
         ev = ws.receive_json()
@@ -298,7 +315,7 @@ def test_websocket_direct_update_echoes_mutation_id_and_version():
 def test_websocket_batch_mutation_is_one_undo_step():
     """Verify batch_mutation applies every operation and undoes them atomically."""
     client = TestClient(app)
-    _seed_demo_session("ws_batch_mutation")
+    session = _seed_demo_session("ws_batch_mutation")
     with client.websocket_connect("/ws?session_id=ws_batch_mutation") as ws:
         loaded = ws.receive_json()
         ws.receive_json()  # preview_update
@@ -320,7 +337,8 @@ def test_websocket_batch_mutation_is_one_undo_step():
                     "name": "update_element",
                     "payload": {"slide_id": "slide_01", "element_id": "card_ir", "x": card["x"] + 30}
                 }
-            ]
+            ],
+            **_stamp(session),
         })
 
         ev = ws.receive_json()
@@ -334,7 +352,7 @@ def test_websocket_batch_mutation_is_one_undo_step():
         assert abs(moved_title["x"] - (title["x"] + 30)) < 0.01
         assert abs(moved_card["x"] - (card["x"] + 30)) < 0.01
 
-        ws.send_json({"type": "undo"})
+        ws.send_json({"type": "undo", **_stamp(session)})
         ev_undo = ws.receive_json()
         assert ev_undo["type"] == "presentation_updated"
         ws.receive_json()  # preview_update
@@ -349,7 +367,7 @@ def test_websocket_batch_mutation_is_one_undo_step():
 def test_websocket_batch_mutation_rolls_back_on_failure():
     """Verify a failing batch op rolls back earlier ops and reports mutation_rejected."""
     client = TestClient(app)
-    _seed_demo_session("ws_batch_reject")
+    session = _seed_demo_session("ws_batch_reject")
     with client.websocket_connect("/ws?session_id=ws_batch_reject") as ws:
         loaded = ws.receive_json()
         ws.receive_json()  # preview_update
@@ -369,7 +387,8 @@ def test_websocket_batch_mutation_rolls_back_on_failure():
                     "name": "update_element",
                     "payload": {"slide_id": "slide_01", "element_id": "missing_element", "x": 10}
                 }
-            ]
+            ],
+            **_stamp(session),
         })
 
         rejected = ws.receive_json()
@@ -384,7 +403,7 @@ def test_websocket_batch_mutation_rolls_back_on_failure():
 def test_websocket_direct_update_rejects_unknown_element():
     """Verify unknown element updates are rejected instead of silently broadcasting success."""
     client = TestClient(app)
-    _seed_demo_session("ws_update_reject")
+    session = _seed_demo_session("ws_update_reject")
     with client.websocket_connect("/ws?session_id=ws_update_reject") as ws:
         ws.receive_json()  # presentation_loaded
         ws.receive_json()  # preview_update
@@ -396,7 +415,8 @@ def test_websocket_direct_update_rejects_unknown_element():
                 "slide_id": "slide_01",
                 "element_id": "does_not_exist",
                 "x": 100.0
-            }
+            },
+            **_stamp(session),
         })
 
         rejected = ws.receive_json()
@@ -408,7 +428,7 @@ def test_websocket_direct_update_rejects_unknown_element():
 def test_websocket_duplicate_element_reports_new_target():
     """Verify element duplication echoes the freshly created element as last_target_id."""
     client = TestClient(app)
-    _seed_demo_session("ws_dup_target")
+    session = _seed_demo_session("ws_dup_target")
     with client.websocket_connect("/ws?session_id=ws_dup_target") as ws:
         ws.receive_json()  # presentation_loaded
         ws.receive_json()  # preview_update
@@ -417,7 +437,8 @@ def test_websocket_duplicate_element_reports_new_target():
             "type": "direct_action",
             "action": "duplicate_element",
             "mutation_id": "mut_dup_1",
-            "payload": {"slide_id": "slide_01", "element_id": "title_main"}
+            "payload": {"slide_id": "slide_01", "element_id": "title_main"},
+            **_stamp(session),
         })
 
         ev = ws.receive_json()

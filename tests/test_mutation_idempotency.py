@@ -44,7 +44,7 @@ def test_mutation_cache_cleared_on_epoch_rotation():
     session.remember_mutation_result("m1", MutationBatchResult(mutation_id="m1"))
     assert session.get_cached_mutation_result("m1") is not None
 
-    session.replace_presentation(create_default_demo_presentation())
+    session._unsafe_install_for_bootstrap(create_default_demo_presentation())
 
     assert len(session.completed_mutations) == 0
     assert session.get_cached_mutation_result("m1") is None

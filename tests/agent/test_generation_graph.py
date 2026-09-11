@@ -35,6 +35,8 @@ async def test_generation_graph_end_to_end_ainvoke():
         "session_id": session_id,
         "mode": "generate",
         "max_repair_iterations": 2,
+        "base_document_epoch": session.document_epoch,
+        "base_revision": session.pres.version,
     }
 
     result = await graph.ainvoke(initial_state)

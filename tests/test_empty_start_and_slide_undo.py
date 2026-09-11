@@ -47,6 +47,13 @@ def test_ws_create_undo_redo_slide():
     client = TestClient(app)
     sid = "ws_slide_undo_redo"
     session_manager.delete_session(sid)
+    session = session_manager.get_or_create(sid)
+
+    def _stamp():
+        return {
+            "document_epoch": session.document_epoch,
+            "expected_revision": session.pres.version,
+        }
 
     with client.websocket_connect(f"/ws?session_id={sid}") as ws:
         loaded = ws.receive_json()
@@ -56,7 +63,8 @@ def test_ws_create_undo_redo_slide():
         ws.send_json({
             "type": "direct_action",
             "action": "create_slide",
-            "payload": {"title": "T1", "background_color": "#FFFFFF"}
+            "payload": {"title": "T1", "background_color": "#FFFFFF"},
+            **_stamp(),
         })
         ev = ws.receive_json()
         assert ev["type"] == "presentation_updated"
@@ -69,13 +77,13 @@ def test_ws_create_undo_redo_slide():
         assert ev_prev["slide_id"] == new_slide_id
 
         # Undo creation
-        ws.send_json({"type": "undo"})
+        ws.send_json({"type": "undo", **_stamp()})
         ev_undo = ws.receive_json()
         assert ev_undo["type"] == "presentation_updated"
         assert ev_undo["presentation"]["slides"] == []
 
         # Redo creation
-        ws.send_json({"type": "redo"})
+        ws.send_json({"type": "redo", **_stamp()})
         ev_redo = ws.receive_json()
         assert ev_redo["type"] == "presentation_updated"
         assert len(ev_redo["presentation"]["slides"]) == 1

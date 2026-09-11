@@ -62,6 +62,41 @@ class AgentRuntime:
 3. 精确微调图元调用 update_element, format_text, align_elements 或 optimize_layout。
 """
 
+    async def _reject_turn(
+        self,
+        on_event: Optional[Callable[[Dict[str, Any]], Any]],
+        *,
+        code: str,
+        message: str,
+        version: Optional[int],
+        document_epoch: Optional[str],
+    ) -> Dict[str, Any]:
+        """Terminally rejects a turn whose request stamps are stale.
+
+        Emits a `turn_rejected` event and returns without appending to the
+        transcript or invoking the graph. The transport attaches the canonical
+        snapshot so the client can resync in the same round-trip.
+        """
+        if on_event:
+            try:
+                await on_event({
+                    "type": "turn_rejected",
+                    "error": code,
+                    "version": version,
+                    "document_epoch": document_epoch,
+                })
+            except Exception as e:
+                logger.debug(f"Failed to emit turn_rejected: {e}")
+        return {
+            "reply": message,
+            "tools_executed": [],
+            "vision_critique": None,
+            "version": version,
+            "intent": "chat",
+            "turn_rejected": True,
+            "error": code,
+        }
+
     async def run_turn(
         self,
         user_message: str,
@@ -71,15 +106,50 @@ class AgentRuntime:
         on_event: Optional[Callable[[Dict[str, Any]], Any]] = None,
         max_iterations: int = 5,
         confirmed_tool_ids: Optional[List[str]] = None,
+        request_document_epoch: Optional[str] = None,
+        request_base_revision: Optional[int] = None,
     ) -> Dict[str, Any]:
         """Runs an interactive turn executed through the LangGraph state machine.
 
         `confirmed_tool_ids` lets a caller explicitly unblock previously flagged
         call ids for this turn (used by the confirmation lifecycle when replaying
         the original pending call through the graph).
+
+        `request_document_epoch` / `request_base_revision` are the document
+        identity the CLIENT observed when it issued this request. They are
+        distinct from the per-plan `plan_document_epoch` / `plan_base_revision`:
+        the transport freezes the request stamp, and the turn is terminally
+        invalidated if the document identity changes before any write.
         """
         confirmed_ids = list(confirmed_tool_ids or [])
         from .context_compressor import ContextCompressor, CONTEXT_LIMIT_PRESETS
+
+        # 0. Request-admission CAS: reject a request that is already stale when it
+        #    reaches the server BEFORE touching the transcript, the LLM, or tools.
+        #    The raw transcript is owned by this method, so a rejected request must
+        #    not append a user turn (it would pollute the conversation with an
+        #    instruction that never ran).
+        live_epoch = getattr(session, "document_epoch", None) if session is not None else None
+        live_revision = pres.version if pres is not None else None
+        if session is not None and request_document_epoch is not None and request_document_epoch != live_epoch:
+            return await self._reject_turn(
+                on_event,
+                code="request_epoch_mismatch",
+                message="演示文稿已被替换，本次指令未执行，已同步到最新版本，请重试。",
+                version=live_revision,
+                document_epoch=live_epoch,
+            )
+        if session is not None and request_base_revision is not None and request_base_revision != live_revision:
+            return await self._reject_turn(
+                on_event,
+                code="request_stale",
+                message="演示文稿已在您发送后更新，本次指令未执行，已同步到最新版本，请重试。",
+                version=live_revision,
+                document_epoch=live_epoch,
+            )
+
+        turn_epoch = request_document_epoch if request_document_epoch is not None else live_epoch
+        turn_revision = request_base_revision if request_base_revision is not None else live_revision
 
         # 1. Evaluate context tokens & execute auto-compression at >= 90% threshold.
         #    AgentRuntime is the single owner of the conversation transcript: the
@@ -129,6 +199,9 @@ class AgentRuntime:
             "tool_calls": [],
             "tool_results": [],
             "confirmed_tool_ids": confirmed_ids,
+            "turn_document_epoch": turn_epoch,
+            "turn_base_revision": turn_revision,
+            "turn_invalidated": False,
         }
 
         config = {
@@ -235,26 +308,66 @@ class AgentRuntime:
                 await on_event({"type": "confirmation_invalidated", **result})
             return result
 
-        session.consume_pending_confirmation(call_id)
+        # Single claimant: consume synchronously BEFORE any await so two concurrent
+        # confirmations of the same call_id cannot both reach execution. The
+        # claimed record carries the frozen CAS stamps for the under-lock recheck.
+        claimed = session.consume_pending_confirmation(call_id)
+        if claimed is None:
+            result = {
+                "success": False,
+                "error": "unknown_confirmation",
+                "message": f"未找到待确认的挂起调用（call_id: {call_id}）。",
+            }
+            if on_event:
+                await on_event({"type": "confirmation_failed", "call_id": call_id, **result})
+            return result
+
+        claimed_epoch = claimed.get("document_epoch")
+        claimed_revision = claimed.get("expected_revision", claimed.get("presentation_version"))
 
         if on_event:
             await on_event({
                 "type": "confirmation_approved",
                 "call_id": call_id,
-                "tool": record["tool"],
+                "tool": claimed["tool"],
             })
 
-        from .mutation_gateway import MutationGateway
+        from .mutation_gateway import (
+            MutationGateway,
+            STALE_MUTATION,
+            DOCUMENT_EPOCH_MISMATCH,
+        )
         batch = await MutationGateway.execute_tool_calls(
-            [{"name": record["tool"], "arguments": record["arguments"], "id": call_id}],
+            [{"name": claimed["tool"], "arguments": claimed["arguments"], "id": call_id}],
             session.pres,
             session.history,
             session=session,
             confirmed_ids={call_id},
             source="user_confirmation",
+            document_epoch=claimed_epoch,
+            expected_revision=claimed_revision,
         )
+
+        # TOCTOU: the pre-check passed but the deck advanced before the gateway
+        # acquired the lock. The record is already claimed; report invalidated.
+        if batch.error in (STALE_MUTATION, DOCUMENT_EPOCH_MISMATCH):
+            result = {
+                "success": False,
+                "error": "confirmation_invalidated",
+                "call_id": call_id,
+                "expected_version": claimed_revision,
+                "current_version": session.pres.version,
+                "message": (
+                    "演示文稿在等待确认期间已发生变化，该挂起调用已失效，"
+                    "请重新发起指令。"
+                ),
+            }
+            if on_event:
+                await on_event({"type": "confirmation_invalidated", **result})
+            return result
+
         res = batch.first_result()
-        target_el_id = record["arguments"].get("element_id") or (
+        target_el_id = claimed["arguments"].get("element_id") or (
             res.get("element_id") if isinstance(res, dict) else None
         )
         if target_el_id and hasattr(session, "last_target_id"):
@@ -263,7 +376,7 @@ class AgentRuntime:
         if on_event:
             await on_event({
                 "type": "tool_completed",
-                "tool": record["tool"],
+                "tool": claimed["tool"],
                 "result": res,
                 "presentation_version": session.pres.version,
                 "confirmed_call_id": call_id,
@@ -271,14 +384,14 @@ class AgentRuntime:
             await on_event({
                 "type": "confirmation_resolved",
                 "call_id": call_id,
-                "tool": record["tool"],
+                "tool": claimed["tool"],
                 "success": bool(res.get("success")) if isinstance(res, dict) else False,
             })
 
         return {
             "success": bool(res.get("success")) if isinstance(res, dict) else False,
             "call_id": call_id,
-            "tool": record["tool"],
+            "tool": claimed["tool"],
             "result": res,
             "version": session.pres.version,
         }

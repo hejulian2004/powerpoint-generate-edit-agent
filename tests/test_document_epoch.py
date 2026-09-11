@@ -45,7 +45,7 @@ async def _register_pending(session, pres, history, call_id="call_epoch"):
     return session.get_pending_confirmation(call_id)
 
 
-def test_replace_presentation_rotates_epoch_and_clears_pending():
+def test_bootstrap_install_rotates_epoch_and_clears_pending():
     async def _run():
         pres = _pres_with_title()
         history = HistoryManager()
@@ -56,7 +56,7 @@ def test_replace_presentation_rotates_epoch_and_clears_pending():
         assert session.get_pending_confirmation("call_epoch") is not None
 
         replacement = PresentationIR(title="Fresh Import", version=1)
-        session.replace_presentation(replacement, checkpoint_description="replaced")
+        session._unsafe_install_for_bootstrap(replacement, checkpoint_description="replaced")
 
         assert session.document_epoch != epoch_before
         assert session.pres is replacement
@@ -98,7 +98,7 @@ def test_restore_checkpoint_rotates_epoch_and_clears_pending():
         await _register_pending(session, pres, history)
         assert session.get_pending_confirmation("call_epoch") is not None
 
-        assert session.restore_checkpoint(checkpoint.id) is True
+        assert session._restore_checkpoint_unchecked(checkpoint.id) is True
         assert session.document_epoch != epoch_before
         assert session.pending_confirmations == {}
 
@@ -118,7 +118,12 @@ def test_generation_persist_rotates_epoch_and_clears_pending():
 
         generated = PresentationIR(title="Generated Deck")
         await persist_session_node(
-            {"session_id": sid, "presentation_ir": generated},
+            {
+                "session_id": sid,
+                "presentation_ir": generated,
+                "base_document_epoch": epoch_before,
+                "base_revision": pres.version,
+            },
             {"configurable": {}},
         )
 

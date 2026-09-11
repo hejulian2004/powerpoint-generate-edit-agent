@@ -132,7 +132,7 @@ def test_checkpoint_restore_clears_undo_history():
     assert len(session.history.undo_stack) == 1
 
     # Restore with clear_history=True (default)
-    success = session.restore_checkpoint(cp.id)
+    success = session._restore_checkpoint_unchecked(cp.id)
     assert success is True
     assert session.pres.slides[0].elements[0].x == 100.0
     # Stack must be cleanly emptied

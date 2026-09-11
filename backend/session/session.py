@@ -25,6 +25,36 @@ def _default_agent_memory():
     return AgentMemory()
 
 
+# Terminal errors for a compare-and-swap whole-document replacement.
+STALE_GENERATION = "stale_generation"
+DOCUMENT_EPOCH_MISMATCH = "document_epoch_mismatch"
+CHECKPOINT_NOT_FOUND = "checkpoint_not_found"
+STALE_MUTATION = "stale_mutation"
+MISSING_REPLACEMENT_STAMP = "missing_replacement_stamp"
+
+
+@dataclass
+class ReplacementResult:
+    """Outcome of a CAS-guarded whole-document replacement."""
+
+    committed: bool
+    error: Optional[str] = None
+    old_epoch: Optional[str] = None
+    old_revision: Optional[int] = None
+    document_epoch: Optional[str] = None
+    version: Optional[int] = None
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "committed": self.committed,
+            "error": self.error,
+            "old_epoch": self.old_epoch,
+            "old_revision": self.old_revision,
+            "document_epoch": self.document_epoch,
+            "version": self.version,
+        }
+
+
 @dataclass
 class PPTSession:
     """A persistent interactive session with presentation state, history, checkpoints, and dialogue."""
@@ -146,7 +176,7 @@ class PPTSession:
             self.pending_confirmations.clear()
             self.updated_at = datetime.now(timezone.utc)
 
-    def replace_presentation(
+    def _unsafe_install_for_bootstrap(
         self,
         pres: PresentationIR,
         *,
@@ -154,11 +184,12 @@ class PPTSession:
         clear_checkpoints: bool = True,
         checkpoint_description: Optional[str] = None,
     ) -> None:
-        """Wholesale replacement of the session document (import / generation / load).
+        """PRIVATE, CAS-BYPASSING primitive for bootstrap / test fixtures only.
 
-        Rotates the document epoch and clears pending confirmations so a blocked call
-        from the previous deck can never be replayed against a different document that
-        happens to share the same version number.
+        Production paths (HTTP routes, agent persistence, store wrappers) MUST use
+        `await commit_replacement(...)`, which owns the lock and enforces the
+        epoch/revision CAS. This method deliberately skips both. Do not expose it
+        as a normal API; a contract test scans production call sites.
         """
         self.pres = pres
         self.document_epoch = uuid.uuid4().hex
@@ -173,6 +204,115 @@ class PPTSession:
         if checkpoint_description:
             self.checkpoint_mgr.create(pres, description=checkpoint_description)
         self.updated_at = datetime.now(timezone.utc)
+
+    def _finalize_inplace_replacement_locked(
+        self,
+        *,
+        clear_history: bool = True,
+        clear_checkpoints: bool = True,
+        checkpoint_description: str = "Generated presentation",
+    ) -> None:
+        """Finalize an in-place whole-document replacement.
+
+        The caller has already built the new deck on the SAME ``self.pres`` object
+        (so every held reference stays valid) and MUST already hold
+        ``mutation_lock``. This rotates the document identity, resets the target
+        /action state, drops stale confirmations and the idempotency cache, clears
+        history + checkpoints, and creates a fresh baseline checkpoint so the
+        replacement has the same lifecycle as upload / PPTSpec generation.
+
+        It is intentionally private: raw identity rotation must only be reachable
+        from the gateway's lock-holding replacement path.
+        """
+        self.document_epoch = uuid.uuid4().hex
+        # A replacement is a new document identity; the revision restarts. The
+        # (epoch, revision) pair - never the revision alone - carries identity.
+        self.pres.version = 1
+        self.clear_pending_confirmations()
+        self.completed_mutations.clear()
+        self.last_target_id = None
+        self.last_action_type = None
+        if clear_history:
+            self.history.clear()
+        if clear_checkpoints:
+            self.checkpoint_mgr.clear()
+        self.checkpoint_mgr.create(self.pres, description=checkpoint_description)
+        self.updated_at = datetime.now(timezone.utc)
+
+    def _replacement_cas_error(
+        self,
+        expected_epoch: Optional[str],
+        expected_revision: Optional[int],
+        stale_error: str,
+    ) -> Optional[ReplacementResult]:
+        """Returns a rejected ReplacementResult, or None when the CAS passes."""
+        if expected_epoch is not None and expected_epoch != self.document_epoch:
+            return ReplacementResult(
+                committed=False,
+                error=DOCUMENT_EPOCH_MISMATCH,
+                old_epoch=self.document_epoch,
+                old_revision=self.pres.version,
+                document_epoch=self.document_epoch,
+                version=self.pres.version,
+            )
+        if expected_revision is not None and self.pres.version != expected_revision:
+            return ReplacementResult(
+                committed=False,
+                error=stale_error,
+                old_epoch=self.document_epoch,
+                old_revision=self.pres.version,
+                document_epoch=self.document_epoch,
+                version=self.pres.version,
+            )
+        return None
+
+    async def commit_replacement(
+        self,
+        pres: PresentationIR,
+        *,
+        expected_epoch: Optional[str],
+        expected_revision: Optional[int],
+        clear_history: bool = True,
+        clear_checkpoints: bool = True,
+        checkpoint_description: Optional[str] = None,
+    ) -> ReplacementResult:
+        """CAS-guarded whole-document replacement (import / generation / load).
+
+        Owns the mutation lock and both CAS checks so callers cannot forget to
+        guard a wholesale overwrite. Both stamps are REQUIRED; passing `None`
+        fails closed rather than silently performing an unconditional overwrite.
+        """
+        async with self.mutation_lock:
+            old_epoch = self.document_epoch
+            old_revision = self.pres.version
+            if expected_epoch is None or expected_revision is None:
+                return ReplacementResult(
+                    committed=False,
+                    error=MISSING_REPLACEMENT_STAMP,
+                    old_epoch=old_epoch,
+                    old_revision=old_revision,
+                    document_epoch=self.document_epoch,
+                    version=self.pres.version,
+                )
+            rejection = self._replacement_cas_error(
+                expected_epoch, expected_revision, STALE_GENERATION
+            )
+            if rejection is not None:
+                return rejection
+            self._unsafe_install_for_bootstrap(
+                pres,
+                clear_history=clear_history,
+                clear_checkpoints=clear_checkpoints,
+                checkpoint_description=checkpoint_description,
+            )
+            return ReplacementResult(
+                committed=True,
+                error=None,
+                old_epoch=old_epoch,
+                old_revision=old_revision,
+                document_epoch=self.document_epoch,
+                version=self.pres.version,
+            )
 
     @property
     def checkpoints(self) -> List[SessionCheckpoint]:
@@ -233,7 +373,15 @@ class PPTSession:
         self.updated_at = datetime.now(timezone.utc)
         return cp
 
-    def restore_checkpoint(self, checkpoint_id: str, clear_history: bool = True) -> bool:
+    def _restore_checkpoint_unchecked(
+        self, checkpoint_id: str, clear_history: bool = True
+    ) -> bool:
+        """Raw, CAS-free projection rollback.
+
+        Private on purpose: whole-document replacement is only legal through
+        `commit_checkpoint_restore`, which owns the mutation lock and enforces the
+        epoch/revision CAS. Bootstrap seeding uses `_unsafe_install_for_bootstrap`.
+        """
         restored = self.checkpoint_mgr.restore(checkpoint_id)
         if restored:
             self.pres = restored
@@ -253,6 +401,57 @@ class PPTSession:
             self.updated_at = datetime.now(timezone.utc)
             return True
         return False
+
+    async def commit_checkpoint_restore(
+        self,
+        checkpoint_id: str,
+        *,
+        expected_epoch: Optional[str],
+        expected_revision: Optional[int],
+        clear_history: bool = True,
+    ) -> ReplacementResult:
+        """CAS-guarded checkpoint restore. Owns the mutation lock.
+
+        A restore is a whole-document rollback: it must reject when the live
+        document moved past the caller's view, instead of blindly overwriting a
+        newer revision. Both stamps are REQUIRED and fail closed when missing.
+        """
+        async with self.mutation_lock:
+            old_epoch = self.document_epoch
+            old_revision = self.pres.version
+            if expected_epoch is None or expected_revision is None:
+                return ReplacementResult(
+                    committed=False,
+                    error=MISSING_REPLACEMENT_STAMP,
+                    old_epoch=old_epoch,
+                    old_revision=old_revision,
+                    document_epoch=self.document_epoch,
+                    version=self.pres.version,
+                )
+            rejection = self._replacement_cas_error(
+                expected_epoch, expected_revision, STALE_MUTATION
+            )
+            if rejection is not None:
+                return rejection
+            if not self._restore_checkpoint_unchecked(
+                checkpoint_id, clear_history=clear_history
+            ):
+                return ReplacementResult(
+                    committed=False,
+                    error=CHECKPOINT_NOT_FOUND,
+                    old_epoch=old_epoch,
+                    old_revision=old_revision,
+                    document_epoch=self.document_epoch,
+                    version=self.pres.version,
+                )
+            return ReplacementResult(
+                committed=True,
+                error=None,
+                old_epoch=old_epoch,
+                old_revision=old_revision,
+                document_epoch=self.document_epoch,
+                version=self.pres.version,
+            )
 
     def undo(self) -> Optional[MutationCommand]:
         cmd = self.history.undo(self.pres)

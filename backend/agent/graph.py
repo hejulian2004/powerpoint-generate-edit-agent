@@ -77,6 +77,12 @@ class PPTAgentState(TypedDict, total=False):
     plan_base_revision: Optional[int]
     stale_plan: bool
     stale_replan_count: int
+    # Frozen at request admission. A different live epoch during the accepted
+    # turn is a terminal abort (never a replan). This turn's OWN successful
+    # whole-document replacement advances `turn_document_epoch`.
+    turn_document_epoch: Optional[str]
+    turn_base_revision: Optional[int]
+    turn_invalidated: bool
 
 
 # =====================================================================
@@ -343,16 +349,37 @@ async def executor_node(state: PPTAgentState, config: RunnableConfig) -> Dict[st
             pres.active_slide_id = pres.slides[0].id
         active_slide_id = pres.active_slide_id
 
+    # Fail closed: a plan without a frozen stamp cannot be CAS-validated against a
+    # session document. Never fall back to reading the live values, or a plan
+    # derived from an older revision would be mislabeled as current.
+    plan_epoch = plan.document_epoch
+    plan_revision = plan.base_revision
+    if session is not None and pres is not None and (
+        plan_epoch is None or plan_revision is None
+    ):
+        replan_count = state.get("stale_replan_count", 0) + 1
+        await _safe_emit(on_event, {
+            "type": "plan_stale_replanning",
+            "reason": "missing_plan_stamp",
+            "expected_revision": plan_revision,
+            "current_revision": pres.version,
+            "attempt": replan_count,
+        })
+        return {
+            "tool_results": [],
+            "execution_plan": [],
+            "stale_plan": True,
+            "stale_replan_count": replan_count,
+            "presentation_version": pres.version,
+            "changed_slide_ids": [],
+        }
+
     return {
         "execution_plan": plan.tool_calls,
         "last_target_id": last_target_id,
         "active_slide_id": active_slide_id,
-        "plan_document_epoch": plan.document_epoch or (
-            getattr(session, "document_epoch", None) if session else None
-        ),
-        "plan_base_revision": plan.base_revision if plan.base_revision is not None else (
-            pres.version if pres else None
-        ),
+        "plan_document_epoch": plan_epoch,
+        "plan_base_revision": plan_revision,
         "stale_plan": False,
     }
 
@@ -674,21 +701,43 @@ async def mutation_node(state: PPTAgentState, config: RunnableConfig) -> Dict[st
 
     plan_epoch = state.get("plan_document_epoch")
     plan_revision = state.get("plan_base_revision")
+    turn_epoch = state.get("turn_document_epoch")
     live_epoch = getattr(session, "document_epoch", None) if session else None
-    epoch_changed = (
-        plan_epoch is not None and session is not None and live_epoch != plan_epoch
-    )
-    revision_changed = plan_revision is not None and pres.version != plan_revision
 
-    # Stale-plan guard: the GUI (or another turn) mutated the deck while the
-    # executor was planning. Never commit this plan against a newer revision;
-    # route back to the executor to replan from the current state.
-    if tool_calls and (epoch_changed or revision_changed):
+    # Invariant: an ACCEPTED turn is bound to its admission epoch. If the
+    # document identity changed under us (another client replaced the deck),
+    # this turn is terminally invalidated - it must NEVER replan against the
+    # new deck, because the user's request was made against the old one. Only
+    # this turn's own successful replacement advances `turn_document_epoch`.
+    external_epoch_change = session is not None and (
+        (plan_epoch is not None and live_epoch != plan_epoch)
+        or (turn_epoch is not None and live_epoch != turn_epoch)
+    )
+    if tool_calls and external_epoch_change:
+        await _safe_emit(on_event, {
+            "type": "turn_invalidated",
+            "reason": "document_epoch_mismatch",
+            "turn_document_epoch": turn_epoch,
+            "current_document_epoch": live_epoch,
+            "text": "演示文稿已被其他操作替换，本次指令已安全终止，请重新发起。",
+        })
+        return {
+            "tool_results": [],
+            "execution_plan": [],
+            "stale_plan": False,
+            "turn_invalidated": True,
+            "presentation_version": pres.version,
+            "changed_slide_ids": [],
+        }
+
+    # Same-epoch revision drift is a bounded replan: the deck advanced but the
+    # identity did not, so replanning from the current state is safe.
+    revision_changed = plan_revision is not None and pres.version != plan_revision
+    if tool_calls and revision_changed:
         replan_count = state.get("stale_replan_count", 0) + 1
-        reason = "document_epoch_mismatch" if epoch_changed else "stale_mutation"
         await _safe_emit(on_event, {
             "type": "plan_stale_replanning",
-            "reason": reason,
+            "reason": "stale_mutation",
             "expected_revision": plan_revision,
             "current_revision": pres.version,
             "attempt": replan_count,
@@ -777,7 +826,13 @@ async def mutation_node(state: PPTAgentState, config: RunnableConfig) -> Dict[st
         "active_slide_id": active_slide_id,
         "changed_slide_ids": changed_slide_ids,
         "stale_plan": False,
+        "turn_invalidated": False,
     }
+    # This turn's own successful whole-document replacement legitimately moves
+    # the turn onto the new document identity so its critics/rework continue.
+    if batch.replaced_document:
+        result["turn_document_epoch"] = batch.document_epoch
+        result["turn_base_revision"] = batch.version
     if unsupported_seen:
         result["grounding_clarification"] = (
             "生成已暂停：以下数字在您提供的资料中没有依据：" + "、".join(unsupported_seen) +
@@ -854,6 +909,11 @@ async def vision_critic_node(state: PPTAgentState, config: RunnableConfig) -> Di
     pres: Optional[PresentationIR] = configurable.get("pres")
     llm_client: Optional[LLMClient] = configurable.get("llm_client")
     on_event: Optional[Callable] = configurable.get("on_event")
+    session = configurable.get("session")
+    # Bind the review to the document revision it observed. auto_correct_node
+    # discards a remediation plan whose review is now stale.
+    review_document_epoch = getattr(session, "document_epoch", None) if session else None
+    review_revision = pres.version if pres is not None else None
 
     subagent_mems = dict(state.get("subagent_memories") or {})
     from .subagents.memory import SubagentSessionMemory
@@ -888,6 +948,8 @@ async def vision_critic_node(state: PPTAgentState, config: RunnableConfig) -> Di
             **primary,
             "slides": deck_reviews,
             "reviewed_slide_ids": list(deck_reviews.keys()),
+            "review_document_epoch": review_document_epoch,
+            "review_revision": review_revision,
             "deck_average_score": round(
                 sum(float(r.get("score", 0.0)) for r in deck_reviews.values()) / len(deck_reviews), 1
             ),
@@ -960,6 +1022,8 @@ async def auto_correct_node(state: PPTAgentState, config: RunnableConfig) -> Dic
 
     session = configurable.get("session")
     lock = getattr(session, "mutation_lock", None) if session else None
+    review_epoch = visual_review.get("review_document_epoch")
+    review_revision = visual_review.get("review_revision")
 
     async def _run_remediations() -> List[Dict[str, Any]]:
         runs: List[Dict[str, Any]] = []
@@ -979,13 +1043,34 @@ async def auto_correct_node(state: PPTAgentState, config: RunnableConfig) -> Dic
             runs.append({"slide_id": target_slide_id, **runner_res})
         return runs
 
+    def _review_is_stale() -> bool:
+        if session is None or pres is None:
+            return False
+        if review_epoch is not None and getattr(session, "document_epoch", None) != review_epoch:
+            return True
+        if review_revision is not None and pres.version != review_revision:
+            return True
+        return False
+
+    async def _run_guarded() -> List[Dict[str, Any]]:
+        # Checked while holding the lock: a repair proposed against an older
+        # revision must never be applied to a newer document.
+        if _review_is_stale():
+            await _safe_emit(on_event, {
+                "type": "vision_loop",
+                "status": "stale_review_discarded",
+                "text": "视觉审查对应的版本已被修改，已丢弃过期自愈方案。",
+            })
+            return []
+        return await _run_remediations()
+
     if pres is None:
         runs = []
     elif lock is not None:
         async with lock:
-            runs = await _run_remediations()
+            runs = await _run_guarded()
     else:
-        runs = await _run_remediations()
+        runs = await _run_guarded()
 
     for run in runs:
         for rec in run.get("applied_records", []):
@@ -1035,6 +1120,11 @@ async def summary_node(state: PPTAgentState, config: RunnableConfig) -> Dict[str
 
     if grounding_clarification:
         final_text = grounding_clarification
+    elif state.get("turn_invalidated"):
+        final_text = (
+            "检测到演示文稿已被其他操作替换，本次指令已安全终止（不会在新文稿上重放）。"
+            "请重新发起指令。"
+        )
     elif state.get("stale_plan") and not [r for r in tool_results if r.get("executed")]:
         final_text = (
             "检测到演示文稿在规划期间发生了变化，为避免覆盖您的最新编辑，"
@@ -1220,10 +1310,14 @@ def should_route_plan_critic(state: PPTAgentState) -> str:
 
 
 def should_route_mutation(state: PPTAgentState) -> str:
-    """Loops back to the executor when a plan was rejected as stale.
+    """Routes a terminally invalidated turn to summary; stale plans replan.
 
-    Bounded so a continuously-editing GUI cannot starve the turn forever.
+    A turn whose document identity changed under it must NOT replan (the request
+    was bound to the old deck). Same-epoch revision staleness may replan, bounded
+    so a continuously-editing GUI cannot starve the turn forever.
     """
+    if state.get("turn_invalidated"):
+        return "summary_node"
     if state.get("stale_plan") and state.get("stale_replan_count", 0) <= 2:
         return "executor_node"
     return "content_critic_node"
