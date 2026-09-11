@@ -3,7 +3,9 @@ import type {
   PresentationIR,
   SlideIR,
   ElementIR,
-  GroupElementIR,
+  GroupElementIR
+} from '../types/presentation-ir.generated'
+import type {
   ChatMessage,
   VisualRemediationEvent,
   VisualQualityScore,
@@ -11,7 +13,7 @@ import type {
   PatchRecord,
   MutationStatus,
   ContextUsageData
-} from '../types/ppt'
+} from '../types/editor'
 import type { CanonicalSnapshot, UIContextWire } from '../types/protocol'
 import {
   cloneElement,

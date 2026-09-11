@@ -6,7 +6,7 @@ import type {
   ShapeElementIR,
   SlideIR,
   TextElementIR
-} from '../types/ppt'
+} from '../types/presentation-ir.generated'
 
 export const makeText = (
   id: string,
