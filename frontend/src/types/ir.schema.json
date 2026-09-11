@@ -1,0 +1,3886 @@
+{
+  "generated_by": "backend/ir/schema_export.py",
+  "models": {
+    "PresentationIR": {
+      "$defs": {
+        "BorderStyle": {
+          "properties": {
+            "alpha": {
+              "default": 1.0,
+              "maximum": 1.0,
+              "minimum": 0.0,
+              "title": "Alpha",
+              "type": "number"
+            },
+            "color": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": "#1E293B",
+              "description": "Border color",
+              "title": "Color"
+            },
+            "style": {
+              "default": "solid",
+              "enum": [
+                "solid",
+                "dashed",
+                "dotted",
+                "none"
+              ],
+              "title": "Style",
+              "type": "string"
+            },
+            "theme_color": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Theme Color"
+            },
+            "width": {
+              "default": 1.0,
+              "description": "Border width in px",
+              "minimum": 0.0,
+              "title": "Width",
+              "type": "number"
+            }
+          },
+          "required": [
+            "alpha",
+            "style",
+            "width"
+          ],
+          "title": "BorderStyle",
+          "type": "object"
+        },
+        "ConnectorElementIR": {
+          "properties": {
+            "arrow_end": {
+              "default": "triangle",
+              "enum": [
+                "none",
+                "triangle",
+                "stealth",
+                "oval"
+              ],
+              "title": "Arrow End",
+              "type": "string"
+            },
+            "arrow_start": {
+              "default": "none",
+              "enum": [
+                "none",
+                "triangle",
+                "stealth",
+                "oval"
+              ],
+              "title": "Arrow Start",
+              "type": "string"
+            },
+            "children": {
+              "items": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/ShapeElementIR"
+                  },
+                  {
+                    "$ref": "#/$defs/TextElementIR"
+                  },
+                  {
+                    "$ref": "#/$defs/ConnectorElementIR"
+                  },
+                  {
+                    "$ref": "#/$defs/ImageElementIR"
+                  },
+                  {
+                    "$ref": "#/$defs/TableElementIR"
+                  },
+                  {
+                    "$ref": "#/$defs/GroupElementIR"
+                  }
+                ]
+              },
+              "title": "Children",
+              "type": "array"
+            },
+            "end_shape_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Bound shape ID at end point",
+              "title": "End Shape Id"
+            },
+            "end_site_index": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Connection site anchor index on end shape",
+              "title": "End Site Index"
+            },
+            "end_x": {
+              "default": 100.0,
+              "title": "End X",
+              "type": "number"
+            },
+            "end_y": {
+              "default": 100.0,
+              "title": "End Y",
+              "type": "number"
+            },
+            "height": {
+              "default": 50.0,
+              "description": "Height in px",
+              "minimum": 0.0,
+              "title": "Height",
+              "type": "number"
+            },
+            "id": {
+              "title": "Id",
+              "type": "string"
+            },
+            "line_type": {
+              "default": "straight",
+              "enum": [
+                "straight",
+                "elbow",
+                "curved"
+              ],
+              "title": "Line Type",
+              "type": "string"
+            },
+            "locked": {
+              "default": false,
+              "title": "Locked",
+              "type": "boolean"
+            },
+            "metadata": {
+              "additionalProperties": true,
+              "description": "Supplementary metadata or placeholder tags",
+              "title": "Metadata",
+              "type": "object"
+            },
+            "name": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Name"
+            },
+            "rotation": {
+              "default": 0.0,
+              "description": "Clockwise rotation in degrees",
+              "title": "Rotation",
+              "type": "number"
+            },
+            "source_evidence_ids": {
+              "description": "Associated evidence IDs",
+              "items": {
+                "type": "string"
+              },
+              "title": "Source Evidence Ids",
+              "type": "array"
+            },
+            "source_ref": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Reference ID back to SlideSpec content block",
+              "title": "Source Ref"
+            },
+            "start_shape_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Bound shape ID at start point",
+              "title": "Start Shape Id"
+            },
+            "start_site_index": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Connection site anchor index on start shape",
+              "title": "Start Site Index"
+            },
+            "start_x": {
+              "default": 0.0,
+              "title": "Start X",
+              "type": "number"
+            },
+            "start_y": {
+              "default": 0.0,
+              "title": "Start Y",
+              "type": "number"
+            },
+            "style": {
+              "$ref": "#/$defs/ElementStyleIR"
+            },
+            "transform": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/TransformIR"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "type": {
+              "const": "connector",
+              "default": "connector",
+              "title": "Type",
+              "type": "string"
+            },
+            "width": {
+              "default": 100.0,
+              "description": "Width in px",
+              "minimum": 0.0,
+              "title": "Width",
+              "type": "number"
+            },
+            "x": {
+              "default": 0.0,
+              "description": "Left position in px (1280x720 canvas)",
+              "title": "X",
+              "type": "number"
+            },
+            "y": {
+              "default": 0.0,
+              "description": "Top position in px",
+              "title": "Y",
+              "type": "number"
+            },
+            "z_index": {
+              "default": 0,
+              "description": "Stacking order",
+              "title": "Z Index",
+              "type": "integer"
+            }
+          },
+          "required": [
+            "arrow_end",
+            "arrow_start",
+            "end_x",
+            "end_y",
+            "height",
+            "id",
+            "line_type",
+            "rotation",
+            "start_x",
+            "start_y",
+            "style",
+            "type",
+            "width",
+            "x",
+            "y",
+            "z_index"
+          ],
+          "title": "ConnectorElementIR",
+          "type": "object"
+        },
+        "ElementStyleIR": {
+          "properties": {
+            "border": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/BorderStyle"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "fill": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/FillStyle"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "opacity": {
+              "default": 1.0,
+              "maximum": 1.0,
+              "minimum": 0.0,
+              "title": "Opacity",
+              "type": "number"
+            },
+            "padding": {
+              "default": 8.0,
+              "description": "Internal padding in px",
+              "title": "Padding",
+              "type": "number"
+            },
+            "radius": {
+              "default": 0.0,
+              "description": "Normalized border radius 0.0 - 0.5 or px",
+              "title": "Radius",
+              "type": "number"
+            },
+            "shadow": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/ShadowStyle"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            }
+          },
+          "required": [
+            "opacity",
+            "padding",
+            "radius"
+          ],
+          "title": "ElementStyleIR",
+          "type": "object"
+        },
+        "FillStyle": {
+          "properties": {
+            "alpha": {
+              "default": 1.0,
+              "maximum": 1.0,
+              "minimum": 0.0,
+              "title": "Alpha",
+              "type": "number"
+            },
+            "color": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": "#3B82F6",
+              "description": "Hex color",
+              "title": "Color"
+            },
+            "gradient": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/GradientFill"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "theme_color": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "OOXML theme token: accent1-6, dk1, lt1, etc.",
+              "title": "Theme Color"
+            },
+            "type": {
+              "default": "solid",
+              "enum": [
+                "none",
+                "solid",
+                "gradient",
+                "theme"
+              ],
+              "title": "Type",
+              "type": "string"
+            }
+          },
+          "required": [
+            "alpha",
+            "type"
+          ],
+          "title": "FillStyle",
+          "type": "object"
+        },
+        "FontIR": {
+          "properties": {
+            "bold": {
+              "default": false,
+              "title": "Bold",
+              "type": "boolean"
+            },
+            "color": {
+              "default": "#1E293B",
+              "title": "Color",
+              "type": "string"
+            },
+            "highlight": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Highlight"
+            },
+            "italic": {
+              "default": false,
+              "title": "Italic",
+              "type": "boolean"
+            },
+            "name": {
+              "default": "Segoe UI",
+              "title": "Name",
+              "type": "string"
+            },
+            "size": {
+              "default": 18.0,
+              "description": "Font size in px",
+              "minimum": 6.0,
+              "title": "Size",
+              "type": "number"
+            },
+            "strikethrough": {
+              "default": false,
+              "title": "Strikethrough",
+              "type": "boolean"
+            },
+            "theme_color": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Theme Color"
+            },
+            "underline": {
+              "default": false,
+              "title": "Underline",
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "color",
+            "name",
+            "size"
+          ],
+          "title": "FontIR",
+          "type": "object"
+        },
+        "GradientFill": {
+          "properties": {
+            "angle": {
+              "default": 90.0,
+              "description": "Gradient angle in degrees",
+              "title": "Angle",
+              "type": "number"
+            },
+            "stops": {
+              "items": {
+                "$ref": "#/$defs/GradientStop"
+              },
+              "title": "Stops",
+              "type": "array"
+            },
+            "type": {
+              "default": "linear",
+              "enum": [
+                "linear",
+                "radial"
+              ],
+              "title": "Type",
+              "type": "string"
+            }
+          },
+          "required": [
+            "angle",
+            "stops",
+            "type"
+          ],
+          "title": "GradientFill",
+          "type": "object"
+        },
+        "GradientStop": {
+          "properties": {
+            "alpha": {
+              "default": 1.0,
+              "description": "Opacity from 0.0 to 1.0",
+              "title": "Alpha",
+              "type": "number"
+            },
+            "color": {
+              "default": "#3B82F6",
+              "description": "Hex color '#RRGGBB'",
+              "title": "Color",
+              "type": "string"
+            },
+            "position": {
+              "default": 0.0,
+              "description": "Stop position from 0.0 to 1.0",
+              "title": "Position",
+              "type": "number"
+            }
+          },
+          "required": [
+            "alpha",
+            "color",
+            "position"
+          ],
+          "title": "GradientStop",
+          "type": "object"
+        },
+        "GroupElementIR": {
+          "description": "Hierarchical Group container preserving nested structure and coordinate system.",
+          "properties": {
+            "children": {
+              "items": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/ShapeElementIR"
+                  },
+                  {
+                    "$ref": "#/$defs/TextElementIR"
+                  },
+                  {
+                    "$ref": "#/$defs/ConnectorElementIR"
+                  },
+                  {
+                    "$ref": "#/$defs/ImageElementIR"
+                  },
+                  {
+                    "$ref": "#/$defs/TableElementIR"
+                  },
+                  {
+                    "$ref": "#/$defs/GroupElementIR"
+                  }
+                ]
+              },
+              "title": "Children",
+              "type": "array"
+            },
+            "height": {
+              "default": 50.0,
+              "description": "Height in px",
+              "minimum": 0.0,
+              "title": "Height",
+              "type": "number"
+            },
+            "id": {
+              "title": "Id",
+              "type": "string"
+            },
+            "locked": {
+              "default": false,
+              "title": "Locked",
+              "type": "boolean"
+            },
+            "metadata": {
+              "additionalProperties": true,
+              "description": "Supplementary metadata or placeholder tags",
+              "title": "Metadata",
+              "type": "object"
+            },
+            "name": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Name"
+            },
+            "rotation": {
+              "default": 0.0,
+              "description": "Clockwise rotation in degrees",
+              "title": "Rotation",
+              "type": "number"
+            },
+            "source_evidence_ids": {
+              "description": "Associated evidence IDs",
+              "items": {
+                "type": "string"
+              },
+              "title": "Source Evidence Ids",
+              "type": "array"
+            },
+            "source_ref": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Reference ID back to SlideSpec content block",
+              "title": "Source Ref"
+            },
+            "style": {
+              "$ref": "#/$defs/ElementStyleIR"
+            },
+            "transform": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/TransformIR"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "type": {
+              "const": "group",
+              "default": "group",
+              "title": "Type",
+              "type": "string"
+            },
+            "width": {
+              "default": 100.0,
+              "description": "Width in px",
+              "minimum": 0.0,
+              "title": "Width",
+              "type": "number"
+            },
+            "x": {
+              "default": 0.0,
+              "description": "Left position in px (1280x720 canvas)",
+              "title": "X",
+              "type": "number"
+            },
+            "y": {
+              "default": 0.0,
+              "description": "Top position in px",
+              "title": "Y",
+              "type": "number"
+            },
+            "z_index": {
+              "default": 0,
+              "description": "Stacking order",
+              "title": "Z Index",
+              "type": "integer"
+            }
+          },
+          "required": [
+            "children",
+            "height",
+            "id",
+            "rotation",
+            "style",
+            "type",
+            "width",
+            "x",
+            "y",
+            "z_index"
+          ],
+          "title": "GroupElementIR",
+          "type": "object"
+        },
+        "ImageElementIR": {
+          "properties": {
+            "alt_text": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Alt Text"
+            },
+            "asset_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Asset Id"
+            },
+            "children": {
+              "items": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/ShapeElementIR"
+                  },
+                  {
+                    "$ref": "#/$defs/TextElementIR"
+                  },
+                  {
+                    "$ref": "#/$defs/ConnectorElementIR"
+                  },
+                  {
+                    "$ref": "#/$defs/ImageElementIR"
+                  },
+                  {
+                    "$ref": "#/$defs/TableElementIR"
+                  },
+                  {
+                    "$ref": "#/$defs/GroupElementIR"
+                  }
+                ]
+              },
+              "title": "Children",
+              "type": "array"
+            },
+            "crop": {
+              "anyOf": [
+                {
+                  "additionalProperties": {
+                    "type": "number"
+                  },
+                  "type": "object"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Normalized crop margins: {left, top, right, bottom}",
+              "title": "Crop"
+            },
+            "height": {
+              "default": 50.0,
+              "description": "Height in px",
+              "minimum": 0.0,
+              "title": "Height",
+              "type": "number"
+            },
+            "id": {
+              "title": "Id",
+              "type": "string"
+            },
+            "locked": {
+              "default": false,
+              "title": "Locked",
+              "type": "boolean"
+            },
+            "metadata": {
+              "additionalProperties": true,
+              "description": "Supplementary metadata or placeholder tags",
+              "title": "Metadata",
+              "type": "object"
+            },
+            "name": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Name"
+            },
+            "rotation": {
+              "default": 0.0,
+              "description": "Clockwise rotation in degrees",
+              "title": "Rotation",
+              "type": "number"
+            },
+            "source_evidence_ids": {
+              "description": "Associated evidence IDs",
+              "items": {
+                "type": "string"
+              },
+              "title": "Source Evidence Ids",
+              "type": "array"
+            },
+            "source_ref": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Reference ID back to SlideSpec content block",
+              "title": "Source Ref"
+            },
+            "src": {
+              "default": "",
+              "description": "Asset URL, relative path or data:image/*;base64",
+              "title": "Src",
+              "type": "string"
+            },
+            "style": {
+              "$ref": "#/$defs/ElementStyleIR"
+            },
+            "transform": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/TransformIR"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "type": {
+              "const": "image",
+              "default": "image",
+              "title": "Type",
+              "type": "string"
+            },
+            "width": {
+              "default": 100.0,
+              "description": "Width in px",
+              "minimum": 0.0,
+              "title": "Width",
+              "type": "number"
+            },
+            "x": {
+              "default": 0.0,
+              "description": "Left position in px (1280x720 canvas)",
+              "title": "X",
+              "type": "number"
+            },
+            "y": {
+              "default": 0.0,
+              "description": "Top position in px",
+              "title": "Y",
+              "type": "number"
+            },
+            "z_index": {
+              "default": 0,
+              "description": "Stacking order",
+              "title": "Z Index",
+              "type": "integer"
+            }
+          },
+          "required": [
+            "height",
+            "id",
+            "rotation",
+            "src",
+            "style",
+            "type",
+            "width",
+            "x",
+            "y",
+            "z_index"
+          ],
+          "title": "ImageElementIR",
+          "type": "object"
+        },
+        "ParagraphIR": {
+          "properties": {
+            "align": {
+              "default": "left",
+              "enum": [
+                "left",
+                "center",
+                "right",
+                "justify"
+              ],
+              "title": "Align",
+              "type": "string"
+            },
+            "bullet": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Bullet symbol, 'none', 'disc', or numbering",
+              "title": "Bullet"
+            },
+            "indent_level": {
+              "default": 0,
+              "description": "0-based paragraph nesting level",
+              "maximum": 9,
+              "minimum": 0,
+              "title": "Indent Level",
+              "type": "integer"
+            },
+            "line_spacing": {
+              "default": 1.2,
+              "description": "Line height multiplier",
+              "title": "Line Spacing",
+              "type": "number"
+            },
+            "margin_left": {
+              "default": 0.0,
+              "description": "Left indentation margin in px",
+              "title": "Margin Left",
+              "type": "number"
+            },
+            "runs": {
+              "items": {
+                "$ref": "#/$defs/RunIR"
+              },
+              "title": "Runs",
+              "type": "array"
+            },
+            "space_after": {
+              "default": 0.0,
+              "title": "Space After",
+              "type": "number"
+            },
+            "space_before": {
+              "default": 0.0,
+              "title": "Space Before",
+              "type": "number"
+            },
+            "vertical_align": {
+              "default": "top",
+              "enum": [
+                "top",
+                "middle",
+                "bottom"
+              ],
+              "title": "Vertical Align",
+              "type": "string"
+            }
+          },
+          "required": [
+            "align",
+            "line_spacing",
+            "runs"
+          ],
+          "title": "ParagraphIR",
+          "type": "object"
+        },
+        "RunIR": {
+          "properties": {
+            "font": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/FontIR"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "hyperlink": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Hyperlink"
+            },
+            "text": {
+              "default": "",
+              "title": "Text",
+              "type": "string"
+            }
+          },
+          "required": [
+            "text"
+          ],
+          "title": "RunIR",
+          "type": "object"
+        },
+        "ShadowStyle": {
+          "properties": {
+            "alpha": {
+              "default": 0.25,
+              "maximum": 1.0,
+              "minimum": 0.0,
+              "title": "Alpha",
+              "type": "number"
+            },
+            "angle": {
+              "default": 45.0,
+              "description": "Shadow angle in degrees",
+              "title": "Angle",
+              "type": "number"
+            },
+            "blur": {
+              "default": 4.0,
+              "minimum": 0.0,
+              "title": "Blur",
+              "type": "number"
+            },
+            "color": {
+              "default": "#000000",
+              "title": "Color",
+              "type": "string"
+            },
+            "distance": {
+              "default": 3.0,
+              "minimum": 0.0,
+              "title": "Distance",
+              "type": "number"
+            },
+            "enabled": {
+              "default": false,
+              "title": "Enabled",
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "alpha",
+            "angle",
+            "blur",
+            "color",
+            "distance",
+            "enabled"
+          ],
+          "title": "ShadowStyle",
+          "type": "object"
+        },
+        "ShapeElementIR": {
+          "properties": {
+            "adjust_values": {
+              "additionalProperties": {
+                "type": "number"
+              },
+              "description": "OOXML shape adjustment values (e.g. corner radius)",
+              "title": "Adjust Values",
+              "type": "object"
+            },
+            "children": {
+              "items": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/ShapeElementIR"
+                  },
+                  {
+                    "$ref": "#/$defs/TextElementIR"
+                  },
+                  {
+                    "$ref": "#/$defs/ConnectorElementIR"
+                  },
+                  {
+                    "$ref": "#/$defs/ImageElementIR"
+                  },
+                  {
+                    "$ref": "#/$defs/TableElementIR"
+                  },
+                  {
+                    "$ref": "#/$defs/GroupElementIR"
+                  }
+                ]
+              },
+              "title": "Children",
+              "type": "array"
+            },
+            "custom_geometry": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Optional SVG path data for custom shapes",
+              "title": "Custom Geometry"
+            },
+            "flip_h": {
+              "default": false,
+              "title": "Flip H",
+              "type": "boolean"
+            },
+            "flip_v": {
+              "default": false,
+              "title": "Flip V",
+              "type": "boolean"
+            },
+            "height": {
+              "default": 50.0,
+              "description": "Height in px",
+              "minimum": 0.0,
+              "title": "Height",
+              "type": "number"
+            },
+            "id": {
+              "title": "Id",
+              "type": "string"
+            },
+            "locked": {
+              "default": false,
+              "title": "Locked",
+              "type": "boolean"
+            },
+            "metadata": {
+              "additionalProperties": true,
+              "description": "Supplementary metadata or placeholder tags",
+              "title": "Metadata",
+              "type": "object"
+            },
+            "name": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Name"
+            },
+            "rotation": {
+              "default": 0.0,
+              "description": "Clockwise rotation in degrees",
+              "title": "Rotation",
+              "type": "number"
+            },
+            "shape_type": {
+              "default": "roundRect",
+              "description": "rectangle, roundRect, ellipse, diamond, triangle, rightArrow, callout, star",
+              "title": "Shape Type",
+              "type": "string"
+            },
+            "source_evidence_ids": {
+              "description": "Associated evidence IDs",
+              "items": {
+                "type": "string"
+              },
+              "title": "Source Evidence Ids",
+              "type": "array"
+            },
+            "source_ref": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Reference ID back to SlideSpec content block",
+              "title": "Source Ref"
+            },
+            "style": {
+              "$ref": "#/$defs/ElementStyleIR"
+            },
+            "text_content": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/TextContentIR"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "transform": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/TransformIR"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "type": {
+              "const": "shape",
+              "default": "shape",
+              "title": "Type",
+              "type": "string"
+            },
+            "width": {
+              "default": 100.0,
+              "description": "Width in px",
+              "minimum": 0.0,
+              "title": "Width",
+              "type": "number"
+            },
+            "x": {
+              "default": 0.0,
+              "description": "Left position in px (1280x720 canvas)",
+              "title": "X",
+              "type": "number"
+            },
+            "y": {
+              "default": 0.0,
+              "description": "Top position in px",
+              "title": "Y",
+              "type": "number"
+            },
+            "z_index": {
+              "default": 0,
+              "description": "Stacking order",
+              "title": "Z Index",
+              "type": "integer"
+            }
+          },
+          "required": [
+            "height",
+            "id",
+            "rotation",
+            "shape_type",
+            "style",
+            "type",
+            "width",
+            "x",
+            "y",
+            "z_index"
+          ],
+          "title": "ShapeElementIR",
+          "type": "object"
+        },
+        "SlideIR": {
+          "properties": {
+            "background": {
+              "$ref": "#/$defs/FillStyle"
+            },
+            "elements": {
+              "items": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/ShapeElementIR"
+                  },
+                  {
+                    "$ref": "#/$defs/TextElementIR"
+                  },
+                  {
+                    "$ref": "#/$defs/ConnectorElementIR"
+                  },
+                  {
+                    "$ref": "#/$defs/ImageElementIR"
+                  },
+                  {
+                    "$ref": "#/$defs/TableElementIR"
+                  },
+                  {
+                    "$ref": "#/$defs/GroupElementIR"
+                  }
+                ]
+              },
+              "title": "Elements",
+              "type": "array"
+            },
+            "height": {
+              "default": 720,
+              "description": "Standard canvas height in px",
+              "title": "Height",
+              "type": "integer"
+            },
+            "id": {
+              "title": "Id",
+              "type": "string"
+            },
+            "layout_name": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "OOXML layout name, e.g. Title and Content",
+              "title": "Layout Name"
+            },
+            "master": {
+              "anyOf": [
+                {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Master slide layout metadata",
+              "title": "Master"
+            },
+            "notes": {
+              "default": "",
+              "title": "Notes",
+              "type": "string"
+            },
+            "slide_num": {
+              "default": 1,
+              "title": "Slide Num",
+              "type": "integer"
+            },
+            "theme": {
+              "anyOf": [
+                {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Slide-level theme override",
+              "title": "Theme"
+            },
+            "theme_ref": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Reference to presentation theme",
+              "title": "Theme Ref"
+            },
+            "title": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Title"
+            },
+            "width": {
+              "default": 1280,
+              "description": "Standard canvas width in px",
+              "title": "Width",
+              "type": "integer"
+            }
+          },
+          "required": [
+            "background",
+            "elements",
+            "height",
+            "id",
+            "slide_num",
+            "width"
+          ],
+          "title": "SlideIR",
+          "type": "object"
+        },
+        "TableCellIR": {
+          "properties": {
+            "col": {
+              "title": "Col",
+              "type": "integer"
+            },
+            "col_span": {
+              "default": 1,
+              "title": "Col Span",
+              "type": "integer"
+            },
+            "row": {
+              "title": "Row",
+              "type": "integer"
+            },
+            "row_span": {
+              "default": 1,
+              "title": "Row Span",
+              "type": "integer"
+            },
+            "style": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/ElementStyleIR"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "text_content": {
+              "$ref": "#/$defs/TextContentIR"
+            }
+          },
+          "required": [
+            "col",
+            "row",
+            "text_content"
+          ],
+          "title": "TableCellIR",
+          "type": "object"
+        },
+        "TableElementIR": {
+          "properties": {
+            "cells": {
+              "items": {
+                "items": {
+                  "$ref": "#/$defs/TableCellIR"
+                },
+                "type": "array"
+              },
+              "title": "Cells",
+              "type": "array"
+            },
+            "children": {
+              "items": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/ShapeElementIR"
+                  },
+                  {
+                    "$ref": "#/$defs/TextElementIR"
+                  },
+                  {
+                    "$ref": "#/$defs/ConnectorElementIR"
+                  },
+                  {
+                    "$ref": "#/$defs/ImageElementIR"
+                  },
+                  {
+                    "$ref": "#/$defs/TableElementIR"
+                  },
+                  {
+                    "$ref": "#/$defs/GroupElementIR"
+                  }
+                ]
+              },
+              "title": "Children",
+              "type": "array"
+            },
+            "cols": {
+              "default": 2,
+              "title": "Cols",
+              "type": "integer"
+            },
+            "height": {
+              "default": 50.0,
+              "description": "Height in px",
+              "minimum": 0.0,
+              "title": "Height",
+              "type": "number"
+            },
+            "id": {
+              "title": "Id",
+              "type": "string"
+            },
+            "locked": {
+              "default": false,
+              "title": "Locked",
+              "type": "boolean"
+            },
+            "metadata": {
+              "additionalProperties": true,
+              "description": "Supplementary metadata or placeholder tags",
+              "title": "Metadata",
+              "type": "object"
+            },
+            "name": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Name"
+            },
+            "rotation": {
+              "default": 0.0,
+              "description": "Clockwise rotation in degrees",
+              "title": "Rotation",
+              "type": "number"
+            },
+            "rows": {
+              "default": 2,
+              "title": "Rows",
+              "type": "integer"
+            },
+            "source_evidence_ids": {
+              "description": "Associated evidence IDs",
+              "items": {
+                "type": "string"
+              },
+              "title": "Source Evidence Ids",
+              "type": "array"
+            },
+            "source_ref": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Reference ID back to SlideSpec content block",
+              "title": "Source Ref"
+            },
+            "style": {
+              "$ref": "#/$defs/ElementStyleIR"
+            },
+            "transform": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/TransformIR"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "type": {
+              "const": "table",
+              "default": "table",
+              "title": "Type",
+              "type": "string"
+            },
+            "width": {
+              "default": 100.0,
+              "description": "Width in px",
+              "minimum": 0.0,
+              "title": "Width",
+              "type": "number"
+            },
+            "x": {
+              "default": 0.0,
+              "description": "Left position in px (1280x720 canvas)",
+              "title": "X",
+              "type": "number"
+            },
+            "y": {
+              "default": 0.0,
+              "description": "Top position in px",
+              "title": "Y",
+              "type": "number"
+            },
+            "z_index": {
+              "default": 0,
+              "description": "Stacking order",
+              "title": "Z Index",
+              "type": "integer"
+            }
+          },
+          "required": [
+            "cells",
+            "cols",
+            "height",
+            "id",
+            "rotation",
+            "rows",
+            "style",
+            "type",
+            "width",
+            "x",
+            "y",
+            "z_index"
+          ],
+          "title": "TableElementIR",
+          "type": "object"
+        },
+        "TextContentIR": {
+          "properties": {
+            "paragraphs": {
+              "items": {
+                "$ref": "#/$defs/ParagraphIR"
+              },
+              "title": "Paragraphs",
+              "type": "array"
+            }
+          },
+          "required": [
+            "paragraphs"
+          ],
+          "title": "TextContentIR",
+          "type": "object"
+        },
+        "TextElementIR": {
+          "properties": {
+            "children": {
+              "items": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/ShapeElementIR"
+                  },
+                  {
+                    "$ref": "#/$defs/TextElementIR"
+                  },
+                  {
+                    "$ref": "#/$defs/ConnectorElementIR"
+                  },
+                  {
+                    "$ref": "#/$defs/ImageElementIR"
+                  },
+                  {
+                    "$ref": "#/$defs/TableElementIR"
+                  },
+                  {
+                    "$ref": "#/$defs/GroupElementIR"
+                  }
+                ]
+              },
+              "title": "Children",
+              "type": "array"
+            },
+            "height": {
+              "default": 50.0,
+              "description": "Height in px",
+              "minimum": 0.0,
+              "title": "Height",
+              "type": "number"
+            },
+            "id": {
+              "title": "Id",
+              "type": "string"
+            },
+            "locked": {
+              "default": false,
+              "title": "Locked",
+              "type": "boolean"
+            },
+            "metadata": {
+              "additionalProperties": true,
+              "description": "Supplementary metadata or placeholder tags",
+              "title": "Metadata",
+              "type": "object"
+            },
+            "name": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Name"
+            },
+            "rotation": {
+              "default": 0.0,
+              "description": "Clockwise rotation in degrees",
+              "title": "Rotation",
+              "type": "number"
+            },
+            "source_evidence_ids": {
+              "description": "Associated evidence IDs",
+              "items": {
+                "type": "string"
+              },
+              "title": "Source Evidence Ids",
+              "type": "array"
+            },
+            "source_ref": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Reference ID back to SlideSpec content block",
+              "title": "Source Ref"
+            },
+            "style": {
+              "$ref": "#/$defs/ElementStyleIR"
+            },
+            "text_content": {
+              "$ref": "#/$defs/TextContentIR"
+            },
+            "transform": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/TransformIR"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "type": {
+              "const": "text",
+              "default": "text",
+              "title": "Type",
+              "type": "string"
+            },
+            "width": {
+              "default": 100.0,
+              "description": "Width in px",
+              "minimum": 0.0,
+              "title": "Width",
+              "type": "number"
+            },
+            "x": {
+              "default": 0.0,
+              "description": "Left position in px (1280x720 canvas)",
+              "title": "X",
+              "type": "number"
+            },
+            "y": {
+              "default": 0.0,
+              "description": "Top position in px",
+              "title": "Y",
+              "type": "number"
+            },
+            "z_index": {
+              "default": 0,
+              "description": "Stacking order",
+              "title": "Z Index",
+              "type": "integer"
+            }
+          },
+          "required": [
+            "height",
+            "id",
+            "rotation",
+            "style",
+            "text_content",
+            "type",
+            "width",
+            "x",
+            "y",
+            "z_index"
+          ],
+          "title": "TextElementIR",
+          "type": "object"
+        },
+        "TransformIR": {
+          "description": "Canonical geometric transformation on the 1280x720 canvas.",
+          "properties": {
+            "flip_h": {
+              "default": false,
+              "description": "Horizontal flip",
+              "title": "Flip H",
+              "type": "boolean"
+            },
+            "flip_v": {
+              "default": false,
+              "description": "Vertical flip",
+              "title": "Flip V",
+              "type": "boolean"
+            },
+            "height": {
+              "default": 50.0,
+              "description": "Height in px",
+              "minimum": 0.0,
+              "title": "Height",
+              "type": "number"
+            },
+            "rotation": {
+              "default": 0.0,
+              "description": "Clockwise rotation in degrees",
+              "title": "Rotation",
+              "type": "number"
+            },
+            "scale_x": {
+              "default": 1.0,
+              "description": "Local horizontal scale",
+              "title": "Scale X",
+              "type": "number"
+            },
+            "scale_y": {
+              "default": 1.0,
+              "description": "Local vertical scale",
+              "title": "Scale Y",
+              "type": "number"
+            },
+            "width": {
+              "default": 100.0,
+              "description": "Width in px",
+              "minimum": 0.0,
+              "title": "Width",
+              "type": "number"
+            },
+            "x": {
+              "default": 0.0,
+              "description": "Left position in px",
+              "title": "X",
+              "type": "number"
+            },
+            "y": {
+              "default": 0.0,
+              "description": "Top position in px",
+              "title": "Y",
+              "type": "number"
+            }
+          },
+          "required": [
+            "height",
+            "rotation",
+            "width",
+            "x",
+            "y"
+          ],
+          "title": "TransformIR",
+          "type": "object"
+        }
+      },
+      "properties": {
+        "active_slide_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Active Slide Id"
+        },
+        "asset_metadata": {
+          "additionalProperties": true,
+          "description": "asset_id -> {mime_type, width, height, hash}",
+          "title": "Asset Metadata",
+          "type": "object"
+        },
+        "assets": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "asset_id -> base64 or path",
+          "title": "Assets",
+          "type": "object"
+        },
+        "capabilities": {
+          "additionalProperties": {
+            "type": "boolean"
+          },
+          "description": "Detected OOXML feature presence (see backend.fidelity.capability)",
+          "title": "Capabilities",
+          "type": "object"
+        },
+        "height": {
+          "default": 720,
+          "title": "Height",
+          "type": "integer"
+        },
+        "id": {
+          "title": "Id",
+          "type": "string"
+        },
+        "master": {
+          "anyOf": [
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Presentation-level master layout definitions",
+          "title": "Master"
+        },
+        "metadata": {
+          "additionalProperties": true,
+          "description": "Custom metadata e.g. fix iterations, user preferences",
+          "title": "Metadata",
+          "type": "object"
+        },
+        "slides": {
+          "items": {
+            "$ref": "#/$defs/SlideIR"
+          },
+          "title": "Slides",
+          "type": "array"
+        },
+        "theme": {
+          "additionalProperties": true,
+          "title": "Theme",
+          "type": "object"
+        },
+        "title": {
+          "default": "PPT-Agent-Studio Presentation",
+          "title": "Title",
+          "type": "string"
+        },
+        "version": {
+          "default": 1,
+          "title": "Version",
+          "type": "integer"
+        },
+        "width": {
+          "default": 1280,
+          "title": "Width",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "assets",
+        "height",
+        "id",
+        "slides",
+        "theme",
+        "title",
+        "version",
+        "width"
+      ],
+      "title": "PresentationIR",
+      "type": "object"
+    },
+    "SlideIR": {
+      "$defs": {
+        "BorderStyle": {
+          "properties": {
+            "alpha": {
+              "default": 1.0,
+              "maximum": 1.0,
+              "minimum": 0.0,
+              "title": "Alpha",
+              "type": "number"
+            },
+            "color": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": "#1E293B",
+              "description": "Border color",
+              "title": "Color"
+            },
+            "style": {
+              "default": "solid",
+              "enum": [
+                "solid",
+                "dashed",
+                "dotted",
+                "none"
+              ],
+              "title": "Style",
+              "type": "string"
+            },
+            "theme_color": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Theme Color"
+            },
+            "width": {
+              "default": 1.0,
+              "description": "Border width in px",
+              "minimum": 0.0,
+              "title": "Width",
+              "type": "number"
+            }
+          },
+          "required": [
+            "alpha",
+            "style",
+            "width"
+          ],
+          "title": "BorderStyle",
+          "type": "object"
+        },
+        "ConnectorElementIR": {
+          "properties": {
+            "arrow_end": {
+              "default": "triangle",
+              "enum": [
+                "none",
+                "triangle",
+                "stealth",
+                "oval"
+              ],
+              "title": "Arrow End",
+              "type": "string"
+            },
+            "arrow_start": {
+              "default": "none",
+              "enum": [
+                "none",
+                "triangle",
+                "stealth",
+                "oval"
+              ],
+              "title": "Arrow Start",
+              "type": "string"
+            },
+            "children": {
+              "items": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/ShapeElementIR"
+                  },
+                  {
+                    "$ref": "#/$defs/TextElementIR"
+                  },
+                  {
+                    "$ref": "#/$defs/ConnectorElementIR"
+                  },
+                  {
+                    "$ref": "#/$defs/ImageElementIR"
+                  },
+                  {
+                    "$ref": "#/$defs/TableElementIR"
+                  },
+                  {
+                    "$ref": "#/$defs/GroupElementIR"
+                  }
+                ]
+              },
+              "title": "Children",
+              "type": "array"
+            },
+            "end_shape_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Bound shape ID at end point",
+              "title": "End Shape Id"
+            },
+            "end_site_index": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Connection site anchor index on end shape",
+              "title": "End Site Index"
+            },
+            "end_x": {
+              "default": 100.0,
+              "title": "End X",
+              "type": "number"
+            },
+            "end_y": {
+              "default": 100.0,
+              "title": "End Y",
+              "type": "number"
+            },
+            "height": {
+              "default": 50.0,
+              "description": "Height in px",
+              "minimum": 0.0,
+              "title": "Height",
+              "type": "number"
+            },
+            "id": {
+              "title": "Id",
+              "type": "string"
+            },
+            "line_type": {
+              "default": "straight",
+              "enum": [
+                "straight",
+                "elbow",
+                "curved"
+              ],
+              "title": "Line Type",
+              "type": "string"
+            },
+            "locked": {
+              "default": false,
+              "title": "Locked",
+              "type": "boolean"
+            },
+            "metadata": {
+              "additionalProperties": true,
+              "description": "Supplementary metadata or placeholder tags",
+              "title": "Metadata",
+              "type": "object"
+            },
+            "name": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Name"
+            },
+            "rotation": {
+              "default": 0.0,
+              "description": "Clockwise rotation in degrees",
+              "title": "Rotation",
+              "type": "number"
+            },
+            "source_evidence_ids": {
+              "description": "Associated evidence IDs",
+              "items": {
+                "type": "string"
+              },
+              "title": "Source Evidence Ids",
+              "type": "array"
+            },
+            "source_ref": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Reference ID back to SlideSpec content block",
+              "title": "Source Ref"
+            },
+            "start_shape_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Bound shape ID at start point",
+              "title": "Start Shape Id"
+            },
+            "start_site_index": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Connection site anchor index on start shape",
+              "title": "Start Site Index"
+            },
+            "start_x": {
+              "default": 0.0,
+              "title": "Start X",
+              "type": "number"
+            },
+            "start_y": {
+              "default": 0.0,
+              "title": "Start Y",
+              "type": "number"
+            },
+            "style": {
+              "$ref": "#/$defs/ElementStyleIR"
+            },
+            "transform": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/TransformIR"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "type": {
+              "const": "connector",
+              "default": "connector",
+              "title": "Type",
+              "type": "string"
+            },
+            "width": {
+              "default": 100.0,
+              "description": "Width in px",
+              "minimum": 0.0,
+              "title": "Width",
+              "type": "number"
+            },
+            "x": {
+              "default": 0.0,
+              "description": "Left position in px (1280x720 canvas)",
+              "title": "X",
+              "type": "number"
+            },
+            "y": {
+              "default": 0.0,
+              "description": "Top position in px",
+              "title": "Y",
+              "type": "number"
+            },
+            "z_index": {
+              "default": 0,
+              "description": "Stacking order",
+              "title": "Z Index",
+              "type": "integer"
+            }
+          },
+          "required": [
+            "arrow_end",
+            "arrow_start",
+            "end_x",
+            "end_y",
+            "height",
+            "id",
+            "line_type",
+            "rotation",
+            "start_x",
+            "start_y",
+            "style",
+            "type",
+            "width",
+            "x",
+            "y",
+            "z_index"
+          ],
+          "title": "ConnectorElementIR",
+          "type": "object"
+        },
+        "ElementStyleIR": {
+          "properties": {
+            "border": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/BorderStyle"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "fill": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/FillStyle"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "opacity": {
+              "default": 1.0,
+              "maximum": 1.0,
+              "minimum": 0.0,
+              "title": "Opacity",
+              "type": "number"
+            },
+            "padding": {
+              "default": 8.0,
+              "description": "Internal padding in px",
+              "title": "Padding",
+              "type": "number"
+            },
+            "radius": {
+              "default": 0.0,
+              "description": "Normalized border radius 0.0 - 0.5 or px",
+              "title": "Radius",
+              "type": "number"
+            },
+            "shadow": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/ShadowStyle"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            }
+          },
+          "required": [
+            "opacity",
+            "padding",
+            "radius"
+          ],
+          "title": "ElementStyleIR",
+          "type": "object"
+        },
+        "FillStyle": {
+          "properties": {
+            "alpha": {
+              "default": 1.0,
+              "maximum": 1.0,
+              "minimum": 0.0,
+              "title": "Alpha",
+              "type": "number"
+            },
+            "color": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": "#3B82F6",
+              "description": "Hex color",
+              "title": "Color"
+            },
+            "gradient": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/GradientFill"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "theme_color": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "OOXML theme token: accent1-6, dk1, lt1, etc.",
+              "title": "Theme Color"
+            },
+            "type": {
+              "default": "solid",
+              "enum": [
+                "none",
+                "solid",
+                "gradient",
+                "theme"
+              ],
+              "title": "Type",
+              "type": "string"
+            }
+          },
+          "required": [
+            "alpha",
+            "type"
+          ],
+          "title": "FillStyle",
+          "type": "object"
+        },
+        "FontIR": {
+          "properties": {
+            "bold": {
+              "default": false,
+              "title": "Bold",
+              "type": "boolean"
+            },
+            "color": {
+              "default": "#1E293B",
+              "title": "Color",
+              "type": "string"
+            },
+            "highlight": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Highlight"
+            },
+            "italic": {
+              "default": false,
+              "title": "Italic",
+              "type": "boolean"
+            },
+            "name": {
+              "default": "Segoe UI",
+              "title": "Name",
+              "type": "string"
+            },
+            "size": {
+              "default": 18.0,
+              "description": "Font size in px",
+              "minimum": 6.0,
+              "title": "Size",
+              "type": "number"
+            },
+            "strikethrough": {
+              "default": false,
+              "title": "Strikethrough",
+              "type": "boolean"
+            },
+            "theme_color": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Theme Color"
+            },
+            "underline": {
+              "default": false,
+              "title": "Underline",
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "color",
+            "name",
+            "size"
+          ],
+          "title": "FontIR",
+          "type": "object"
+        },
+        "GradientFill": {
+          "properties": {
+            "angle": {
+              "default": 90.0,
+              "description": "Gradient angle in degrees",
+              "title": "Angle",
+              "type": "number"
+            },
+            "stops": {
+              "items": {
+                "$ref": "#/$defs/GradientStop"
+              },
+              "title": "Stops",
+              "type": "array"
+            },
+            "type": {
+              "default": "linear",
+              "enum": [
+                "linear",
+                "radial"
+              ],
+              "title": "Type",
+              "type": "string"
+            }
+          },
+          "required": [
+            "angle",
+            "stops",
+            "type"
+          ],
+          "title": "GradientFill",
+          "type": "object"
+        },
+        "GradientStop": {
+          "properties": {
+            "alpha": {
+              "default": 1.0,
+              "description": "Opacity from 0.0 to 1.0",
+              "title": "Alpha",
+              "type": "number"
+            },
+            "color": {
+              "default": "#3B82F6",
+              "description": "Hex color '#RRGGBB'",
+              "title": "Color",
+              "type": "string"
+            },
+            "position": {
+              "default": 0.0,
+              "description": "Stop position from 0.0 to 1.0",
+              "title": "Position",
+              "type": "number"
+            }
+          },
+          "required": [
+            "alpha",
+            "color",
+            "position"
+          ],
+          "title": "GradientStop",
+          "type": "object"
+        },
+        "GroupElementIR": {
+          "description": "Hierarchical Group container preserving nested structure and coordinate system.",
+          "properties": {
+            "children": {
+              "items": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/ShapeElementIR"
+                  },
+                  {
+                    "$ref": "#/$defs/TextElementIR"
+                  },
+                  {
+                    "$ref": "#/$defs/ConnectorElementIR"
+                  },
+                  {
+                    "$ref": "#/$defs/ImageElementIR"
+                  },
+                  {
+                    "$ref": "#/$defs/TableElementIR"
+                  },
+                  {
+                    "$ref": "#/$defs/GroupElementIR"
+                  }
+                ]
+              },
+              "title": "Children",
+              "type": "array"
+            },
+            "height": {
+              "default": 50.0,
+              "description": "Height in px",
+              "minimum": 0.0,
+              "title": "Height",
+              "type": "number"
+            },
+            "id": {
+              "title": "Id",
+              "type": "string"
+            },
+            "locked": {
+              "default": false,
+              "title": "Locked",
+              "type": "boolean"
+            },
+            "metadata": {
+              "additionalProperties": true,
+              "description": "Supplementary metadata or placeholder tags",
+              "title": "Metadata",
+              "type": "object"
+            },
+            "name": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Name"
+            },
+            "rotation": {
+              "default": 0.0,
+              "description": "Clockwise rotation in degrees",
+              "title": "Rotation",
+              "type": "number"
+            },
+            "source_evidence_ids": {
+              "description": "Associated evidence IDs",
+              "items": {
+                "type": "string"
+              },
+              "title": "Source Evidence Ids",
+              "type": "array"
+            },
+            "source_ref": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Reference ID back to SlideSpec content block",
+              "title": "Source Ref"
+            },
+            "style": {
+              "$ref": "#/$defs/ElementStyleIR"
+            },
+            "transform": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/TransformIR"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "type": {
+              "const": "group",
+              "default": "group",
+              "title": "Type",
+              "type": "string"
+            },
+            "width": {
+              "default": 100.0,
+              "description": "Width in px",
+              "minimum": 0.0,
+              "title": "Width",
+              "type": "number"
+            },
+            "x": {
+              "default": 0.0,
+              "description": "Left position in px (1280x720 canvas)",
+              "title": "X",
+              "type": "number"
+            },
+            "y": {
+              "default": 0.0,
+              "description": "Top position in px",
+              "title": "Y",
+              "type": "number"
+            },
+            "z_index": {
+              "default": 0,
+              "description": "Stacking order",
+              "title": "Z Index",
+              "type": "integer"
+            }
+          },
+          "required": [
+            "children",
+            "height",
+            "id",
+            "rotation",
+            "style",
+            "type",
+            "width",
+            "x",
+            "y",
+            "z_index"
+          ],
+          "title": "GroupElementIR",
+          "type": "object"
+        },
+        "ImageElementIR": {
+          "properties": {
+            "alt_text": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Alt Text"
+            },
+            "asset_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Asset Id"
+            },
+            "children": {
+              "items": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/ShapeElementIR"
+                  },
+                  {
+                    "$ref": "#/$defs/TextElementIR"
+                  },
+                  {
+                    "$ref": "#/$defs/ConnectorElementIR"
+                  },
+                  {
+                    "$ref": "#/$defs/ImageElementIR"
+                  },
+                  {
+                    "$ref": "#/$defs/TableElementIR"
+                  },
+                  {
+                    "$ref": "#/$defs/GroupElementIR"
+                  }
+                ]
+              },
+              "title": "Children",
+              "type": "array"
+            },
+            "crop": {
+              "anyOf": [
+                {
+                  "additionalProperties": {
+                    "type": "number"
+                  },
+                  "type": "object"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Normalized crop margins: {left, top, right, bottom}",
+              "title": "Crop"
+            },
+            "height": {
+              "default": 50.0,
+              "description": "Height in px",
+              "minimum": 0.0,
+              "title": "Height",
+              "type": "number"
+            },
+            "id": {
+              "title": "Id",
+              "type": "string"
+            },
+            "locked": {
+              "default": false,
+              "title": "Locked",
+              "type": "boolean"
+            },
+            "metadata": {
+              "additionalProperties": true,
+              "description": "Supplementary metadata or placeholder tags",
+              "title": "Metadata",
+              "type": "object"
+            },
+            "name": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Name"
+            },
+            "rotation": {
+              "default": 0.0,
+              "description": "Clockwise rotation in degrees",
+              "title": "Rotation",
+              "type": "number"
+            },
+            "source_evidence_ids": {
+              "description": "Associated evidence IDs",
+              "items": {
+                "type": "string"
+              },
+              "title": "Source Evidence Ids",
+              "type": "array"
+            },
+            "source_ref": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Reference ID back to SlideSpec content block",
+              "title": "Source Ref"
+            },
+            "src": {
+              "default": "",
+              "description": "Asset URL, relative path or data:image/*;base64",
+              "title": "Src",
+              "type": "string"
+            },
+            "style": {
+              "$ref": "#/$defs/ElementStyleIR"
+            },
+            "transform": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/TransformIR"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "type": {
+              "const": "image",
+              "default": "image",
+              "title": "Type",
+              "type": "string"
+            },
+            "width": {
+              "default": 100.0,
+              "description": "Width in px",
+              "minimum": 0.0,
+              "title": "Width",
+              "type": "number"
+            },
+            "x": {
+              "default": 0.0,
+              "description": "Left position in px (1280x720 canvas)",
+              "title": "X",
+              "type": "number"
+            },
+            "y": {
+              "default": 0.0,
+              "description": "Top position in px",
+              "title": "Y",
+              "type": "number"
+            },
+            "z_index": {
+              "default": 0,
+              "description": "Stacking order",
+              "title": "Z Index",
+              "type": "integer"
+            }
+          },
+          "required": [
+            "height",
+            "id",
+            "rotation",
+            "src",
+            "style",
+            "type",
+            "width",
+            "x",
+            "y",
+            "z_index"
+          ],
+          "title": "ImageElementIR",
+          "type": "object"
+        },
+        "ParagraphIR": {
+          "properties": {
+            "align": {
+              "default": "left",
+              "enum": [
+                "left",
+                "center",
+                "right",
+                "justify"
+              ],
+              "title": "Align",
+              "type": "string"
+            },
+            "bullet": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Bullet symbol, 'none', 'disc', or numbering",
+              "title": "Bullet"
+            },
+            "indent_level": {
+              "default": 0,
+              "description": "0-based paragraph nesting level",
+              "maximum": 9,
+              "minimum": 0,
+              "title": "Indent Level",
+              "type": "integer"
+            },
+            "line_spacing": {
+              "default": 1.2,
+              "description": "Line height multiplier",
+              "title": "Line Spacing",
+              "type": "number"
+            },
+            "margin_left": {
+              "default": 0.0,
+              "description": "Left indentation margin in px",
+              "title": "Margin Left",
+              "type": "number"
+            },
+            "runs": {
+              "items": {
+                "$ref": "#/$defs/RunIR"
+              },
+              "title": "Runs",
+              "type": "array"
+            },
+            "space_after": {
+              "default": 0.0,
+              "title": "Space After",
+              "type": "number"
+            },
+            "space_before": {
+              "default": 0.0,
+              "title": "Space Before",
+              "type": "number"
+            },
+            "vertical_align": {
+              "default": "top",
+              "enum": [
+                "top",
+                "middle",
+                "bottom"
+              ],
+              "title": "Vertical Align",
+              "type": "string"
+            }
+          },
+          "required": [
+            "align",
+            "line_spacing",
+            "runs"
+          ],
+          "title": "ParagraphIR",
+          "type": "object"
+        },
+        "RunIR": {
+          "properties": {
+            "font": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/FontIR"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "hyperlink": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Hyperlink"
+            },
+            "text": {
+              "default": "",
+              "title": "Text",
+              "type": "string"
+            }
+          },
+          "required": [
+            "text"
+          ],
+          "title": "RunIR",
+          "type": "object"
+        },
+        "ShadowStyle": {
+          "properties": {
+            "alpha": {
+              "default": 0.25,
+              "maximum": 1.0,
+              "minimum": 0.0,
+              "title": "Alpha",
+              "type": "number"
+            },
+            "angle": {
+              "default": 45.0,
+              "description": "Shadow angle in degrees",
+              "title": "Angle",
+              "type": "number"
+            },
+            "blur": {
+              "default": 4.0,
+              "minimum": 0.0,
+              "title": "Blur",
+              "type": "number"
+            },
+            "color": {
+              "default": "#000000",
+              "title": "Color",
+              "type": "string"
+            },
+            "distance": {
+              "default": 3.0,
+              "minimum": 0.0,
+              "title": "Distance",
+              "type": "number"
+            },
+            "enabled": {
+              "default": false,
+              "title": "Enabled",
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "alpha",
+            "angle",
+            "blur",
+            "color",
+            "distance",
+            "enabled"
+          ],
+          "title": "ShadowStyle",
+          "type": "object"
+        },
+        "ShapeElementIR": {
+          "properties": {
+            "adjust_values": {
+              "additionalProperties": {
+                "type": "number"
+              },
+              "description": "OOXML shape adjustment values (e.g. corner radius)",
+              "title": "Adjust Values",
+              "type": "object"
+            },
+            "children": {
+              "items": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/ShapeElementIR"
+                  },
+                  {
+                    "$ref": "#/$defs/TextElementIR"
+                  },
+                  {
+                    "$ref": "#/$defs/ConnectorElementIR"
+                  },
+                  {
+                    "$ref": "#/$defs/ImageElementIR"
+                  },
+                  {
+                    "$ref": "#/$defs/TableElementIR"
+                  },
+                  {
+                    "$ref": "#/$defs/GroupElementIR"
+                  }
+                ]
+              },
+              "title": "Children",
+              "type": "array"
+            },
+            "custom_geometry": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Optional SVG path data for custom shapes",
+              "title": "Custom Geometry"
+            },
+            "flip_h": {
+              "default": false,
+              "title": "Flip H",
+              "type": "boolean"
+            },
+            "flip_v": {
+              "default": false,
+              "title": "Flip V",
+              "type": "boolean"
+            },
+            "height": {
+              "default": 50.0,
+              "description": "Height in px",
+              "minimum": 0.0,
+              "title": "Height",
+              "type": "number"
+            },
+            "id": {
+              "title": "Id",
+              "type": "string"
+            },
+            "locked": {
+              "default": false,
+              "title": "Locked",
+              "type": "boolean"
+            },
+            "metadata": {
+              "additionalProperties": true,
+              "description": "Supplementary metadata or placeholder tags",
+              "title": "Metadata",
+              "type": "object"
+            },
+            "name": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Name"
+            },
+            "rotation": {
+              "default": 0.0,
+              "description": "Clockwise rotation in degrees",
+              "title": "Rotation",
+              "type": "number"
+            },
+            "shape_type": {
+              "default": "roundRect",
+              "description": "rectangle, roundRect, ellipse, diamond, triangle, rightArrow, callout, star",
+              "title": "Shape Type",
+              "type": "string"
+            },
+            "source_evidence_ids": {
+              "description": "Associated evidence IDs",
+              "items": {
+                "type": "string"
+              },
+              "title": "Source Evidence Ids",
+              "type": "array"
+            },
+            "source_ref": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Reference ID back to SlideSpec content block",
+              "title": "Source Ref"
+            },
+            "style": {
+              "$ref": "#/$defs/ElementStyleIR"
+            },
+            "text_content": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/TextContentIR"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "transform": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/TransformIR"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "type": {
+              "const": "shape",
+              "default": "shape",
+              "title": "Type",
+              "type": "string"
+            },
+            "width": {
+              "default": 100.0,
+              "description": "Width in px",
+              "minimum": 0.0,
+              "title": "Width",
+              "type": "number"
+            },
+            "x": {
+              "default": 0.0,
+              "description": "Left position in px (1280x720 canvas)",
+              "title": "X",
+              "type": "number"
+            },
+            "y": {
+              "default": 0.0,
+              "description": "Top position in px",
+              "title": "Y",
+              "type": "number"
+            },
+            "z_index": {
+              "default": 0,
+              "description": "Stacking order",
+              "title": "Z Index",
+              "type": "integer"
+            }
+          },
+          "required": [
+            "height",
+            "id",
+            "rotation",
+            "shape_type",
+            "style",
+            "type",
+            "width",
+            "x",
+            "y",
+            "z_index"
+          ],
+          "title": "ShapeElementIR",
+          "type": "object"
+        },
+        "TableCellIR": {
+          "properties": {
+            "col": {
+              "title": "Col",
+              "type": "integer"
+            },
+            "col_span": {
+              "default": 1,
+              "title": "Col Span",
+              "type": "integer"
+            },
+            "row": {
+              "title": "Row",
+              "type": "integer"
+            },
+            "row_span": {
+              "default": 1,
+              "title": "Row Span",
+              "type": "integer"
+            },
+            "style": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/ElementStyleIR"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "text_content": {
+              "$ref": "#/$defs/TextContentIR"
+            }
+          },
+          "required": [
+            "col",
+            "row",
+            "text_content"
+          ],
+          "title": "TableCellIR",
+          "type": "object"
+        },
+        "TableElementIR": {
+          "properties": {
+            "cells": {
+              "items": {
+                "items": {
+                  "$ref": "#/$defs/TableCellIR"
+                },
+                "type": "array"
+              },
+              "title": "Cells",
+              "type": "array"
+            },
+            "children": {
+              "items": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/ShapeElementIR"
+                  },
+                  {
+                    "$ref": "#/$defs/TextElementIR"
+                  },
+                  {
+                    "$ref": "#/$defs/ConnectorElementIR"
+                  },
+                  {
+                    "$ref": "#/$defs/ImageElementIR"
+                  },
+                  {
+                    "$ref": "#/$defs/TableElementIR"
+                  },
+                  {
+                    "$ref": "#/$defs/GroupElementIR"
+                  }
+                ]
+              },
+              "title": "Children",
+              "type": "array"
+            },
+            "cols": {
+              "default": 2,
+              "title": "Cols",
+              "type": "integer"
+            },
+            "height": {
+              "default": 50.0,
+              "description": "Height in px",
+              "minimum": 0.0,
+              "title": "Height",
+              "type": "number"
+            },
+            "id": {
+              "title": "Id",
+              "type": "string"
+            },
+            "locked": {
+              "default": false,
+              "title": "Locked",
+              "type": "boolean"
+            },
+            "metadata": {
+              "additionalProperties": true,
+              "description": "Supplementary metadata or placeholder tags",
+              "title": "Metadata",
+              "type": "object"
+            },
+            "name": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Name"
+            },
+            "rotation": {
+              "default": 0.0,
+              "description": "Clockwise rotation in degrees",
+              "title": "Rotation",
+              "type": "number"
+            },
+            "rows": {
+              "default": 2,
+              "title": "Rows",
+              "type": "integer"
+            },
+            "source_evidence_ids": {
+              "description": "Associated evidence IDs",
+              "items": {
+                "type": "string"
+              },
+              "title": "Source Evidence Ids",
+              "type": "array"
+            },
+            "source_ref": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Reference ID back to SlideSpec content block",
+              "title": "Source Ref"
+            },
+            "style": {
+              "$ref": "#/$defs/ElementStyleIR"
+            },
+            "transform": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/TransformIR"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "type": {
+              "const": "table",
+              "default": "table",
+              "title": "Type",
+              "type": "string"
+            },
+            "width": {
+              "default": 100.0,
+              "description": "Width in px",
+              "minimum": 0.0,
+              "title": "Width",
+              "type": "number"
+            },
+            "x": {
+              "default": 0.0,
+              "description": "Left position in px (1280x720 canvas)",
+              "title": "X",
+              "type": "number"
+            },
+            "y": {
+              "default": 0.0,
+              "description": "Top position in px",
+              "title": "Y",
+              "type": "number"
+            },
+            "z_index": {
+              "default": 0,
+              "description": "Stacking order",
+              "title": "Z Index",
+              "type": "integer"
+            }
+          },
+          "required": [
+            "cells",
+            "cols",
+            "height",
+            "id",
+            "rotation",
+            "rows",
+            "style",
+            "type",
+            "width",
+            "x",
+            "y",
+            "z_index"
+          ],
+          "title": "TableElementIR",
+          "type": "object"
+        },
+        "TextContentIR": {
+          "properties": {
+            "paragraphs": {
+              "items": {
+                "$ref": "#/$defs/ParagraphIR"
+              },
+              "title": "Paragraphs",
+              "type": "array"
+            }
+          },
+          "required": [
+            "paragraphs"
+          ],
+          "title": "TextContentIR",
+          "type": "object"
+        },
+        "TextElementIR": {
+          "properties": {
+            "children": {
+              "items": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/ShapeElementIR"
+                  },
+                  {
+                    "$ref": "#/$defs/TextElementIR"
+                  },
+                  {
+                    "$ref": "#/$defs/ConnectorElementIR"
+                  },
+                  {
+                    "$ref": "#/$defs/ImageElementIR"
+                  },
+                  {
+                    "$ref": "#/$defs/TableElementIR"
+                  },
+                  {
+                    "$ref": "#/$defs/GroupElementIR"
+                  }
+                ]
+              },
+              "title": "Children",
+              "type": "array"
+            },
+            "height": {
+              "default": 50.0,
+              "description": "Height in px",
+              "minimum": 0.0,
+              "title": "Height",
+              "type": "number"
+            },
+            "id": {
+              "title": "Id",
+              "type": "string"
+            },
+            "locked": {
+              "default": false,
+              "title": "Locked",
+              "type": "boolean"
+            },
+            "metadata": {
+              "additionalProperties": true,
+              "description": "Supplementary metadata or placeholder tags",
+              "title": "Metadata",
+              "type": "object"
+            },
+            "name": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Name"
+            },
+            "rotation": {
+              "default": 0.0,
+              "description": "Clockwise rotation in degrees",
+              "title": "Rotation",
+              "type": "number"
+            },
+            "source_evidence_ids": {
+              "description": "Associated evidence IDs",
+              "items": {
+                "type": "string"
+              },
+              "title": "Source Evidence Ids",
+              "type": "array"
+            },
+            "source_ref": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Reference ID back to SlideSpec content block",
+              "title": "Source Ref"
+            },
+            "style": {
+              "$ref": "#/$defs/ElementStyleIR"
+            },
+            "text_content": {
+              "$ref": "#/$defs/TextContentIR"
+            },
+            "transform": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/TransformIR"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "type": {
+              "const": "text",
+              "default": "text",
+              "title": "Type",
+              "type": "string"
+            },
+            "width": {
+              "default": 100.0,
+              "description": "Width in px",
+              "minimum": 0.0,
+              "title": "Width",
+              "type": "number"
+            },
+            "x": {
+              "default": 0.0,
+              "description": "Left position in px (1280x720 canvas)",
+              "title": "X",
+              "type": "number"
+            },
+            "y": {
+              "default": 0.0,
+              "description": "Top position in px",
+              "title": "Y",
+              "type": "number"
+            },
+            "z_index": {
+              "default": 0,
+              "description": "Stacking order",
+              "title": "Z Index",
+              "type": "integer"
+            }
+          },
+          "required": [
+            "height",
+            "id",
+            "rotation",
+            "style",
+            "text_content",
+            "type",
+            "width",
+            "x",
+            "y",
+            "z_index"
+          ],
+          "title": "TextElementIR",
+          "type": "object"
+        },
+        "TransformIR": {
+          "description": "Canonical geometric transformation on the 1280x720 canvas.",
+          "properties": {
+            "flip_h": {
+              "default": false,
+              "description": "Horizontal flip",
+              "title": "Flip H",
+              "type": "boolean"
+            },
+            "flip_v": {
+              "default": false,
+              "description": "Vertical flip",
+              "title": "Flip V",
+              "type": "boolean"
+            },
+            "height": {
+              "default": 50.0,
+              "description": "Height in px",
+              "minimum": 0.0,
+              "title": "Height",
+              "type": "number"
+            },
+            "rotation": {
+              "default": 0.0,
+              "description": "Clockwise rotation in degrees",
+              "title": "Rotation",
+              "type": "number"
+            },
+            "scale_x": {
+              "default": 1.0,
+              "description": "Local horizontal scale",
+              "title": "Scale X",
+              "type": "number"
+            },
+            "scale_y": {
+              "default": 1.0,
+              "description": "Local vertical scale",
+              "title": "Scale Y",
+              "type": "number"
+            },
+            "width": {
+              "default": 100.0,
+              "description": "Width in px",
+              "minimum": 0.0,
+              "title": "Width",
+              "type": "number"
+            },
+            "x": {
+              "default": 0.0,
+              "description": "Left position in px",
+              "title": "X",
+              "type": "number"
+            },
+            "y": {
+              "default": 0.0,
+              "description": "Top position in px",
+              "title": "Y",
+              "type": "number"
+            }
+          },
+          "required": [
+            "height",
+            "rotation",
+            "width",
+            "x",
+            "y"
+          ],
+          "title": "TransformIR",
+          "type": "object"
+        }
+      },
+      "properties": {
+        "background": {
+          "$ref": "#/$defs/FillStyle"
+        },
+        "elements": {
+          "items": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/ShapeElementIR"
+              },
+              {
+                "$ref": "#/$defs/TextElementIR"
+              },
+              {
+                "$ref": "#/$defs/ConnectorElementIR"
+              },
+              {
+                "$ref": "#/$defs/ImageElementIR"
+              },
+              {
+                "$ref": "#/$defs/TableElementIR"
+              },
+              {
+                "$ref": "#/$defs/GroupElementIR"
+              }
+            ]
+          },
+          "title": "Elements",
+          "type": "array"
+        },
+        "height": {
+          "default": 720,
+          "description": "Standard canvas height in px",
+          "title": "Height",
+          "type": "integer"
+        },
+        "id": {
+          "title": "Id",
+          "type": "string"
+        },
+        "layout_name": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "OOXML layout name, e.g. Title and Content",
+          "title": "Layout Name"
+        },
+        "master": {
+          "anyOf": [
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Master slide layout metadata",
+          "title": "Master"
+        },
+        "notes": {
+          "default": "",
+          "title": "Notes",
+          "type": "string"
+        },
+        "slide_num": {
+          "default": 1,
+          "title": "Slide Num",
+          "type": "integer"
+        },
+        "theme": {
+          "anyOf": [
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Slide-level theme override",
+          "title": "Theme"
+        },
+        "theme_ref": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Reference to presentation theme",
+          "title": "Theme Ref"
+        },
+        "title": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Title"
+        },
+        "width": {
+          "default": 1280,
+          "description": "Standard canvas width in px",
+          "title": "Width",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "background",
+        "elements",
+        "height",
+        "id",
+        "slide_num",
+        "width"
+      ],
+      "title": "SlideIR",
+      "type": "object"
+    }
+  },
+  "schema_version": 1
+}

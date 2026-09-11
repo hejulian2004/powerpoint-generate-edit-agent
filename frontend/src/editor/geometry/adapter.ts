@@ -1,4 +1,4 @@
-import type { ConnectorElementIR, ElementIR, GroupElementIR } from '../../types/ppt'
+import type { ConnectorElementIR, ElementIR, GroupElementIR } from '../../types/presentation-ir.generated'
 import type { Bounds, ResizeHandle } from '../snapping/types'
 
 const round2 = (value: number) => Math.round(value * 100) / 100

@@ -2,7 +2,7 @@ import React, { useState, useRef, useEffect } from 'react'
 import type {
   SlideIR, ElementIR, ShapeElementIR, TextElementIR,
   ConnectorElementIR, ImageElementIR, GroupElementIR, FillStyle, BorderStyle
-} from '../types/ppt'
+} from '../types/presentation-ir.generated'
 import { usePPTStore } from '../store/usePPTStore'
 import { themeColors } from '../theme/tokens'
 import { AlignmentGuides } from './AlignmentGuides'
@@ -254,7 +254,7 @@ export const SVGRendererComponent: React.FC<Props> = ({
     )
   }
 
-  const getFillValue = (fill?: FillStyle, elemId?: string) => {
+  const getFillValue = (fill?: FillStyle | null, elemId?: string) => {
     if (!fill || fill.type === 'none') return 'none'
     if (fill.type === 'gradient' && fill.gradient) {
       return `url(#${elemId ? `grad-${elemId}` : `bg-grad-${slide.id}`})`
@@ -266,7 +266,7 @@ export const SVGRendererComponent: React.FC<Props> = ({
     return color
   }
 
-  const getStrokeProps = (border?: BorderStyle) => {
+  const getStrokeProps = (border?: BorderStyle | null) => {
     if (!border || border.style === 'none' || border.width <= 0) {
       return { stroke: 'none', strokeWidth: 0 }
     }

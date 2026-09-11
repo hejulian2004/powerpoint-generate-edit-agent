@@ -15,7 +15,7 @@ import {
 import { snapMove, snapResize, clampResizeAxis, SNAP_SCREEN_PX, RELEASE_SCREEN_PX } from '../editor/snapping/snapEngine'
 import { collectSnapCandidates } from '../editor/snapping/candidates'
 import type { Bounds, SnapCandidate, SnapGuide, SnapSession, SnapThresholds, ResizeHandle } from '../editor/snapping/types'
-import type { ElementIR } from '../types/ppt'
+import type { ElementIR } from '../types/presentation-ir.generated'
 import {
   cloneElement,
   findElementPath,
