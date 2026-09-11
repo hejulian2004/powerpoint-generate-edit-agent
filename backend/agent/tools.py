@@ -1465,8 +1465,8 @@ def _build_slide_elements_by_layout(
     elif layout == "comparison":
         header("05 / COMPARISON")
         cols = items or [
-            {"title": "传统设计模式", "description": "• 手动反复排版与校对\n• 耗时耗力且样式易冲突\n• 跨平台协同效率低"},
-            {"title": "Agentic AI 架构", "description": "• PPT-IR 核心结构解耦\n• 自然语言驱动自动化生成\n• 实时渲染与无损 OOXML 导出"}
+            {"title": "传统设计模式", "description": "• 手动反复排版与校对\n• 耗时耗力且样式易冲突\n• 跨团队协同效率低"},
+            {"title": "Agentic AI 架构", "description": "• PPT-IR 核心结构解耦\n• 自然语言驱动自动化生成\n• 实时渲染与 OOXML 导出"}
         ]
         col_w = 510.0
         col_h = 400.0

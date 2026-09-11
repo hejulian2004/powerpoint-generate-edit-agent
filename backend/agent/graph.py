@@ -428,18 +428,18 @@ def _heuristic_tool_planner(
                     {
                         "title": "系统核心功能矩阵",
                         "layout": "card_grid",
-                        "subtitle": "高可用模块化架构，驱动企业级高效智能生产力",
+                        "subtitle": "高可用模块化架构，驱动高效智能生产力",
                         "items": [
-                            {"title": "PPT-IR 中间表示", "description": "统一解耦各种格式，支持毫秒级差异同步与补丁撤销", "badge": "01"},
-                            {"title": "LangGraph 协同流", "description": "状态机驱动的观察-规划-执行-自检闭环，确保高精度图元编排", "badge": "02"},
-                            {"title": "原生 OOXML 引擎", "description": "直接读写底层 XML 数据，无损导入导出高保真演示文稿", "badge": "03"}
+                            {"title": "PPT-IR 中间表示", "description": "统一解耦各种格式，支持增量差异同步与补丁撤销", "badge": "01"},
+                            {"title": "LangGraph 协同流", "description": "状态机驱动的观察-规划-执行-自检闭环，确保图元编排精度", "badge": "02"},
+                            {"title": "原生 OOXML 引擎", "description": "直接读写底层 XML 数据，高保真导入导出演示文稿", "badge": "03"}
                         ]
                     },
                     {
                         "title": "项目发展阶段与演进时间线",
                         "layout": "timeline",
                         "items": [
-                            {"title": "Phase 1: 底层模型确立", "description": "构建标准 1280x720 PPT-IR 抽象与属性规范"},
+                            {"title": "Phase 1: 底层模型确立", "description": "构建标准 PPT-IR 抽象与属性规范"},
                             {"title": "Phase 2: Agent 与工具链", "description": "接入 LangGraph 智能编排与专业图元操作工具库"},
                             {"title": "Phase 3: 实时双向预览", "description": "WebSocket 全双工协同，实现端到端所见即所得"}
                         ]
@@ -448,9 +448,9 @@ def _heuristic_tool_planner(
                         "title": "关键效能与业务价值指标",
                         "layout": "kpi_metrics",
                         "items": [
-                            {"value": "10x+", "label": "制作效率提升", "subtext": "全流程自动化分钟级出稿"},
-                            {"value": "99.8%", "label": "样式保真度", "subtext": "原生 OOXML 双向精准映射"},
-                            {"value": "< 300ms", "label": "协同响应延迟", "subtext": "全量状态毫秒级增量广播"}
+                            {"value": "—", "label": "制作效率提升", "subtext": "全流程自动化出稿"},
+                            {"value": "—", "label": "样式保真度", "subtext": "原生 OOXML 双向映射"},
+                            {"value": "—", "label": "协同响应延迟", "subtext": "全量状态增量广播"}
                         ]
                     },
                     {
@@ -458,7 +458,7 @@ def _heuristic_tool_planner(
                         "layout": "comparison",
                         "items": [
                             {"title": "传统手动模式", "description": "• 反复调整对齐坐标与边距\n• 跨成员协作易发生样式冲突\n• 耗费大量机械劳动"},
-                            {"title": "Agentic 智能驱动", "description": "• 自然语言意图理解并自动构图\n• 自动遵循专业排版设计规范\n• 一键无损导出与历史版本追溯"}
+                            {"title": "Agentic 智能驱动", "description": "• 自然语言意图理解并自动构图\n• 自动遵循专业排版设计规范\n• 一键导出与历史版本追溯"}
                         ]
                     }
                 ]
@@ -488,9 +488,9 @@ def _heuristic_tool_planner(
                     "layout_type": "kpi_metrics",
                     "title": "核心关键绩效指标 (KPI)",
                     "items": [
-                        {"value": "85.6%", "label": "用户满意度", "subtext": "设计美感与排版质感显著增强"},
-                        {"value": "3.5x", "label": "协同周转速率", "subtext": "大幅降低改版沟通成本"},
-                        {"value": "100%", "label": "平台兼容性", "subtext": "支持全平台标准 PowerPoint 播放"}
+                        {"value": "—", "label": "用户满意度", "subtext": "设计美感与排版质感增强"},
+                        {"value": "—", "label": "协同周转速率", "subtext": "降低改版沟通成本"},
+                        {"value": "—", "label": "平台兼容性", "subtext": "支持标准 PowerPoint 播放"}
                     ]
                 },
                 "id": f"call_{uuid.uuid4().hex[:6]}"
@@ -503,7 +503,7 @@ def _heuristic_tool_planner(
                     "title": "方案对比与选型分析",
                     "items": [
                         {"title": "方案 A (传统模式)", "description": "• 成本高、周期长\n• 灵活性差\n• 难以快速规模化复制"},
-                        {"title": "方案 B (智能协同)", "description": "• 毫秒级生成与重绘\n• 统一高质感设计系统\n• 赋能全员高效表达"}
+                            {"title": "方案 B (智能协同)", "description": "• 快速生成与重绘\n• 统一高质感设计系统\n• 赋能全员高效表达"}
                     ]
                 },
                 "id": f"call_{uuid.uuid4().hex[:6]}"
@@ -672,19 +672,18 @@ def _heuristic_tool_planner(
                         "id": f"call_{uuid.uuid4().hex[:6]}"
                     })
             else:
-                # Add or update generic shape
+                # Ambiguous modify: never invent a generic shape with fabricated
+                # copy. Ask the user to disambiguate instead.
                 tool_calls.append({
-                    "name": "add_shape",
+                    "name": "request_clarification",
                     "arguments": {
-                        "shape_type": "roundRect",
-                        "x": 100,
-                        "y": 240,
-                        "width": 320,
-                        "height": 220,
-                        "fill_color": "#18181B",
-                        "text": f"AI 智能优化模块\n\n已根据指令 '{user_query[:20]}' 完成自动配置。"
+                        "question": (
+                            "我还不能确定您想修改哪个元素或改成什么效果。"
+                            "请先选中目标元素（或在指令中说明元素名称与目标属性/样式），"
+                            "我再精确执行，避免误改。"
+                        )
                     },
-                    "id": f"call_{uuid.uuid4().hex[:6]}"
+                    "id": f"call_{uuid.uuid4().hex[:6]}",
                 })
         else:
             # Empty slide, add text & card
@@ -724,9 +723,9 @@ async def mutation_node(state: PPTAgentState, config: RunnableConfig) -> Dict[st
     confirmed_ids = set(state.get("confirmed_tool_ids") or [])
     confirmed_ids.update(configurable.get("confirmed_tool_ids") or [])
 
-    from .mutation_gateway import MutationGateway
+    from .mutation_gateway import MutationGateway, GENERATION_TOOLS
     from .subagents.executor import ExecutorSubagent
-    from .grounding import collect_generation_text, unsupported_numbers
+    from .grounding import collect_generation_text, blocking_verdicts
 
     if pres is None:
         return {
@@ -793,6 +792,29 @@ async def mutation_node(state: PPTAgentState, config: RunnableConfig) -> Dict[st
     grounding = state.get("grounding") or {}
     source_text = grounding.get("source_text", "")
     enforce_grounding = bool(grounding.get("enforce_numeric_grounding"))
+    placeholder_ok = bool(grounding.get("is_placeholder_request"))
+
+    # Tool-execution-boundary grounding: enforce for ANY generation tool,
+    # independent of the router intent. The router only assesses
+    # `generate_presentation`, but the Executor can emit generation tools from
+    # other intents (e.g. `generate_slide_layout`), so we derive the assessment
+    # here as a fail-closed backstop whenever the request is factual.
+    calls_generate = any(
+        str(call.get("name") or call.get("tool") or "") in GENERATION_TOOLS
+        for call in tool_calls
+    )
+    if calls_generate and not enforce_grounding:
+        from .grounding import assess_generation_request
+
+        assessment = assess_generation_request(
+            state.get("user_query", ""),
+            state.get("raw_messages") or state.get("messages"),
+        )
+        if assessment.enforce_numeric_grounding:
+            source_text = assessment.source_text
+            enforce_grounding = True
+            placeholder_ok = assessment.is_placeholder_request
+
     blocked_results: List[Dict[str, Any]] = []
     unsupported_seen: List[str] = []
     if enforce_grounding:
@@ -801,19 +823,24 @@ async def mutation_node(state: PPTAgentState, config: RunnableConfig) -> Dict[st
             fn_name = str(call.get("name") or call.get("tool") or "")
             if fn_name in ("generate_presentation", "generate_slide_layout", "batch_add_cards"):
                 call_text = collect_generation_text(dict(call.get("arguments") or {}))
-                unsupported = unsupported_numbers(call_text, source_text)
-                if unsupported:
-                    for token in unsupported:
-                        if token not in unsupported_seen:
-                            unsupported_seen.append(token)
+                verdicts = blocking_verdicts(
+                    call_text, source_text, placeholder_ok=placeholder_ok
+                )
+                if verdicts:
+                    for verdict in verdicts:
+                        if verdict.claim not in unsupported_seen:
+                            unsupported_seen.append(verdict.claim)
                     blocked_results.append({
                         "tool": fn_name,
                         "arguments": call.get("arguments"),
                         "result": {
                             "success": False,
                             "error": "unsupported_facts",
-                            "unsupported_numbers": unsupported,
-                            "message": "生成内容包含资料中不存在的数字，已阻止写入以避免编造事实。",
+                            "unsupported_numbers": [
+                                v.claim for v in verdicts if v.category == "numeric"
+                            ],
+                            "grounding_verdicts": [v.to_dict() for v in verdicts],
+                            "message": "生成内容包含资料中无依据的事实主张，已阻止写入以避免编造。",
                         },
                     })
                     continue
@@ -821,6 +848,31 @@ async def mutation_node(state: PPTAgentState, config: RunnableConfig) -> Dict[st
         tool_calls = executable_calls
 
     before_signatures = _slide_signatures(pres)
+
+    # A plan may ask the user to disambiguate instead of writing (e.g. an
+    # ambiguous modify). Surface the question and execute nothing.
+    if tool_calls:
+        executable = []
+        clarification: Optional[str] = None
+        for call in tool_calls:
+            if str(call.get("name") or call.get("tool") or "") == "request_clarification":
+                question = (call.get("arguments") or {}).get("question")
+                if question:
+                    clarification = question
+            else:
+                executable.append(call)
+        if clarification and not executable:
+            return {
+                "tool_results": [],
+                "execution_plan": [],
+                "presentation_version": pres.version,
+                "active_slide_id": state.get("active_slide_id"),
+                "changed_slide_ids": [],
+                "stale_plan": False,
+                "grounding_clarification": clarification,
+            }
+        tool_calls = executable
+
     # The whole agent plan is ONE atomic envelope: any failed/blocked/ungrounded
     # call restores content, version, and history, and the plan is one undo step.
     batch = await MutationGateway.execute_tool_calls(

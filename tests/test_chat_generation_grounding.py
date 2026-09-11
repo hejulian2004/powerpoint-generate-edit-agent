@@ -195,3 +195,77 @@ def test_mutation_skips_enforcement_for_generic_request():
         assert not result.get("grounding_clarification")
 
     asyncio.run(_run())
+
+
+# =====================================================================
+# 5. Tool-execution-boundary enforcement (Finding 8)
+# =====================================================================
+
+def test_mutation_enforces_grounding_for_non_generate_intent():
+    """Grounding applies at the tool boundary, not only for generate_presentation.
+
+    The router only assesses the `generate_presentation` intent, but the Executor
+    can emit `generate_slide_layout` from e.g. a `generate_slide` intent. A
+    fabricated metric must still be blocked even without a router-supplied
+    `grounding` entry in state.
+    """
+
+    async def _run():
+        pres = PresentationIR(id="pres_slide", title="Deck", slides=[])
+        history = HistoryManager(pres)
+        call = {
+            "name": "generate_slide_layout",
+            "arguments": {
+                "layout": "two_column",
+                "items": [
+                    {"title": "性能对比", "value": "准确率 99.8%"},
+                ],
+            },
+            "id": "call_slide_ground",
+        }
+        state = {
+            "intent": "generate_slide",
+            "user_query": "生成两栏性能指标对比",
+            "execution_plan": [call],
+        }
+        result = await mutation_node(
+            state, {"configurable": {"pres": pres, "history": history, "session": None}}
+        )
+
+        assert result["grounding_clarification"]
+        assert "99.8" in result["grounding_clarification"]
+        blocked = [
+            r for r in result["tool_results"]
+            if r.get("result", {}).get("error") == "unsupported_facts"
+        ]
+        assert blocked, "non-generate_presentation intent must not bypass grounding"
+
+    asyncio.run(_run())
+
+
+def test_mutation_allows_non_generate_intent_without_factual_subject():
+    """Generic (non-factual) requests are not hard-blocked at the boundary."""
+
+    async def _run():
+        pres = PresentationIR(id="pres_slide_ok", title="Deck", slides=[])
+        history = HistoryManager(pres)
+        call = {
+            "name": "generate_slide_layout",
+            "arguments": {
+                "layout": "two_column",
+                "items": [{"title": "视觉风格", "value": "简洁大气"}],
+            },
+            "id": "call_slide_ok",
+        }
+        state = {
+            "intent": "generate_slide",
+            "user_query": "生成一页关于设计理念的幻灯片",
+            "execution_plan": [call],
+        }
+        result = await mutation_node(
+            state, {"configurable": {"pres": pres, "history": history, "session": None}}
+        )
+
+        assert not result.get("grounding_clarification")
+
+    asyncio.run(_run())

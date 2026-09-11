@@ -53,6 +53,181 @@ _DATA_CLAIM_RE = re.compile(
 )
 
 
+# --- Structured grounding policy (ALLOW / PLACEHOLDER / BLOCK) --------------
+#
+# Policy decisions are data, not control flow: tuning false positives means
+# editing this table only, never the Generation / Mutation main path.
+DECISION_ALLOW = "ALLOW"
+DECISION_PLACEHOLDER = "PLACEHOLDER"
+DECISION_BLOCK = "BLOCK"
+
+CATEGORY_NUMERIC = "numeric"
+CATEGORY_PERFORMANCE = "performance"
+CATEGORY_COMPATIBILITY = "compatibility"
+CATEGORY_ATTRIBUTION = "attribution"
+CATEGORY_QUALITATIVE = "qualitative"
+
+
+@dataclass(frozen=True)
+class GroundingRule:
+    """One data-driven classification rule.
+
+    Rules are evaluated in order; the first match for a span wins, so a specific
+    commitment (BLOCK) must precede a fuzzy bare term (PLACEHOLDER).
+    """
+
+    pattern: "re.Pattern[str]"
+    decision: str
+    category: str
+    reason: str
+    replacement: Optional[str] = None
+
+
+# Evidence-free specific commitments that may not be written.
+_BLOCK_SOURCE_ATTRIBUTION = re.compile(
+    r"(?:据|来自|引用)\s*(?:Gartner|IDC|Forrester|McKinsey|Nielsen|Nature|Science|IEEE|"
+    r"艾瑞|易观|QuestMobile)",
+    re.IGNORECASE,
+)
+_BLOCK_ENTERPRISE_COMMITMENT = re.compile(
+    r"企业级\s*(?:SLA|高并发|并发|可用性|承载|吞吐|QPS)|"
+    r"(?:SLA|QPS)\s*\d",
+)
+_BLOCK_SOTA = re.compile(r"SOTA|state[\s-]of[\s-]the[\s-]art", re.IGNORECASE)
+_BLOCK_COMPAT_RANGE = re.compile(r"(?:全|所有|全部)\s*平台\s*(?:兼容|支持|覆盖)")
+
+GROUNDING_POLICY: tuple[GroundingRule, ...] = (
+    GroundingRule(
+        _BLOCK_ENTERPRISE_COMMITMENT, DECISION_BLOCK, CATEGORY_COMPATIBILITY,
+        "涉及企业级可用性/并发等可验证承诺，缺乏依据时不得写为事实。",
+    ),
+    GroundingRule(
+        _BLOCK_SOTA, DECISION_BLOCK, CATEGORY_PERFORMANCE,
+        "SOTA/最先进属于可证伪的性能主张，缺乏依据时不得写为事实。",
+    ),
+    GroundingRule(
+        _BLOCK_SOURCE_ATTRIBUTION, DECISION_BLOCK, CATEGORY_ATTRIBUTION,
+        "指名道姓的外部来源引用必须可溯源，否则不得写入。",
+    ),
+    GroundingRule(
+        _BLOCK_COMPAT_RANGE, DECISION_BLOCK, CATEGORY_COMPATIBILITY,
+        "全平台兼容范围属于可验证承诺，缺乏依据时不得写为事实。",
+    ),
+    GroundingRule(
+        re.compile(r"毫秒级|微秒级|毫秒内|秒级", re.IGNORECASE),
+        DECISION_PLACEHOLDER, CATEGORY_PERFORMANCE,
+        "模糊性能表述缺少量化依据。", "[待验证性能描述]",
+    ),
+    GroundingRule(
+        re.compile(r"无损"),
+        DECISION_PLACEHOLDER, CATEGORY_PERFORMANCE,
+        "“无损”属于性能承诺而非风格描述。", "[待验证性能描述]",
+    ),
+    GroundingRule(
+        re.compile(r"业界领先|行业领先|领先水平|业界顶尖|行业顶尖"),
+        DECISION_PLACEHOLDER, CATEGORY_PERFORMANCE,
+        "模糊领先性表述缺少可验证依据。", "[待验证性能描述]",
+    ),
+    GroundingRule(
+        re.compile(r"企业级可靠性"),
+        DECISION_PLACEHOLDER, CATEGORY_PERFORMANCE,
+        "模糊可靠性表述缺少可验证依据。", "[待验证性能描述]",
+    ),
+    GroundingRule(
+        re.compile(r"企业级"),
+        DECISION_PLACEHOLDER, CATEGORY_PERFORMANCE,
+        "“企业级”单独出现属于模糊定位，非具体承诺。", "[待验证性能描述]",
+    ),
+    GroundingRule(
+        re.compile(r"全平台|跨平台|所有平台"),
+        DECISION_PLACEHOLDER, CATEGORY_COMPATIBILITY,
+        "模糊兼容性表述缺少验证依据。", "[待补充兼容性依据]",
+    ),
+)
+
+
+@dataclass
+class GroundingVerdict:
+    """Structured grounding decision for a single claim."""
+
+    decision: str
+    claim: str
+    category: str
+    reason: str
+    evidence: Optional[str] = None
+    replacement: Optional[str] = None
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "decision": self.decision,
+            "claim": self.claim,
+            "category": self.category,
+            "reason": self.reason,
+            "evidence": self.evidence,
+            "replacement": self.replacement,
+        }
+
+
+def scan_text_verdicts(
+    text: str, source_text: str = "", *, placeholder_ok: bool = False
+) -> List[GroundingVerdict]:
+    """Classify factual claims in `text` against `source_text`.
+
+    Numeric data claims absent from the source are BLOCK. Policy-table phrase
+    matches absent from the source are BLOCK or PLACEHOLDER per the table.
+    Deterministic and side-effect free so it can be reused by the gateway.
+    """
+    if not text or not text.strip():
+        return []
+
+    verdicts: List[GroundingVerdict] = []
+    seen: set = set()
+
+    for raw in data_claim_numbers(text, source_text):
+        key = (DECISION_BLOCK, raw)
+        if key in seen:
+            continue
+        seen.add(key)
+        verdicts.append(GroundingVerdict(
+            decision=DECISION_BLOCK,
+            claim=raw,
+            category=CATEGORY_NUMERIC,
+            reason="数值型数据主张在提供的资料中找不到依据。",
+        ))
+
+    for rule in GROUNDING_POLICY:
+        if placeholder_ok and rule.decision == DECISION_PLACEHOLDER:
+            continue
+        for match in rule.pattern.finditer(text):
+            claim = match.group(0).strip()
+            if not claim or claim in (source_text or ""):
+                continue
+            key = (rule.decision, claim)
+            if key in seen:
+                continue
+            seen.add(key)
+            verdicts.append(GroundingVerdict(
+                decision=rule.decision,
+                claim=claim,
+                category=rule.category,
+                reason=rule.reason,
+                replacement=rule.replacement,
+            ))
+
+    return verdicts
+
+
+def blocking_verdicts(
+    text: str, source_text: str = "", *, placeholder_ok: bool = False
+) -> List[GroundingVerdict]:
+    """Verdicts that must stop a write (BLOCK, plus PLACEHOLDER unless allowed)."""
+    return [
+        v for v in scan_text_verdicts(text, source_text, placeholder_ok=placeholder_ok)
+        if v.decision in (DECISION_BLOCK, DECISION_PLACEHOLDER)
+    ]
+
+
+
 @dataclass
 class SourceBundle:
     """Explicitly bound grounding source for one generation request.
