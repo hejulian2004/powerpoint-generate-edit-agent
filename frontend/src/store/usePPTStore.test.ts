@@ -18,8 +18,11 @@ const resetStore = () => {
     wsConnected: false,
     pendingMutations: [],
     outbox: [],
+    inFlightMutationId: null,
+    inFlightMessage: null,
     documentEpoch: null,
     confirmedRevision: 0,
+    hasServerRevision: false,
     mutationStatus: 'idle'
   })
 }
@@ -79,26 +82,39 @@ describe('usePPTStore mutation pipeline', () => {
     expect(usePPTStore.getState().mutationStatus).toBe('committed')
   })
 
-  it('keeps optimistic state while later mutations are still pending', () => {
+  it('single-flight: only sends the head until acked, then stamps the real server revision', () => {
     const slide = makeSlide([makeShape('s1', 0, 0)])
-    const pres = makePresentation([slide])
+    const pres = makePresentation([slide], 3)
     usePPTStore.getState().setPresentation(pres)
     const ws = connect()
+    ws.emit('presentation_loaded', {
+      presentation: pres,
+      active_slide_id: slide.id,
+      version: 3,
+      document_epoch: 'epoch_A'
+    })
 
     usePPTStore.getState().updateElementDirect('s1', { x: 40 })
     usePPTStore.getState().updateElementDirect('s1', { x: 80 })
-    const messages = ws.sentMessages().filter((m) => m.type === 'direct_update_element')
-    expect(messages).toHaveLength(2)
 
-    const serverPres = makePresentation([makeSlide([makeShape('s1', 40, 0)])], 2)
+    let messages = ws.sentMessages().filter((m) => m.type === 'direct_update_element')
+    expect(messages).toHaveLength(1)
+    expect(messages[0].expected_revision).toBe(3)
+    expect(usePPTStore.getState().getActiveSlide()?.elements[0].x).toBe(80)
+    expect(usePPTStore.getState().inFlightMutationId).toBe(messages[0].mutation_id)
+
+    const serverPres = makePresentation([makeSlide([makeShape('s1', 40, 0)])], 4)
     ws.emit('presentation_updated', {
       presentation: serverPres,
       active_slide_id: slide.id,
-      last_mutation_id: messages[0].mutation_id
+      last_mutation_id: messages[0].mutation_id,
+      version: 4
     })
 
+    messages = ws.sentMessages().filter((m) => m.type === 'direct_update_element')
+    expect(messages).toHaveLength(2)
+    expect(messages[1].expected_revision).toBe(4)
     expect(usePPTStore.getState().pendingMutations).toHaveLength(1)
-    expect(usePPTStore.getState().presentation).not.toBe(serverPres)
     expect(usePPTStore.getState().getActiveSlide()?.elements[0].x).toBe(80)
   })
 
@@ -151,6 +167,71 @@ describe('usePPTStore mutation pipeline', () => {
     expect(batch).toBeTruthy()
     expect(batch.mutations).toHaveLength(2)
     expect(usePPTStore.getState().getActiveSlide()?.elements).toHaveLength(0)
+  })
+
+  it('single-flight: a multi-op batch ack advances the revision for the next edit', () => {
+    const slide = makeSlide([makeShape('s1', 0, 0), makeShape('s2', 200, 0)])
+    const pres = makePresentation([slide], 3)
+    usePPTStore.getState().setPresentation(pres)
+    const ws = connect()
+    ws.emit('presentation_loaded', {
+      presentation: pres,
+      active_slide_id: slide.id,
+      version: 3,
+      document_epoch: 'epoch_A'
+    })
+
+    usePPTStore.getState().setSelectedElementIds(['s1', 's2'])
+    usePPTStore.getState().deleteSelectedElements()
+    usePPTStore.getState().updateElementDirect('s1', { x: 50 })
+
+    const batch = ws.sentMessages().find((m) => m.type === 'batch_mutation')!
+    expect(batch.expected_revision).toBe(3)
+    expect(ws.sentMessages().filter((m) => m.type === 'direct_update_element')).toHaveLength(0)
+
+    // The backend bumps the version once per update_element: 3 -> 5.
+    const serverPres = makePresentation([makeSlide([makeShape('s1', 50, 0)])], 5)
+    ws.emit('presentation_updated', {
+      presentation: serverPres,
+      active_slide_id: slide.id,
+      last_mutation_id: batch.mutation_id,
+      version: 5
+    })
+
+    const next = ws.sentMessages().find((m) => m.type === 'direct_update_element')!
+    expect(next.expected_revision).toBe(5)
+  })
+
+  it('routes undo/redo through the single-flight queue with CAS', () => {
+    const slide = makeSlide([makeShape('s1', 0, 0)])
+    const pres = makePresentation([slide], 7)
+    usePPTStore.getState().setPresentation(pres)
+    const ws = connect()
+    ws.emit('presentation_loaded', {
+      presentation: pres,
+      active_slide_id: slide.id,
+      version: 7,
+      document_epoch: 'epoch_A'
+    })
+
+    usePPTStore.getState().triggerUndo()
+    const undo = ws.sentMessages().find((m) => m.type === 'undo')!
+    expect(undo.mutation_id).toBeTruthy()
+    expect(undo.expected_revision).toBe(7)
+    expect(undo.document_epoch).toBe('epoch_A')
+
+    usePPTStore.getState().triggerRedo()
+    expect(ws.sentMessages().filter((m) => m.type === 'redo')).toHaveLength(0)
+
+    ws.emit('presentation_updated', {
+      presentation: pres,
+      active_slide_id: slide.id,
+      last_mutation_id: undo.mutation_id,
+      version: 8
+    })
+
+    const redo = ws.sentMessages().find((m) => m.type === 'redo')!
+    expect(redo.expected_revision).toBe(8)
   })
 
   it('never opens inline editing from a last_target_id server echo', () => {

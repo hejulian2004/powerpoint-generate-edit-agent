@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 import copy
-from typing import List, Dict, Any, Optional
+from contextlib import contextmanager
+from typing import Iterator, List, Dict, Any, Optional
 from ..ir.models import PresentationIR
 from ..ir.history_event import MutationEvent
 from .command import (
@@ -38,6 +39,48 @@ PRES_SNAPSHOT_ACTIONS = frozenset({
 })
 
 
+class HistoryBatch:
+    """Buffers commands produced by a multi-step transaction.
+
+    Commands are only materialized on the undo stack when the batch commits, so
+    a batch can never be partially applied *or* partially evicted by
+    ``max_history``. ``rollback()`` discards everything recorded so far.
+    """
+
+    def __init__(self, history: "UndoRedoStack", description: str, source: str):
+        self._history = history
+        self._description = description
+        self._source = source
+        self._commands: List[MutationCommand] = []
+        self._finished = False
+
+    def add(self, command: MutationCommand) -> None:
+        self._commands.append(command)
+
+    def rollback(self) -> None:
+        if self._finished:
+            return
+        self._finished = True
+        self._commands.clear()
+
+    def commit(self) -> None:
+        if self._finished:
+            return
+        self._finished = True
+        commands = self._commands
+        self._commands = []
+        if not commands:
+            return
+        if len(commands) == 1:
+            self._history.push(commands[0])
+        else:
+            self._history.push(BatchMutationCommand(
+                commands=list(commands),
+                description=self._description,
+                source=self._source,
+            ))
+
+
 class UndoRedoStack:
     """Command-pattern Undo/Redo stack for interactive PresentationIR editing."""
 
@@ -45,6 +88,7 @@ class UndoRedoStack:
         self.max_history = max_depth if max_depth is not None else max_history
         self.undo_stack: List[MutationCommand] = []
         self.redo_stack: List[MutationCommand] = []
+        self._active_batch: Optional[HistoryBatch] = None
 
     def push(self, command: MutationCommand):
         """Pushes an already-executed command onto the undo stack and clears redo."""
@@ -52,6 +96,36 @@ class UndoRedoStack:
         if len(self.undo_stack) > self.max_history:
             self.undo_stack.pop(0)
         self.redo_stack.clear()
+
+    @contextmanager
+    def batch(self, description: str = "批量操作", source: str = "batch") -> Iterator[HistoryBatch]:
+        """Records all commands as one atomic undo entry for the duration.
+
+        On clean exit the buffered commands commit (a single command stays a
+        single command; multiple commands collapse into one
+        ``BatchMutationCommand``). On exception they are discarded. Callers may
+        also call ``batch.rollback()`` explicitly to abort.
+        """
+        if self._active_batch is not None:
+            yield self._active_batch
+            return
+        active = HistoryBatch(self, description, source)
+        self._active_batch = active
+        try:
+            yield active
+        except Exception:
+            active.rollback()
+            raise
+        else:
+            active.commit()
+        finally:
+            self._active_batch = None
+
+    def _record_command(self, command: MutationCommand) -> None:
+        if self._active_batch is not None:
+            self._active_batch.add(command)
+        else:
+            self.push(command)
 
     def record(
         self,
@@ -140,7 +214,7 @@ class UndoRedoStack:
                 source=source
             )
 
-        self.push(cmd)
+        self._record_command(cmd)
         return cmd
 
     def undo(self, presentation: PresentationIR) -> Optional[MutationCommand]:

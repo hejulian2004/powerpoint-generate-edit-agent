@@ -270,9 +270,15 @@ interface PPTState {
   mutationStatus: MutationStatus
   pendingMutations: PendingMutation[]
   outbox: OutboxEntry[]
+  // Single-flight: at most one mutation is unacknowledged at a time. The next
+  // mutation is only sent once the server confirms the in-flight one, so its
+  // CAS revision is always the real server version (never a local prediction).
+  inFlightMutationId: string | null
+  inFlightMessage: Record<string, any> | null
   // CAS bookkeeping mirroring the last server-confirmed document identity + revision.
   documentEpoch: string | null
   confirmedRevision: number
+  hasServerRevision: boolean
   contextUsage: ContextUsageData | null
   setContextUsage: (usage: ContextUsageData | null) => void
 
@@ -313,6 +319,7 @@ interface PPTState {
   ) => void
   sendMutationBatch: (operations: MutationOperation[], description?: string) => void
   sendOrQueueMutation: (message: Record<string, any>, mutation: PendingMutation) => void
+  dispatchNextMutation: () => void
   flushOutbox: () => void
   addNewSlide: (backgroundColor?: string) => void
   deleteSlide: (slideIdOrNum: string | number) => void
@@ -379,8 +386,11 @@ export const usePPTStore = create<PPTState>((set, get) => ({
   mutationStatus: 'idle',
   pendingMutations: [],
   outbox: [],
+  inFlightMutationId: null,
+  inFlightMessage: null,
   documentEpoch: null,
   confirmedRevision: 0,
+  hasServerRevision: false,
   contextUsage: {
     current_tokens: 1200,
     max_tokens: 256 * 1024,
@@ -527,48 +537,54 @@ export const usePPTStore = create<PPTState>((set, get) => ({
   }),
 
   sendOrQueueMutation: (message, mutation) => {
-    const { ws, pendingMutations, documentEpoch, confirmedRevision } = get()
-    // Base revision stamps the document generation + version this mutation was
-    // computed against, so the server can reject stale/offline edits via CAS.
-    const baseRevision = confirmedRevision + pendingMutations.length
+    const { ws, documentEpoch } = get()
     const stampedMutation: PendingMutation = {
       ...mutation,
-      documentEpoch,
-      expectedRevision: baseRevision
+      documentEpoch
     }
-    const enriched = {
-      ...message,
-      mutation_id: mutation.mutationId,
-      document_epoch: documentEpoch,
-      expected_revision: baseRevision
-    }
-    if (ws && ws.readyState === WebSocket.OPEN) {
-      set((state) => ({
-        pendingMutations: [...state.pendingMutations, stampedMutation],
-        mutationStatus: 'pending'
-      }))
-      ws.send(JSON.stringify(enriched))
-      return
-    }
+    const online = !!ws && ws.readyState === WebSocket.OPEN
     set((state) => ({
       pendingMutations: [...state.pendingMutations, stampedMutation],
-      outbox: [...state.outbox, { message: enriched, mutation: stampedMutation }],
-      mutationStatus: 'offline'
+      outbox: [...state.outbox, { message, mutation: stampedMutation }],
+      mutationStatus: online ? 'pending' : 'offline'
+    }))
+    get().dispatchNextMutation()
+  },
+
+  dispatchNextMutation: () => {
+    const {
+      ws, outbox, inFlightMutationId, documentEpoch, confirmedRevision, hasServerRevision
+    } = get()
+    if (inFlightMutationId !== null) return
+    if (!ws || ws.readyState !== WebSocket.OPEN || outbox.length === 0) return
+
+    const [head] = outbox
+    const payload: Record<string, any> = {
+      ...head.message,
+      mutation_id: head.mutation.mutationId,
+      document_epoch: documentEpoch
+    }
+    // Only attach CAS once the server has told us the real revision; a mutation
+    // computed before the first `presentation_loaded` must not be falsely stale.
+    const expectedRevision = hasServerRevision ? confirmedRevision : null
+    if (expectedRevision !== null) payload.expected_revision = expectedRevision
+
+    ws.send(JSON.stringify(payload))
+    set((state) => ({
+      outbox: state.outbox.slice(1),
+      pendingMutations: state.pendingMutations.map((m) =>
+        m.mutationId === head.mutation.mutationId
+          ? { ...m, documentEpoch, expectedRevision }
+          : m
+      ),
+      inFlightMutationId: head.mutation.mutationId,
+      inFlightMessage: head.message,
+      mutationStatus: 'pending'
     }))
   },
 
   flushOutbox: () => {
-    const { ws, outbox } = get()
-    if (!ws || ws.readyState !== WebSocket.OPEN || outbox.length === 0) return
-    const queued = [...outbox]
-    set({ outbox: [] })
-    for (let i = 0; i < queued.length; i += 1) {
-      if (ws.readyState !== WebSocket.OPEN) {
-        set((state) => ({ outbox: [...queued.slice(i), ...state.outbox] }))
-        return
-      }
-      ws.send(JSON.stringify(queued[i].message))
-    }
+    get().dispatchNextMutation()
   },
 
   sendMutationBatch: (operations, description) => {
@@ -821,11 +837,21 @@ export const usePPTStore = create<PPTState>((set, get) => ({
     }
 
     ws.onclose = () => {
-      const { outbox, pendingMutations } = get()
+      const { outbox, pendingMutations, inFlightMutationId, inFlightMessage } = get()
+      let nextOutbox = outbox
+      if (inFlightMutationId !== null && inFlightMessage) {
+        const inflight = pendingMutations.find((m) => m.mutationId === inFlightMutationId)
+        if (inflight) {
+          nextOutbox = [{ message: inFlightMessage, mutation: inflight }, ...outbox]
+        }
+      }
       set({
         wsConnected: false,
         ws: null,
-        mutationStatus: outbox.length > 0 || pendingMutations.length > 0 ? 'offline' : 'idle'
+        inFlightMutationId: null,
+        inFlightMessage: null,
+        outbox: nextOutbox,
+        mutationStatus: nextOutbox.length > 0 || pendingMutations.length > 0 ? 'offline' : 'idle'
       })
       setTimeout(() => {
         get().initWebSocket()
@@ -861,6 +887,9 @@ export const usePPTStore = create<PPTState>((set, get) => ({
               )
             }
             const hasPending = pendingMutations.length > 0
+            const inFlightSurvives = pendingMutations.some(
+              (m) => m.mutationId === state.inFlightMutationId
+            )
             return {
               sessionId: data.session_id || state.sessionId,
               presentation: hasPending ? state.presentation : data.presentation,
@@ -874,12 +903,15 @@ export const usePPTStore = create<PPTState>((set, get) => ({
               editingElementId: null,
               outbox,
               pendingMutations,
+              inFlightMutationId: inFlightSurvives ? state.inFlightMutationId : null,
+              inFlightMessage: inFlightSurvives ? state.inFlightMessage : null,
               documentEpoch: loadedEpoch ?? state.documentEpoch,
               confirmedRevision: loadedRevision,
+              hasServerRevision: true,
               mutationStatus: hasPending ? 'pending' : 'idle'
             }
           })
-          get().flushOutbox()
+          get().dispatchNextMutation()
         } else if (type === 'preview_update') {
           set({
             previewSvg: data.svg,
@@ -893,9 +925,13 @@ export const usePPTStore = create<PPTState>((set, get) => ({
           if (ackId) selectTargetOnAck.delete(ackId)
           set((state) => {
             let pending = state.pendingMutations
+            let inFlightMutationId = state.inFlightMutationId
             if (ackId) {
               const idx = pending.findIndex((p) => p.mutationId === ackId)
               pending = idx >= 0 ? pending.slice(idx + 1) : pending.filter((p) => p.mutationId !== ackId)
+              if (state.inFlightMutationId === ackId) {
+                inFlightMutationId = null
+              }
             }
             const activeSid = data.active_slide_id || state.activeSlideId || serverPres?.slides?.[0]?.id
             const serverSlide = serverPres?.slides?.find((s) => s.id === activeSid)
@@ -942,13 +978,17 @@ export const usePPTStore = create<PPTState>((set, get) => ({
               mutationStatus: pending.length === 0 ? 'committed' : 'pending',
               documentEpoch: data.document_epoch ?? state.documentEpoch,
               confirmedRevision: typeof data.version === 'number' ? data.version : state.confirmedRevision,
+              hasServerRevision: typeof data.version === 'number' ? true : state.hasServerRevision,
               pendingMutations: pending,
+              inFlightMutationId,
+              inFlightMessage: inFlightMutationId === null ? null : state.inFlightMessage,
               selectedElementIds: selectedIds,
               selectedElementId: selectedId,
               editingElementId: editingId,
               activeRightTab: selectedId ? 'inspector' : state.activeRightTab
             }
           })
+          get().dispatchNextMutation()
         } else if (type === 'mutation_rejected') {
           const rejectedId: string | undefined = data.mutation_id
           if (rejectedId) selectTargetOnAck.delete(rejectedId)
@@ -960,15 +1000,21 @@ export const usePPTStore = create<PPTState>((set, get) => ({
               ? state.outbox.filter((entry) => entry.mutation.mutationId !== rejectedId)
               : state.outbox
             const rollback = pending.length === 0 && state.confirmedPresentation
+            const inFlightMutationId =
+              rejectedId && state.inFlightMutationId === rejectedId ? null : state.inFlightMutationId
             return {
               pendingMutations: pending,
               outbox,
+              inFlightMutationId,
+              inFlightMessage: inFlightMutationId === null ? null : state.inFlightMessage,
               presentation: rollback ? state.confirmedPresentation : state.presentation,
               mutationStatus: rollback ? 'rolled_back' : 'pending',
               documentEpoch: data.document_epoch ?? state.documentEpoch,
-              confirmedRevision: typeof data.version === 'number' ? data.version : state.confirmedRevision
+              confirmedRevision: typeof data.version === 'number' ? data.version : state.confirmedRevision,
+              hasServerRevision: typeof data.version === 'number' ? true : state.hasServerRevision
             }
           })
+          get().dispatchNextMutation()
         } else if (type === 'active_slide_changed') {
           set({ activeSlideId: data.active_slide_id })
         } else if (type === 'context_usage') {
@@ -1068,45 +1114,31 @@ export const usePPTStore = create<PPTState>((set, get) => ({
   },
 
   triggerUndo: () => {
-    const { ws, sessionId } = get()
-    if (ws && ws.readyState === WebSocket.OPEN) {
-      ws.send(JSON.stringify({ type: 'undo', session_id: sessionId }))
-    } else {
-      fetch(`/api/action/undo?session_id=${encodeURIComponent(sessionId)}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ session_id: sessionId })
-      })
-        .then((r) => r.json())
-        .then((data) => {
-          if (data.success) {
-            fetch(`/api/presentation?session_id=${encodeURIComponent(sessionId)}`)
-              .then((r) => r.json())
-              .then((p) => set({ presentation: p, confirmedPresentation: p }))
-          }
-        })
+    const { sessionId } = get()
+    const mutationId = newMutationId()
+    const mutation: PendingMutation = {
+      mutationId,
+      operations: [{ name: 'undo', payload: {} }],
+      description: '撤销'
     }
+    get().sendOrQueueMutation(
+      { type: 'undo', session_id: sessionId, mutation_id: mutationId },
+      mutation
+    )
   },
 
   triggerRedo: () => {
-    const { ws, sessionId } = get()
-    if (ws && ws.readyState === WebSocket.OPEN) {
-      ws.send(JSON.stringify({ type: 'redo', session_id: sessionId }))
-    } else {
-      fetch(`/api/action/redo?session_id=${encodeURIComponent(sessionId)}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ session_id: sessionId })
-      })
-        .then((r) => r.json())
-        .then((data) => {
-          if (data.success) {
-            fetch(`/api/presentation?session_id=${encodeURIComponent(sessionId)}`)
-              .then((r) => r.json())
-              .then((p) => set({ presentation: p, confirmedPresentation: p }))
-          }
-        })
+    const { sessionId } = get()
+    const mutationId = newMutationId()
+    const mutation: PendingMutation = {
+      mutationId,
+      operations: [{ name: 'redo', payload: {} }],
+      description: '重做'
     }
+    get().sendOrQueueMutation(
+      { type: 'redo', session_id: sessionId, mutation_id: mutationId },
+      mutation
+    )
   },
 
   updateElementDirect: (elemId, updates) => {

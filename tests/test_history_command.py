@@ -7,7 +7,8 @@ from backend.history.command import (
     UpdateElementCommand,
     AddElementCommand,
     DeleteElementCommand,
-    BatchMutationCommand
+    BatchMutationCommand,
+    SnapshotCommand
 )
 from backend.history.undo_stack import UndoRedoStack
 from backend.ir.patch import HistoryManager
@@ -172,3 +173,34 @@ def test_history_manager_is_undo_redo_stack():
     events = hm.get_mutation_events()
     assert len(events) == 1
     assert events[0].after["x"] == 80.0
+
+
+def test_snapshot_command_restores_slides_in_place():
+    """Whole-deck snapshots must not replace the slides list (stale refs) or version."""
+    import copy
+
+    pres = PresentationIR(title="Snapshot Deck")
+    slide = SlideIR(id="s1", slide_num=1, title="Original")
+    slide.add_element(ShapeElementIR(id="shape_1", x=0.0, y=0.0, width=10.0, height=10.0))
+    pres.slides = [slide]
+    pres.active_slide_id = "s1"
+    pres.version = 5
+    held_slide = pres.slides[0]
+
+    before = pres.model_dump()
+    after = copy.deepcopy(before)
+    after["title"] = "Changed Deck"
+    after["slides"][0]["title"] = "Changed Slide"
+
+    cmd = SnapshotCommand(before_dump=before, after_dump=after, action="replace_presentation")
+    assert cmd.execute(pres) is True
+    assert pres.slides[0] is held_slide
+    assert held_slide.title == "Changed Slide"
+    assert pres.title == "Changed Deck"
+    assert pres.version == 5
+
+    assert cmd.undo(pres) is True
+    assert pres.slides[0] is held_slide
+    assert held_slide.title == "Original"
+    assert pres.title == "Snapshot Deck"
+    assert pres.version == 5

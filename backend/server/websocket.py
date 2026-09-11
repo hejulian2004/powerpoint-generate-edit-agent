@@ -134,6 +134,32 @@ async def _broadcast_state(session: PPTSession, *, last_mutation_id: Optional[st
         await store.broadcast(new_preview, session_id=session.session_id)
 
 
+async def _handle_history_action(
+    websocket: WebSocket,
+    session: PPTSession,
+    action: str,
+    data: Dict[str, Any],
+) -> None:
+    """Routes undo/redo through the MutationGateway so CAS + single-writer hold.
+
+    An empty history is a valid no-op: it is acknowledged (not rejected) so the
+    client can retire its pending mutation without rolling back.
+    """
+    mutation_id = _mutation_id(data)
+    batch = await execute_direct_batch(
+        session,
+        [{"name": action, "arguments": {}, "id": f"call_{uuid.uuid4().hex[:6]}"}],
+        mutation_id=mutation_id,
+        document_epoch=data.get("document_epoch"),
+        expected_revision=data.get("expected_revision"),
+    )
+    res = batch.first_result()
+    if batch.error or (isinstance(res, dict) and res.get("error")):
+        await websocket.send_json(_rejection_payload(session, mutation_id, batch))
+    else:
+        await _broadcast_state(session, last_mutation_id=mutation_id)
+
+
 @ws_router.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
     """Session-aware WebSocket endpoint for streaming editing, chat, and instant previews."""
@@ -265,17 +291,11 @@ async def websocket_endpoint(websocket: WebSocket):
 
             # User triggered Undo
             elif msg_type == "undo":
-                async with session.mutation_lock:
-                    cmd = session.undo()
-                    if cmd:
-                        await _broadcast_state(session)
+                await _handle_history_action(websocket, session, "undo", data)
 
             # User triggered Redo
             elif msg_type == "redo":
-                async with session.mutation_lock:
-                    cmd = session.redo()
-                    if cmd:
-                        await _broadcast_state(session)
+                await _handle_history_action(websocket, session, "redo", data)
 
             # User edited element on canvas directly
             elif msg_type == "direct_update_element":
