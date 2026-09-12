@@ -17,6 +17,7 @@ from ..session.services.agent_execution import (
     AgentTurnInProgress,
 )
 from ..session.services.connection import ConnectionTakenOver, STALE_CONNECTION
+from .uicontext import UI_CONTEXT_TARGET_INVALID
 
 logger = logging.getLogger(__name__)
 
@@ -26,6 +27,7 @@ _ADMISSION_MESSAGES = {
     "request_stale": "演示文稿已在您发送后更新，本次指令未执行，已同步到最新版本，请重试。",
     AGENT_TURN_IN_PROGRESS: "演示文稿正被另一个 Agent 任务编辑，请稍后重试。",
     STALE_CONNECTION: "会话已在其他窗口接管，本次指令未执行。",
+    UI_CONTEXT_TARGET_INVALID: "所选元素在当前版本中已不存在，本次指令未执行，请重新选择后重试。",
 }
 
 
@@ -200,6 +202,11 @@ class AgentRuntime:
                     admission_error = "request_epoch_mismatch"
                 elif request_base_revision is not None and request_base_revision != live_revision:
                     admission_error = "request_stale"
+                elif ctx.invalid_targets(pres):
+                    # The requesting client targeted a slide/element that no longer
+                    # exists. Fail closed before the lease is installed so no tool
+                    # ever executes against a silently retargeted element.
+                    admission_error = UI_CONTEXT_TARGET_INVALID
                 else:
                     try:
                         session.agent_execution.begin_turn(
@@ -219,6 +226,16 @@ class AgentRuntime:
                     version=live_revision,
                     document_epoch=live_epoch,
                 )
+        elif ctx.invalid_targets(pres):
+            # Session-less callers (tests, direct runtime use) still fail closed on
+            # stale UI targets: no graph invocation, no tool execution.
+            return await self._reject_turn(
+                on_event,
+                code=UI_CONTEXT_TARGET_INVALID,
+                message=_ADMISSION_MESSAGES[UI_CONTEXT_TARGET_INVALID],
+                version=live_revision,
+                document_epoch=live_epoch,
+            )
 
         turn_epoch = request_document_epoch if request_document_epoch is not None else live_epoch
         turn_revision = request_base_revision if request_base_revision is not None else live_revision

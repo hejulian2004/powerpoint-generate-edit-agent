@@ -109,6 +109,23 @@ def test_uicontext_roundtrip_and_deictic_detection():
     assert ctx.to_dict()["client_id"] == "c1"
 
 
+def test_uicontext_invalid_targets_detection():
+    pres = _pres()
+    assert UIContext(active_slide_id="slide_1", selected_element_ids=["el1"]).is_valid_for(pres)
+    assert UIContext(active_slide_id="slide_missing").invalid_targets(pres) == [
+        "slide:slide_missing"
+    ]
+    invalid = UIContext(
+        active_slide_id="slide_1",
+        selected_element_ids=["el1", "el_missing"],
+        selection_scope=["el_gone"],
+        editing_element_id="el_edit_gone",
+    ).invalid_targets(pres)
+    assert "element:el_missing" in invalid
+    assert "element:el_gone" in invalid
+    assert "element:el_edit_gone" in invalid
+
+
 class _StubExecutorLLM:
     """Live-looking LLM that returns a slide-scoped call WITHOUT a slide id."""
 
@@ -177,13 +194,11 @@ def test_llm_tool_call_without_slide_id_is_threaded_from_uic():
     asyncio.run(_run())
 
 
-def test_invalid_uic_active_slide_is_ignored():
-    """A stale/invalid client active slide is ignored at planning time, so the
-    plan falls back to the session snapshot's active slide.
+def test_invalid_uic_active_slide_fails_closed():
+    """A stale/invalid client active slide makes planning fail closed.
 
-    Known limitation: slide-scoped tools still resolve a missing `slide_id` to
-    `pres.get_active_slide()` at execution time, so true fail-closed targeting
-    must be enforced at the execution boundary, not here.
+    The plan must be empty (zero tool execution) so a slide-scoped call can never
+    silently fall back to the session's live active slide at execution time.
     """
     async def _run():
         pres = _pres(active="slide_1")
@@ -198,7 +213,7 @@ def test_invalid_uic_active_slide_is_ignored():
             session=session,
             ui_context={"active_slide_id": "slide_missing", "ui_context_revision": 5},
         )
-        assert plan.tool_calls
-        assert plan.tool_calls[0]["arguments"].get("slide_id") == "slide_1"
+        assert plan.tool_calls == []
+        assert "slide_missing" in plan.summary_message
 
     asyncio.run(_run())

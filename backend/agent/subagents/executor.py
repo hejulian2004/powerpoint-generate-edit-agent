@@ -149,12 +149,22 @@ class ExecutorSubagent:
 
         # Request-local targeting: the requesting client's active slide overrides
         # the snapshot's slide for planning only. The live IR is never touched.
-        # NOTE: an invalid/stale client hint is ignored here. It is NOT safe to
-        # "clear" it as a fail-closed measure, because slide-scoped tools resolve a
-        # missing `slide_id` to `pres.get_active_slide()` at execution time; proper
-        # fail-closed targeting must be enforced at the execution boundary.
+        # A stale client hint is fail-closed: if any target it names no longer
+        # exists we plan nothing. Silently dropping the hint is unsafe because
+        # slide-scoped tools resolve a missing `slide_id` to `pres.get_active_slide()`.
         from ..uicontext import UIContext
         ctx = UIContext.from_any(ui_context)
+        invalid_targets = ctx.invalid_targets(planning_snapshot)
+        if invalid_targets:
+            return ExecutorPlan(
+                tool_calls=[],
+                summary_message=(
+                    "UI 上下文指向的目标在当前版本中已不存在，已放弃规划以避免误改："
+                    + ", ".join(invalid_targets)
+                ),
+                document_epoch=planning_epoch,
+                base_revision=planning_revision,
+            )
         if planning_snapshot is not None and ctx.active_slide_id:
             if planning_snapshot.get_slide(ctx.active_slide_id):
                 planning_snapshot.active_slide_id = ctx.active_slide_id

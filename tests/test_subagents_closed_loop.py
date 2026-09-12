@@ -15,6 +15,7 @@ from typing import List, Dict, Any
 from backend.agent.graph import build_ppt_agent_graph, PPTAgentState
 from backend.ir.models import PresentationIR, SlideIR, TextElementIR, TextContentIR
 from backend.ir.patch import HistoryManager
+from backend.session.session import PPTSession
 
 
 class MockLoopLLM:
@@ -106,6 +107,7 @@ def test_closed_loop_standard_execution_all_pass():
             "configurable": {
                 "pres": pres,
                 "history": history,
+                "session": PPTSession(session_id="sess_loop_all_pass", pres=pres),
                 "llm_client": mock_llm,
                 "on_event": on_ev
             }
@@ -172,6 +174,7 @@ def test_plan_critic_rejection_loops_back_to_planner():
             "configurable": {
                 "pres": pres,
                 "history": history,
+                "session": PPTSession(session_id="sess_loop_plan_reject", pres=pres),
                 "llm_client": mock_llm,
                 "on_event": on_ev
             }
@@ -208,6 +211,7 @@ def test_content_critic_rejection_loops_back_to_executor():
             "configurable": {
                 "pres": pres,
                 "history": history,
+                "session": PPTSession(session_id="sess_loop_content_reject", pres=pres),
                 "llm_client": mock_llm,
                 "on_event": on_ev
             }

@@ -626,11 +626,9 @@ class MutationGateway:
         # from a flag. `replaces_document` is at most an assertion; an
         # inconsistent or malformed envelope fails closed with ZERO writes.
         # A replacement is only meaningful with a session (it rotates that
-        # session's document identity); session-less callers (direct graph
-        # tests / in-place generation) remain additive.
-        detected_replacement = session is not None and any(
-            _is_replacement_op(c) for c in calls
-        )
+        # session's document identity). A session-less caller that asks for a
+        # replacement op fails closed rather than degrading to an additive write.
+        detected_replacement = any(_is_replacement_op(c) for c in calls)
         effective_replacement = detected_replacement or replaces_document
         if effective_replacement:
             valid_shape = (
