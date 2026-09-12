@@ -2,6 +2,16 @@
 
 Baseline: `main` @ `8931257` (PR #22 merged). Branch: `hardening/concurrency-interlock`.
 
+> **PARTIALLY SUPERSEDED (PR #24).** The multi-client /
+> multiple-frontends-per-session assumptions in this document (Client A / Client B
+> in the diagram, cross-client collaborative rebase, and foreign-client
+> causal-effect reconciliation) are **deprecated by
+> [`session-workspace-contract.md`](./session-workspace-contract.md)**. The product
+> is now **single-user, one frontend per session**. The concurrency primitives
+> below (CAS, `document_epoch`, `mutation_id` idempotency, single-flight, lost-ACK
+> retry, offline queue) are **preserved**; only the multi-client reconciliation
+> layer is removed.
+
 This document is the contract for the GUI / Agent / Generation concurrency interlock. It fixes the invariants, the replacement transaction API, the canonical snapshot envelope, the retry-vs-rebase state machine, and the grounding policy. Each phase below is a commit on the same branch and must land green before the next begins.
 
 ---
