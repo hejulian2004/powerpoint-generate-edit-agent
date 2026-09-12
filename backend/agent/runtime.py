@@ -131,6 +131,16 @@ class AgentRuntime:
         ctx = UIContext.from_any(ui_context)
         from .context_compressor import ContextCompressor, CONTEXT_LIMIT_PRESETS
 
+        # Session-owned memory: conversation + agent + subagent memories all live
+        # on the session (S3/S9). AgentRuntime is a stateless engine, so it seeds
+        # the graph from the session and writes subagent continuity back after.
+        session_memory = session.memory if session is not None else None
+        seeded_subagent_memories = (
+            {name: mem.to_dict() for name, mem in session_memory.subagent_memories.items()}
+            if session_memory is not None
+            else {}
+        )
+
         # 0. Request-admission CAS: reject a request that is already stale when it
         #    reaches the server BEFORE touching the transcript, the LLM, or tools.
         #    The raw transcript is owned by this method, so a rejected request must
@@ -211,6 +221,7 @@ class AgentRuntime:
             "turn_document_epoch": turn_epoch,
             "turn_base_revision": turn_revision,
             "turn_invalidated": False,
+            "subagent_memories": seeded_subagent_memories,
         }
 
         config = {
@@ -234,6 +245,16 @@ class AgentRuntime:
             vision_critique = final_state.get("vision_critique")
             intent = final_state.get("intent", "chat")
             plan = final_state.get("plan", "")
+
+            # Write subagent continuity back onto the session so the next turn's
+            # critics can contrast their prior audit rounds.
+            if session_memory is not None:
+                from .subagents.memory import SubagentSessionMemory
+                for name, payload in (final_state.get("subagent_memories") or {}).items():
+                    if isinstance(payload, dict):
+                        session_memory.set_subagent_memory(
+                            name, SubagentSessionMemory.from_dict(payload)
+                        )
 
             if session is not None and hasattr(session, "add_message"):
                 session.add_message(
