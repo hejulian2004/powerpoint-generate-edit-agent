@@ -2,6 +2,47 @@ import React, { useState, useEffect } from 'react'
 import { X, Check, Key, Server, Cpu, RefreshCw, AlertCircle } from 'lucide-react'
 import { usePPTStore } from '../store/usePPTStore'
 
+interface ModelFieldProps {
+  label: string
+  value: string
+  onChange: (value: string) => void
+  options: string[]
+  placeholder?: string
+}
+
+const ModelField: React.FC<ModelFieldProps> = ({ label, value, onChange, options, placeholder }) => (
+  <div>
+    <label className="text-xs font-semibold text-secondary block mb-1">{label}</label>
+    <div className="flex gap-1.5">
+      <input
+        type="text"
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        placeholder={placeholder}
+        className="flex-1 min-w-0 bg-subtle border border-line-strong rounded-lg px-2.5 py-1.5 text-xs text-main font-tabular font-medium focus:outline-none focus:border-blue-500"
+      />
+      {options.length > 0 && (
+        <select
+          value=""
+          onChange={(e) => {
+            if (e.target.value) onChange(e.target.value)
+          }}
+          title="从已获取的模型列表中选择"
+          aria-label={`${label} 模型列表`}
+          className="w-20 shrink-0 bg-subtle border border-line-strong rounded-lg px-1.5 py-1.5 text-xs text-secondary focus:outline-none focus:border-blue-500 cursor-pointer"
+        >
+          <option value="">选择…</option>
+          {options.map((m) => (
+            <option key={m} value={m}>
+              {m}
+            </option>
+          ))}
+        </select>
+      )}
+    </div>
+  </div>
+)
+
 export const SettingsModal: React.FC = () => {
   const { settingsOpen, setSettingsOpen } = usePPTStore()
 
@@ -143,7 +184,12 @@ export const SettingsModal: React.FC = () => {
             )}
             {!fetchError && modelOptions.length > 0 && (
               <p className="mt-1.5 text-[11px] text-secondary">
-                已获取 {modelOptions.length} 个可用模型，可编辑下拉框直接选用或输入自定义名称。
+                已获取 {modelOptions.length} 个可用模型：可点击各模型右侧的「选择…」下拉框直接选用，也可手动输入自定义名称。
+              </p>
+            )}
+            {!fetchError && modelOptions.length === 0 && (
+              <p className="mt-1.5 text-[11px] text-muted">
+                点击「获取模型列表」后，各模型右侧将出现下拉选择框；未获取到模型时也可直接手动输入。
               </p>
             )}
           </div>
@@ -163,43 +209,34 @@ export const SettingsModal: React.FC = () => {
           </div>
 
           <div className="grid grid-cols-2 gap-3 pt-2">
-            <div>
-              <label className="text-xs font-semibold text-secondary block mb-1">
-                规划模型 (Reasoning / 主模型)
-              </label>
-              <input
-                type="text"
-                list="model-options-reasoning"
-                value={reasoningModel}
-                onChange={(e) => setReasoningModel(e.target.value)}
-                placeholder="gpt-4o"
-                className="w-full bg-subtle border border-line-strong rounded-lg px-2.5 py-1.5 text-xs text-main font-tabular font-medium focus:outline-none focus:border-blue-500"
-              />
-              <datalist id="model-options-reasoning">
-                {modelOptions.map((m) => (
-                  <option key={m} value={m} />
-                ))}
-              </datalist>
-            </div>
-
-            <div>
-              <label className="text-xs font-semibold text-secondary block mb-1">
-                视觉自省模型 (Vision / 图像)
-              </label>
-              <input
-                type="text"
-                list="model-options-vision"
-                value={visionModel}
-                onChange={(e) => setVisionModel(e.target.value)}
-                placeholder="gpt-4o"
-                className="w-full bg-subtle border border-line-strong rounded-lg px-2.5 py-1.5 text-xs text-main font-tabular font-medium focus:outline-none focus:border-blue-500"
-              />
-              <datalist id="model-options-vision">
-                {modelOptions.map((m) => (
-                  <option key={m} value={m} />
-                ))}
-              </datalist>
-            </div>
+            <ModelField
+              label="默认模型 (Default)"
+              value={defaultModel}
+              onChange={setDefaultModel}
+              options={modelOptions}
+              placeholder="gpt-4o"
+            />
+            <ModelField
+              label="规划模型 (Reasoning / 主模型)"
+              value={reasoningModel}
+              onChange={setReasoningModel}
+              options={modelOptions}
+              placeholder="gpt-4o"
+            />
+            <ModelField
+              label="视觉自省模型 (Vision / 图像)"
+              value={visionModel}
+              onChange={setVisionModel}
+              options={modelOptions}
+              placeholder="gpt-4o"
+            />
+            <ModelField
+              label="快速模型 (Fast)"
+              value={fastModel}
+              onChange={setFastModel}
+              options={modelOptions}
+              placeholder="gpt-4o-mini"
+            />
           </div>
 
           <div className="space-y-1.5 pt-1">

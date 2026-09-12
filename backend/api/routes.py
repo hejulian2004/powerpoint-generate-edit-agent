@@ -408,7 +408,25 @@ async def list_models(payload: Dict[str, Any] = Body(default={})):
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"获取模型列表失败: {e}")
 
-    models = [m.get("id") for m in data.get("data", []) if m.get("id")]
+    raw = data
+    if isinstance(raw, list):
+        entries = raw
+    elif isinstance(raw, dict):
+        entries = raw.get("data")
+        if entries is None:
+            entries = raw.get("models", [])
+    else:
+        entries = []
+
+    models: list[str] = []
+    for entry in entries or []:
+        if isinstance(entry, dict):
+            model_id = entry.get("id") or entry.get("name") or entry.get("model")
+        else:
+            model_id = entry
+        if model_id:
+            models.append(str(model_id))
+
     return {"models": models, "base_url": base_url}
 
 
