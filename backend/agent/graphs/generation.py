@@ -207,8 +207,123 @@ async def compile_slidespec_node(state: PPTGenerationState, config: RunnableConf
     }
 
 
+async def paper_plan_node(state: PPTGenerationState, config: RunnableConfig) -> Dict[str, Any]:
+    """Plan a paper deck: art direction + presentation plan + DeckSpec.
+
+    Uses the LLM-native art director when available; otherwise falls back to the
+    deterministic planner + default art direction. Never fabricates facts.
+    """
+    configurable = config.get("configurable", {})
+    on_event = configurable.get("on_event")
+    llm_client = configurable.get("llm_client")
+
+    await _safe_emit(on_event, {"type": "generation_progress", "status": "planning", "text": "论文艺术总监规划叙事结构与视觉语言..."})
+
+    paper_ir = state.get("paper_ir")
+    if paper_ir is None:
+        return {
+            "status": "validation_failed",
+            "error": "PAPER_IR_MISSING",
+            "validation_errors": list(state.get("validation_errors", [])) + ["PAPER_IR_MISSING"],
+        }
+
+    from ...design import build_plan_and_direction
+    from ...slidespec.mapper import map_presentation_plan_to_deck_spec
+
+    art_direction, plan, used_llm = await build_plan_and_direction(
+        llm_client,
+        paper_ir,
+        state.get("paper_visual_ir"),
+        user_prompt=state.get("user_prompt", ""),
+        duration_minutes=int(state.get("duration_minutes", 15) or 15),
+        on_event=on_event,
+    )
+    deck_spec = map_presentation_plan_to_deck_spec(plan, paper_ir)
+
+    return {
+        "deck_art_direction": art_direction,
+        "presentation_plan": plan,
+        "deck_spec": deck_spec,
+        "generation_mode": "llm_native" if used_llm else "legacy_template",
+        "layout_source": "llm" if used_llm else "fallback_template",
+        "fallback_reason": None if used_llm else "art_direction_unavailable",
+        "status": "paper_planned",
+    }
+
+
+async def paper_design_node(state: PPTGenerationState, config: RunnableConfig) -> Dict[str, Any]:
+    """Design the deck from the paper plan: free-form layouts + bounded refinement."""
+    configurable = config.get("configurable", {})
+    on_event = configurable.get("on_event")
+    llm_client = configurable.get("llm_client")
+
+    await _safe_emit(on_event, {"type": "generation_progress", "status": "layout", "text": "逐页自由式布局设计 + 视觉精炼..."})
+
+    deck_spec = state["deck_spec"]
+    plan = state["presentation_plan"]
+    art_direction = state["deck_art_direction"]
+    paper_ir = state.get("paper_ir")
+    paper_visual_ir = state.get("paper_visual_ir")
+    assert deck_spec is not None, "DeckSpec cannot be None"
+
+    from ...config import settings
+    from ...layout.schema import Canvas
+
+    canvas = Canvas()
+    if settings.llm_native_layout_enabled and state.get("generation_mode") == "llm_native":
+        from ...design import design_deck_layouts, refine_deck_aesthetics
+
+        result = await design_deck_layouts(
+            llm_client,
+            deck_spec,
+            plan,
+            art_direction,
+            paper_ir=paper_ir,
+            paper_visual_ir=paper_visual_ir,
+            canvas=canvas,
+            on_event=on_event,
+        )
+        result = await refine_deck_aesthetics(
+            llm_client,
+            result,
+            deck_spec,
+            plan,
+            art_direction,
+            paper_ir=paper_ir,
+            paper_visual_ir=paper_visual_ir,
+            canvas=canvas,
+            on_event=on_event,
+            include_multimodal=False,
+        )
+        deck_layout = result.deck_layout
+        fallbacks = deck_layout.metadata.get("fallback_slide_indices") or []
+        return {
+            "deck_layout": deck_layout,
+            "generation_mode": "llm_native",
+            "layout_source": deck_layout.metadata.get("layout_source", "llm"),
+            "fallback_reason": (
+                f"template_fallback_slide_indices={fallbacks}" if fallbacks else None
+            ),
+            "status": "layout_generated",
+        }
+
+    deck_layout = generate_deck_layout(deck_spec, validate=True, strict=False)
+    return {
+        "deck_layout": deck_layout,
+        "generation_mode": "legacy_template",
+        "layout_source": "fallback_template",
+        "fallback_reason": state.get("fallback_reason") or "llm_native_disabled",
+        "status": "layout_generated",
+    }
+
+
 async def layout_node(state: PPTGenerationState, config: RunnableConfig) -> Dict[str, Any]:
-    """Calculate 1280x720 canvas geometry and generate transient DeckLayoutSpec."""
+    """Calculate 1280x720 canvas geometry and generate transient DeckLayoutSpec.
+
+    Prefers free-form LLM layout plans (``state["llm_layout_plans"]``) when the
+    native layout flag is enabled; otherwise falls back to the deterministic
+    template engine. Per-slide template fallback is recorded as provenance.
+    """
     configurable = config.get("configurable", {})
     on_event = configurable.get("on_event")
 
@@ -216,11 +331,32 @@ async def layout_node(state: PPTGenerationState, config: RunnableConfig) -> Dict
 
     deck_spec = state["deck_spec"]
     assert deck_spec is not None, "DeckSpec cannot be None"
-    deck_layout = generate_deck_layout(deck_spec, validate=True, strict=False)
+
+    from ...config import settings
+
+    plans = state.get("llm_layout_plans") or []
+    if plans and settings.llm_native_layout_enabled:
+        from ...design.layout_compiler import compile_llm_deck_layout
+
+        deck_layout = compile_llm_deck_layout(plans, deck_spec)
+        fallbacks = deck_layout.metadata.get("fallback_slide_indices") or []
+        generation_mode = "llm_native"
+        layout_source = deck_layout.metadata.get("layout_source", "llm")
+        fallback_reason = (
+            f"template_fallback_slide_indices={fallbacks}" if fallbacks else None
+        )
+    else:
+        deck_layout = generate_deck_layout(deck_spec, validate=True, strict=False)
+        generation_mode = "legacy_template"
+        layout_source = "fallback_template"
+        fallback_reason = None if plans else "no_llm_layout_plans"
 
     return {
         "deck_layout": deck_layout,
         "status": "layout_generated",
+        "generation_mode": generation_mode,
+        "layout_source": layout_source,
+        "fallback_reason": fallback_reason,
     }
 
 
@@ -234,6 +370,41 @@ async def compile_presentation_ir_node(state: PPTGenerationState, config: Runnab
     deck_layout = state["deck_layout"]
     assert deck_layout is not None, "DeckLayoutSpec cannot be None"
     pres_ir = compile_layout_to_presentation_ir(deck_layout)
+
+    generation = {
+        "mode": state.get("generation_mode", "legacy_template"),
+        "source_type": state.get("source_type", "pptspec"),
+        "layout_source": state.get("layout_source", "fallback_template"),
+    }
+    fallback_reason = state.get("fallback_reason")
+    if fallback_reason:
+        generation["fallback_reason"] = fallback_reason
+
+    if generation["source_type"] == "paper":
+        paper_ir = state.get("paper_ir")
+        if paper_ir is not None:
+            generation["paper"] = {
+                "title": paper_ir.title,
+                "page_count": paper_ir.metadata.page_count,
+                "figure_count": len(paper_ir.figures),
+                "table_count": len(paper_ir.tables),
+            }
+        paper_visual_ir = state.get("paper_visual_ir")
+        if paper_visual_ir is not None:
+            generation["paper_visual"] = {
+                "page_count": paper_visual_ir.page_count,
+                "vision_model": paper_visual_ir.vision_model,
+            }
+        art_direction = state.get("deck_art_direction")
+        if art_direction is not None:
+            generation["art_direction"] = {
+                "design_concept": art_direction.design_concept,
+                "visual_language": art_direction.visual_language,
+                "primary_accent": art_direction.color_direction.primary_accent,
+            }
+        generation["duration_minutes"] = int(state.get("duration_minutes", 15) or 15)
+
+    pres_ir.metadata["generation"] = generation
 
     return {
         "presentation_ir": pres_ir,
@@ -335,7 +506,11 @@ async def persist_session_node(state: PPTGenerationState, config: RunnableConfig
                 expected_revision=base_revision,
                 clear_history=True,
                 clear_checkpoints=True,
-                checkpoint_description="Generated from CanonicalPPTSpec (PR13)",
+                checkpoint_description=(
+                    "Generated from PaperIR (LLM-native, S4)"
+                    if state.get("source_type") == "paper"
+                    else "Generated from CanonicalPPTSpec (PR13)"
+                ),
                 source="rest",
             )
             committed = result.committed
@@ -421,6 +596,16 @@ def visual_repair_route(state: PPTGenerationState) -> Literal["visual_repair_nod
     return "persist_session_node"
 
 
+def entry_route(state: PPTGenerationState) -> Literal["paper_plan_node", "ingest_node"]:
+    """Choose the paper branch or the canonical PPTSpec branch."""
+    return "paper_plan_node" if state.get("source_type") == "paper" else "ingest_node"
+
+
+def paper_plan_route(state: PPTGenerationState) -> Literal["paper_design_node", "__end__"]:
+    """Terminate early when the paper branch has no PaperIR."""
+    return "__end__" if state.get("status") == "validation_failed" else "paper_design_node"
+
+
 # =====================================================================
 # StateGraph Construction
 # =====================================================================
@@ -435,6 +620,8 @@ def build_generation_graph() -> Any:
     workflow.add_node("validate_spec_node", validate_spec_node)
     workflow.add_node("repair_spec_node", repair_spec_node)
     workflow.add_node("compile_slidespec_node", compile_slidespec_node)
+    workflow.add_node("paper_plan_node", paper_plan_node)
+    workflow.add_node("paper_design_node", paper_design_node)
     workflow.add_node("layout_node", layout_node)
     workflow.add_node("compile_presentation_ir_node", compile_presentation_ir_node)
     workflow.add_node("preview_node", preview_node)
@@ -442,8 +629,26 @@ def build_generation_graph() -> Any:
     workflow.add_node("visual_repair_node", visual_repair_node)
     workflow.add_node("persist_session_node", persist_session_node)
 
-    # 2. Linear edges
-    workflow.add_edge(START, "ingest_node")
+    # 2. Entry: paper branch (PaperIR + PaperVisualIR) vs PPTSpec branch
+    workflow.add_conditional_edges(
+        START,
+        entry_route,
+        {
+            "paper_plan_node": "paper_plan_node",
+            "ingest_node": "ingest_node",
+        },
+    )
+    workflow.add_conditional_edges(
+        "paper_plan_node",
+        paper_plan_route,
+        {
+            "paper_design_node": "paper_design_node",
+            "__end__": END,
+        },
+    )
+    workflow.add_edge("paper_design_node", "compile_presentation_ir_node")
+
+    # 3. PPTSpec linear ingestion
     workflow.add_edge("ingest_node", "normalize_node")
     workflow.add_edge("normalize_node", "validate_spec_node")
 

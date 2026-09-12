@@ -115,3 +115,106 @@ def test_generation_graph_structure_has_no_manual_loop():
     }
     for rn in required_nodes:
         assert rn in node_names, f"Missing node {rn} in generation StateGraph"
+
+
+def _one_slide_deck():
+    from backend.presentation.schema import SlideType as _SlideType
+    from backend.slidespec.schema import (
+        BlockRole,
+        DeckSpec,
+        SlideSpec,
+        TextBlock,
+        VisualIntent,
+    )
+
+    return DeckSpec(
+        title="LLM Layout Deck",
+        slides=[
+            SlideSpec(
+                index=1,
+                slide_type=_SlideType.TITLE,
+                visual_intent=VisualIntent.TITLE_HERO,
+                title="LLM Layout Deck",
+                blocks=[
+                    TextBlock(block_id="b1", role=BlockRole.HEADING, content="Hello")
+                ],
+            )
+        ],
+    )
+
+
+def _valid_llm_plan():
+    from backend.design.layout_schema import LLMLayoutPlan
+
+    return LLMLayoutPlan.model_validate(
+        {
+            "slide_id": "slide_1",
+            "elements": [
+                {
+                    "element_id": "title",
+                    "element_type": "TEXT",
+                    "x": 80,
+                    "y": 100,
+                    "width": 900,
+                    "height": 160,
+                    "content": "Hello",
+                    "font_size": 40,
+                }
+            ],
+        }
+    )
+
+
+@pytest.mark.anyio
+async def test_layout_node_prefers_llm_plans():
+    from backend.agent.graphs.generation import layout_node
+
+    result = await layout_node(
+        {"deck_spec": _one_slide_deck(), "llm_layout_plans": [_valid_llm_plan()]},
+        {"configurable": {}},
+    )
+    assert result["generation_mode"] == "llm_native"
+    assert result["layout_source"] == "llm"
+    assert result["fallback_reason"] is None
+    assert result["deck_layout"].slides[0].metadata["layout_source"] == "llm"
+
+
+@pytest.mark.anyio
+async def test_layout_node_legacy_without_plans():
+    from backend.agent.graphs.generation import layout_node
+
+    result = await layout_node({"deck_spec": _one_slide_deck()}, {"configurable": {}})
+    assert result["generation_mode"] == "legacy_template"
+    assert result["layout_source"] == "fallback_template"
+    assert result["fallback_reason"] == "no_llm_layout_plans"
+
+
+@pytest.mark.anyio
+async def test_layout_node_legacy_when_flag_disabled(monkeypatch):
+    from backend.agent.graphs.generation import layout_node
+    from backend.config import settings
+
+    monkeypatch.setattr(settings, "llm_native_layout_enabled", False)
+    result = await layout_node(
+        {"deck_spec": _one_slide_deck(), "llm_layout_plans": [_valid_llm_plan()]},
+        {"configurable": {}},
+    )
+    assert result["generation_mode"] == "legacy_template"
+
+
+@pytest.mark.anyio
+async def test_compile_ir_node_records_generation_metadata():
+    from backend.agent.graphs.generation import (
+        compile_presentation_ir_node,
+        layout_node,
+    )
+
+    layout_result = await layout_node(
+        {"deck_spec": _one_slide_deck(), "llm_layout_plans": [_valid_llm_plan()]},
+        {"configurable": {}},
+    )
+    ir_result = await compile_presentation_ir_node(layout_result, {"configurable": {}})
+    generation = ir_result["presentation_ir"].metadata["generation"]
+    assert generation["mode"] == "llm_native"
+    assert generation["source_type"] == "pptspec"
+    assert generation["layout_source"] == "llm"
