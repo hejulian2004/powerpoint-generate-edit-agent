@@ -85,6 +85,8 @@ def _direction_colors(art_direction: DeckArtDirection) -> Dict[str, Optional[str
     colors: Dict[str, Optional[str]] = {
         "primary_text": cd.primary_text,
         "secondary_text": cd.secondary_text,
+        "background_color": cd.background_color,
+        "surface_color": cd.surface_color,
         "primary_accent": cd.primary_accent,
         "secondary_accent": cd.secondary_accent,
         "semantic_positive": cd.semantic_positive,
@@ -171,6 +173,7 @@ def validate_deck_colors(
 
     report = ColorValidationReport(issues=validate_color_direction(art_direction))
     primary_text = art_direction.color_direction.primary_text
+    default_background = art_direction.color_direction.background_color or default_background
 
     for layout in layouts:
         canvas = layout.canvas or Canvas()

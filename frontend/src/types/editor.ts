@@ -42,6 +42,15 @@ export interface VisualRemediationEvent {
   delta?: number
 }
 
+export interface GenerationStageEvent {
+  type: 'generation_stage' | 'generation_progress'
+  phase?: string
+  status?: string
+  text?: string
+  current?: number
+  total?: number
+}
+
 export interface ContextUsageData {
   current_tokens: number
   max_tokens: number

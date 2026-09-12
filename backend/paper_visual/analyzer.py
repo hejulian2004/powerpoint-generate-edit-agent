@@ -333,6 +333,19 @@ def _chunk(items: Sequence[PaperPageAsset], size: int) -> List[List[PaperPageAss
     return [list(items[i : i + size]) for i in range(0, len(items), size)]
 
 
+def resolve_vision_model(llm_client: Any) -> Optional[str]:
+    """Return the configured vision model id, or None when vision is unavailable."""
+    if not _vision_available(llm_client):
+        return None
+    getter = getattr(llm_client, "get_model_for_role", None)
+    if callable(getter):
+        try:
+            return getter("vision")
+        except Exception:
+            return None
+    return None
+
+
 async def analyze_paper_visual(
     paper_ir: Optional[PaperIR],
     page_assets: Sequence[PaperPageAsset],
@@ -362,13 +375,7 @@ async def analyze_paper_visual(
             warnings=warnings,
         )
 
-    vision_model = None
-    getter = getattr(llm_client, "get_model_for_role", None)
-    if callable(getter):
-        try:
-            vision_model = getter("vision")
-        except Exception:
-            vision_model = None
+    vision_model = resolve_vision_model(llm_client)
 
     pages_by_number: Dict[int, PaperPageVisual] = {}
     batches = _chunk(list(page_assets), active_batch)
@@ -419,4 +426,5 @@ __all__ = [
     "VISION_SYSTEM_PROMPT",
     "VISION_PROMPT_VERSION",
     "analyze_paper_visual",
+    "resolve_vision_model",
 ]

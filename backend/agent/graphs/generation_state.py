@@ -36,9 +36,15 @@ class PPTGenerationState(TypedDict, total=False):
     # designs the deck directly from PaperIR + PaperVisualIR.
     paper_ir: Optional[Any]
     paper_visual_ir: Optional[Any]
+    paper_cache_dir: Optional[str]
     presentation_plan: Optional[Any]
     user_prompt: str
     duration_minutes: int
+
+    # Paper-branch truthfulness gate (S4): Art Director output is validated against
+    # PaperIR before any design work; one targeted repair round, then hard fail.
+    paper_truthfulness_attempts: int
+    paper_truthfulness_errors: List[str]
 
     # LLM-native design path inputs (S2). When ``llm_layout_plans`` is present and
     # ``LLM_NATIVE_LAYOUT_ENABLED`` is on, layout_node compiles free-form plans
@@ -52,6 +58,13 @@ class PPTGenerationState(TypedDict, total=False):
     fallback_reason: Optional[str]
 
     visual_issues: List[VisualIssue]
+
+    # Source-aware visual review (S3) + deck-level review (S4 / Phase 9).
+    slide_rasters: Dict[str, str]
+    deck_review: Optional[Any]
+    slides_to_revisit: List[int]
+    deck_revisit_round: int
+    max_deck_revisit_rounds: int
 
     # Document identity captured when generation starts. The final persist commits
     # only if the live session still matches, so a generation run can never
