@@ -613,6 +613,7 @@ const applyElementUpdate = (
 interface PPTState {
   sessionId: string
   isBootstrapping: boolean
+  sessionTakenOver: boolean
   presentation: PresentationIR | null
   confirmedPresentation: PresentationIR | null
   activeSlideId: string | null
@@ -751,6 +752,7 @@ interface PPTState {
 export const usePPTStore = create<PPTState>((set, get) => ({
   sessionId: '',
   isBootstrapping: false,
+  sessionTakenOver: false,
   presentation: null,
   confirmedPresentation: null,
   activeSlideId: null,
@@ -1494,13 +1496,27 @@ export const usePPTStore = create<PPTState>((set, get) => ({
     const ws = new WebSocket(wsUrl)
 
     ws.onopen = () => {
-      set({ wsConnected: true, ws })
+      set({ wsConnected: true, ws, sessionTakenOver: false })
       // NOTE: do NOT flush the outbox here. The server's presentation_loaded
       // snapshot first reconciles document_epoch/revision; only mutations that
       // still match the live deck are safe to replay.
     }
 
-    ws.onclose = () => {
+    ws.onclose = (event) => {
+      const code = (event as CloseEvent | undefined)?.code
+      // Newest-tab-wins: a superseded tab must never auto-reconnect (that would
+      // fight the tab that took over the workspace).
+      if (get().sessionTakenOver || code === 4001) {
+        set({
+          ws: null,
+          wsConnected: false,
+          sessionTakenOver: true,
+          inFlightMutationId: null,
+          inFlightMessage: null,
+          mutationStatus: 'idle'
+        })
+        return
+      }
       const { outbox, pendingMutations, inFlightMutationId, inFlightMessage } = get()
       let nextOutbox = outbox
       if (inFlightMutationId !== null && inFlightMessage) {
@@ -1531,7 +1547,15 @@ export const usePPTStore = create<PPTState>((set, get) => ({
         const data = JSON.parse(event.data)
         const type = data.type
 
-        if (type === 'presentation_loaded') {
+        if (type === 'session_taken_over') {
+          set({ sessionTakenOver: true })
+          get().addMessage({
+            id: `takeover_${Date.now()}`,
+            role: 'assistant',
+            content: '该工作区已在其他标签页打开，本页已停止同步与编辑。',
+            timestamp: Date.now()
+          })
+        } else if (type === 'presentation_loaded') {
           // Adopt through the SAME canonical path as every other server document
           // (ACK, CAS rejection, REST, upload). A bespoke branch here would be a
           // second source of truth for epoch/revision reconciliation.
