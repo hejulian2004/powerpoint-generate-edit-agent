@@ -40,5 +40,15 @@ class CheckpointService:
     def list_all(self) -> List[Dict[str, Any]]:
         return self.manager.list_all()
 
+    def to_snapshots(self) -> List[Dict[str, Any]]:
+        """Serializes every retained checkpoint including its IR payload."""
+        return [cp.to_snapshot() for cp in self.manager.checkpoints]
+
+    def restore_from_snapshots(self, snapshots: List[Dict[str, Any]]) -> None:
+        """Replaces the retained checkpoints with deserialized persisted ones."""
+        self.manager.checkpoints = [
+            SessionCheckpoint.from_snapshot(data) for data in (snapshots or [])
+        ]
+
     def clear(self) -> None:
         self.manager.clear()

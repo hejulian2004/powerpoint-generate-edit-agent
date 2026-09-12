@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 import os
+from contextlib import asynccontextmanager
 from pathlib import Path
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -10,11 +11,23 @@ from fastapi.responses import FileResponse
 
 from .config import settings
 from .api import api_router, ws_router
+from .workspace.runtime import shutdown_workspace, startup_workspace
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    await startup_workspace()
+    try:
+        yield
+    finally:
+        await shutdown_workspace()
+
 
 app = FastAPI(
     title="PPT-Agent-Studio API",
     description="LLM Agent-driven Presentation Creation and Realtime Editing Platform",
-    version="1.0.0"
+    version="1.0.0",
+    lifespan=lifespan,
 )
 
 # CORS: explicit origin allowlist from CORS_ORIGINS (dev origins by default).

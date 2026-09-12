@@ -348,6 +348,13 @@ class MutationGateway:
         else:
             batch = _run()
 
+        # Durable persistence: mark committed state dirty for debounced flush.
+        if session is not None and batch.success and not batch.rolled_back:
+            try:
+                session.schedule_persist()
+            except Exception:
+                logger.debug("schedule_persist failed", exc_info=True)
+
         for event in events:
             await _await_event(on_event, event)
         return batch

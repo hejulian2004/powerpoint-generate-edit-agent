@@ -41,6 +41,14 @@ class SessionManager:
     def get_session(self, session_id: str) -> Optional[PPTSession]:
         return self._sessions.get(session_id)
 
+    def register(self, session: PPTSession) -> PPTSession:
+        """Registers an externally reconstructed session (e.g. restored from disk)."""
+        self._sessions[session.session_id] = session
+        return session
+
+    def session_ids(self) -> List[str]:
+        return list(self._sessions.keys())
+
     def get_or_create(
         self,
         session_id: Optional[str] = None,
