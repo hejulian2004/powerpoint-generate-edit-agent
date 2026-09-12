@@ -259,6 +259,8 @@ class PPTSession:
         document_epoch: Optional[str] = None,
         expected_revision: Optional[int] = None,
         active_slide_id: Optional[str] = None,
+        ui_context: Optional[Dict[str, Any]] = None,
+        ui_context_revision: Optional[int] = None,
     ) -> Dict[str, Any]:
         if document_epoch is None:
             document_epoch = self.document.epoch
@@ -270,6 +272,8 @@ class PPTSession:
             document_epoch=document_epoch,
             expected_revision=expected_revision,
             active_slide_id=active_slide_id,
+            ui_context=ui_context,
+            ui_context_revision=ui_context_revision,
         )
         self.updated_at = datetime.now(timezone.utc)
         return record
@@ -409,14 +413,18 @@ class PPTSession:
             self.iterations.append(iteration_data)
         self.updated_at = datetime.now(timezone.utc)
 
-    def reset_conversation(self) -> None:
+    async def reset_conversation(self) -> None:
         """Starts a brand-new conversation while preserving the deck and history.
 
         Clears the transcript, Agent memory, subagent memories and any manual
-        compression anchor. The presentation, document epoch, checkpoints and
-        pending confirmations/plans are deliberately left untouched.
+        compression anchor, and also drops pending confirmations/plans so no
+        orphaned server-side actions survive the reset. The presentation,
+        document epoch, checkpoints and interaction mode are preserved.
         """
-        self.memory.clear_conversation()
+        async with self.memory.conversation_lock:
+            self.memory.clear_conversation()
+            self.confirmations.clear()
+            self.plan_confirmations.clear()
         self.updated_at = datetime.now(timezone.utc)
         self.schedule_persist()
 

@@ -31,6 +31,8 @@ class PlanConfirmationService:
         document_epoch: Optional[str],
         expected_revision: Optional[int],
         active_slide_id: Optional[str] = None,
+        ui_context: Optional[Dict[str, Any]] = None,
+        ui_context_revision: Optional[int] = None,
     ) -> Dict[str, Any]:
         record = {
             "plan_id": plan_id,
@@ -40,6 +42,11 @@ class PlanConfirmationService:
             "document_epoch": document_epoch,
             "expected_revision": expected_revision,
             "active_slide_id": active_slide_id,
+            # The requesting client's UI context is frozen alongside the plan so
+            # confirming later binds deictic references to the elements the user
+            # selected when they asked - not to a newer client-local selection.
+            "ui_context": dict(ui_context) if ui_context else None,
+            "ui_context_revision": ui_context_revision,
             "created_at": datetime.now(timezone.utc).isoformat(),
         }
         self.pending[plan_id] = record

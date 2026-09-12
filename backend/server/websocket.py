@@ -379,7 +379,7 @@ async def websocket_endpoint(websocket: WebSocket):
             # User's natural-language message is empty but the turn carries a plan
             # execution directive (confirmed plan) or other control command below.
             elif msg_type == "new_conversation":
-                session.reset_conversation()
+                await session.reset_conversation()
                 await store.broadcast(
                     {"type": "conversation_reset", "session_id": session.session_id},
                     session_id=session.session_id,

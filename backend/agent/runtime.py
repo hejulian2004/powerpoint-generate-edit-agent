@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import uuid
 import logging
+from contextlib import nullcontext
 from typing import Dict, Any, List, Optional, Callable
 from .llm import LLMClient
 from .memory import AgentMemory
@@ -249,164 +250,176 @@ class AgentRuntime:
         turn_epoch = request_document_epoch if request_document_epoch is not None else live_epoch
         turn_revision = request_base_revision if request_base_revision is not None else live_revision
 
-        # 1. Evaluate context tokens & execute auto-compression at >= 90% threshold.
-        #    AgentRuntime is the single owner of the conversation transcript: the
-        #    user turn is appended exactly once here (transports must not do it),
-        #    and only AFTER a successful admission.
-        ctx_limit_key = getattr(settings, "context_limit", "256k").lower()
-        max_tokens_budget = CONTEXT_LIMIT_PRESETS.get(ctx_limit_key, 256 * 1024)
+        # Every path that reads the transcript to build model context, or writes
+        # the transcript / compression anchor, is serialized by the session's
+        # conversation lock. The LLM call itself is inside the lock so a
+        # concurrent turn can never answer a stale snapshot. This lock is
+        # independent of document.mutation_lock / the agent edit lease, so it
+        # never blocks GUI PPT editing.
+        conversation_lock = (
+            session.memory.conversation_lock
+            if session is not None and hasattr(session, "memory")
+            else nullcontext()
+        )
+        async with conversation_lock:
+            # 1. Evaluate context tokens & execute auto-compression at >= 90% threshold.
+            #    AgentRuntime is the single owner of the conversation transcript: the
+            #    user turn is appended exactly once here (transports must not do it),
+            #    and only AFTER a successful admission.
+            ctx_limit_key = getattr(settings, "context_limit", "256k").lower()
+            max_tokens_budget = CONTEXT_LIMIT_PRESETS.get(ctx_limit_key, 256 * 1024)
 
-        if session is not None and hasattr(session, "add_message"):
-            if record_user_message:
-                session.add_message(role="user", content=user_message)
-            session_messages = list(session.memory.messages)
-        else:
-            session_messages = (
-                [{"role": "user", "content": user_message}]
-                if record_user_message
-                else []
+            if session is not None and hasattr(session, "add_message"):
+                if record_user_message:
+                    session.add_message(role="user", content=user_message)
+                session_messages = list(session.memory.messages)
+            else:
+                session_messages = (
+                    [{"role": "user", "content": user_message}]
+                    if record_user_message
+                    else []
+                )
+
+            # A user-triggered manual compression anchor persists across turns: the
+            # model-facing window is rebuilt from the anchor plus the live tail, while
+            # the raw transcript (state["raw_messages"]) is never rewritten.
+            manual_anchor = getattr(session_memory, "compressed_anchor", None) if session_memory else None
+            manual_through = getattr(session_memory, "compression_through_index", 0) if session_memory else 0
+            model_base_messages = ContextCompressor.assemble_model_messages(
+                session_messages, manual_anchor, manual_through
+            )
+            compressed_messages, usage_report = ContextCompressor.evaluate_and_compress(
+                messages=model_base_messages,
+                max_tokens=max_tokens_budget,
+                context_key=ctx_limit_key
             )
 
-        # A user-triggered manual compression anchor persists across turns: the
-        # model-facing window is rebuilt from the anchor plus the live tail, while
-        # the raw transcript (state["raw_messages"]) is never rewritten.
-        manual_anchor = getattr(session_memory, "compressed_anchor", None) if session_memory else None
-        manual_through = getattr(session_memory, "compression_through_index", 0) if session_memory else 0
-        model_base_messages = ContextCompressor.assemble_model_messages(
-            session_messages, manual_anchor, manual_through
-        )
-        compressed_messages, usage_report = ContextCompressor.evaluate_and_compress(
-            messages=model_base_messages,
-            max_tokens=max_tokens_budget,
-            context_key=ctx_limit_key
-        )
+            # The compressed form is model-facing only; the raw transcript is preserved.
 
-        # The compressed form is model-facing only; the raw transcript is preserved.
-
-        # Emit real-time context usage report for frontend circular progress indicator
-        if on_event:
-            try:
-                ev_data = {
-                    "type": "context_usage",
-                    "usage": usage_report.to_dict()
-                }
-                import inspect
-                if inspect.iscoroutinefunction(on_event):
-                    await on_event(ev_data)
-                else:
-                    res = on_event(ev_data)
-                    if inspect.isawaitable(res):
-                        await res
-            except Exception as e:
-                logger.debug(f"Failed to emit context_usage: {e}")
-
-        # 1b. Announce the freeze. The lease was already installed atomically above
-        #     (inside `document.mutation_lock`), so this is purely observational.
-        if session is not None and admitted:
-            await _emit(on_event, {
-                "type": "document_frozen",
-                "session_id": session.session_id,
-                "edit_lock": session.agent_execution.edit_lock(),
-            })
-
-        initial_state: PPTAgentState = {
-            "user_query": user_message,
-            "messages": compressed_messages,
-            "raw_messages": session_messages,
-            "iteration": 0,
-            "max_iterations": max_iterations,
-            "active_slide_id": pres.active_slide_id,
-            "presentation_version": pres.version,
-            "ui_context": ctx.to_dict(),
-            "ui_context_revision": ctx.ui_context_revision,
-            "tool_calls": [],
-            "tool_results": [],
-            "confirmed_tool_ids": confirmed_ids,
-            "turn_document_epoch": turn_epoch,
-            "turn_base_revision": turn_revision,
-            "turn_invalidated": False,
-            "subagent_memories": seeded_subagent_memories,
-            "agent_turn_id": turn_id,
-            "interaction_mode": (
-                mode
-                or (getattr(session, "interaction_mode", "auto") if session is not None else "auto")
-            ),
-            "plan_preapproved": bool(approved_plan),
-        }
-        if approved_plan:
-            initial_state["plan"] = approved_plan
-
-        config = {
-            "configurable": {
-                "pres": pres,
-                "history": history,
-                "session": session,
-                "on_event": on_event,
-                "llm_client": self.llm,
-                "memory": (session.memory.agent_memory if session else None) or self.memory,
-                "confirmed_tool_ids": confirmed_ids,
-                "ui_context": ctx,
-            }
-        }
-
-        try:
-            final_state = await self.graph.ainvoke(initial_state, config=config)
-
-            reply = final_state.get("final_summary", "处理完成。")
-            executed_tools = final_state.get("tool_results", [])
-            vision_critique = final_state.get("vision_critique")
-            intent = final_state.get("intent", "chat")
-            plan = final_state.get("plan", "")
-
-            # Write subagent continuity back onto the session so the next turn's
-            # critics can contrast their prior audit rounds.
-            if session_memory is not None:
-                from .subagents.memory import SubagentSessionMemory
-                for name, payload in (final_state.get("subagent_memories") or {}).items():
-                    if isinstance(payload, dict):
-                        session_memory.set_subagent_memory(
-                            name, SubagentSessionMemory.from_dict(payload)
-                        )
-
-            if session is not None and hasattr(session, "add_message"):
-                session.add_message(
-                    role="assistant",
-                    content=reply,
-                    tool_calls=executed_tools,
-                    vision_critique=vision_critique
-                )
-            if session is not None and hasattr(session, "schedule_persist"):
-                session.schedule_persist()
-
-            return {
-                "reply": reply,
-                "tools_executed": executed_tools,
-                "vision_critique": vision_critique,
-                "version": pres.version,
-                "intent": intent,
-                "plan": plan
-            }
-        except Exception as e:
-            logger.error(f"LangGraph execution error: {e}", exc_info=True)
-            err_msg = f"LangGraph 运行异常: {str(e)}"
-            if session is not None and hasattr(session, "add_message"):
-                session.add_message(role="assistant", content=err_msg)
-            if session is not None and hasattr(session, "schedule_persist"):
-                session.schedule_persist()
+            # Emit real-time context usage report for frontend circular progress indicator
             if on_event:
-                await on_event({"type": "agent_error", "error": err_msg})
-            return {
-                "reply": err_msg,
-                "tools_executed": [],
-                "vision_critique": None,
-                "version": pres.version,
-                "error": str(e)
-            }
-        finally:
-            # Release the lease on the happy path, on exception, and on
-            # cancellation (a `finally` always runs for CancelledError).
+                try:
+                    ev_data = {
+                        "type": "context_usage",
+                        "usage": usage_report.to_dict()
+                    }
+                    import inspect
+                    if inspect.iscoroutinefunction(on_event):
+                        await on_event(ev_data)
+                    else:
+                        res = on_event(ev_data)
+                        if inspect.isawaitable(res):
+                            await res
+                except Exception as e:
+                    logger.debug(f"Failed to emit context_usage: {e}")
+
+            # 1b. Announce the freeze. The lease was already installed atomically above
+            #     (inside `document.mutation_lock`), so this is purely observational.
             if session is not None and admitted:
-                session.agent_execution.end_turn(turn_id)
+                await _emit(on_event, {
+                    "type": "document_frozen",
+                    "session_id": session.session_id,
+                    "edit_lock": session.agent_execution.edit_lock(),
+                })
+
+            initial_state: PPTAgentState = {
+                "user_query": user_message,
+                "messages": compressed_messages,
+                "raw_messages": session_messages,
+                "iteration": 0,
+                "max_iterations": max_iterations,
+                "active_slide_id": pres.active_slide_id,
+                "presentation_version": pres.version,
+                "ui_context": ctx.to_dict(),
+                "ui_context_revision": ctx.ui_context_revision,
+                "tool_calls": [],
+                "tool_results": [],
+                "confirmed_tool_ids": confirmed_ids,
+                "turn_document_epoch": turn_epoch,
+                "turn_base_revision": turn_revision,
+                "turn_invalidated": False,
+                "subagent_memories": seeded_subagent_memories,
+                "agent_turn_id": turn_id,
+                "interaction_mode": (
+                    mode
+                    or (getattr(session, "interaction_mode", "auto") if session is not None else "auto")
+                ),
+                "plan_preapproved": bool(approved_plan),
+            }
+            if approved_plan:
+                initial_state["plan"] = approved_plan
+
+            config = {
+                "configurable": {
+                    "pres": pres,
+                    "history": history,
+                    "session": session,
+                    "on_event": on_event,
+                    "llm_client": self.llm,
+                    "memory": (session.memory.agent_memory if session else None) or self.memory,
+                    "confirmed_tool_ids": confirmed_ids,
+                    "ui_context": ctx,
+                }
+            }
+
+            try:
+                final_state = await self.graph.ainvoke(initial_state, config=config)
+
+                reply = final_state.get("final_summary", "处理完成。")
+                executed_tools = final_state.get("tool_results", [])
+                vision_critique = final_state.get("vision_critique")
+                intent = final_state.get("intent", "chat")
+                plan = final_state.get("plan", "")
+
+                # Write subagent continuity back onto the session so the next turn's
+                # critics can contrast their prior audit rounds.
+                if session_memory is not None:
+                    from .subagents.memory import SubagentSessionMemory
+                    for name, payload in (final_state.get("subagent_memories") or {}).items():
+                        if isinstance(payload, dict):
+                            session_memory.set_subagent_memory(
+                                name, SubagentSessionMemory.from_dict(payload)
+                            )
+
+                if session is not None and hasattr(session, "add_message"):
+                    session.add_message(
+                        role="assistant",
+                        content=reply,
+                        tool_calls=executed_tools,
+                        vision_critique=vision_critique
+                    )
+                if session is not None and hasattr(session, "schedule_persist"):
+                    session.schedule_persist()
+
+                return {
+                    "reply": reply,
+                    "tools_executed": executed_tools,
+                    "vision_critique": vision_critique,
+                    "version": pres.version,
+                    "intent": intent,
+                    "plan": plan
+                }
+            except Exception as e:
+                logger.error(f"LangGraph execution error: {e}", exc_info=True)
+                err_msg = f"LangGraph 运行异常: {str(e)}"
+                if session is not None and hasattr(session, "add_message"):
+                    session.add_message(role="assistant", content=err_msg)
+                if session is not None and hasattr(session, "schedule_persist"):
+                    session.schedule_persist()
+                if on_event:
+                    await on_event({"type": "agent_error", "error": err_msg})
+                return {
+                    "reply": err_msg,
+                    "tools_executed": [],
+                    "vision_critique": None,
+                    "version": pres.version,
+                    "error": str(e)
+                }
+            finally:
+                # Release the lease on the happy path, on exception, and on
+                # cancellation (a `finally` always runs for CancelledError).
+                if session is not None and admitted:
+                    session.agent_execution.end_turn(turn_id)
 
     # ------------------------------------------------------------------
     # Manual context compression (user-triggered slash command)
@@ -428,17 +441,21 @@ class AgentRuntime:
         max_tokens_budget = CONTEXT_LIMIT_PRESETS.get(ctx_limit_key, 256 * 1024)
 
         memory = getattr(session, "memory", None) if session is not None else None
-        messages = list(getattr(memory, "messages", []) or [])
-        anchor, through_index, report = ContextCompressor.build_anchor(
-            messages, max_tokens=max_tokens_budget, context_key=ctx_limit_key
-        )
-        applied = anchor is not None
-        if applied and memory is not None:
-            memory.compressed_anchor = anchor
-            memory.compression_through_index = through_index
-            memory.compression_report = report.to_dict()
-        if session is not None and hasattr(session, "schedule_persist"):
-            session.schedule_persist()
+        # Compression reads the transcript and rewrites the anchor, so it shares
+        # the conversation lock with run_turn / attachment chat.
+        lock = memory.conversation_lock if memory is not None else nullcontext()
+        async with lock:
+            messages = list(getattr(memory, "messages", []) or [])
+            anchor, through_index, report = ContextCompressor.build_anchor(
+                messages, max_tokens=max_tokens_budget, context_key=ctx_limit_key
+            )
+            applied = anchor is not None
+            if applied and memory is not None:
+                memory.compressed_anchor = anchor
+                memory.compression_through_index = through_index
+                memory.compression_report = report.to_dict()
+            if session is not None and hasattr(session, "schedule_persist"):
+                session.schedule_persist()
 
         if on_event:
             await _emit(on_event, {"type": "context_usage", "usage": report.to_dict()})
@@ -452,6 +469,98 @@ class AgentRuntime:
                 },
             )
         return {"applied": applied, "covered_messages": through_index if applied else 0, "usage": report.to_dict()}
+
+    # ------------------------------------------------------------------
+    # Read-only attachment chat (user asks a question about a file)
+    # ------------------------------------------------------------------
+
+    async def chat_with_attachments(
+        self,
+        session: Any,
+        user_message: str,
+        context: Any,
+        ui_context: Optional[Any] = None,
+        on_event: Optional[Callable[[Dict[str, Any]], Any]] = None,
+    ) -> Dict[str, Any]:
+        """Answers a question about attached material without mutating the deck.
+
+        This path deliberately does NOT acquire the agent edit lease and never
+        emits ``document_frozen``: it is read-only reasoning, so the user keeps
+        editing the presentation while the answer is produced. It does hold the
+        conversation-state lock (never ``document.mutation_lock``) so concurrent
+        chat turns cannot answer a stale transcript.
+
+        The bounded digest / image parts are injected only into this one model
+        call; the durable transcript stores plain user/assistant text only.
+        """
+        from .context_compressor import ContextCompressor, CONTEXT_LIMIT_PRESETS
+        from .uicontext import UIContext
+
+        if session is None:
+            raise ValueError("chat_with_attachments requires a session")
+
+        ctx = UIContext.from_any(ui_context)
+        memory = session.memory
+        ctx_limit_key = getattr(settings, "context_limit", "256k").lower()
+        max_tokens_budget = CONTEXT_LIMIT_PRESETS.get(ctx_limit_key, 256 * 1024)
+
+        async with memory.conversation_lock:
+            history = ContextCompressor.assemble_model_messages(
+                list(memory.messages),
+                getattr(memory, "compressed_anchor", None),
+                getattr(memory, "compression_through_index", 0),
+            )
+            content_parts: List[Dict[str, Any]] = [
+                {"type": "text", "text": user_message or "请根据附件内容回答问题。"}
+            ]
+            digest = getattr(context, "text_digest", "") or ""
+            if digest:
+                content_parts.append({"type": "text", "text": "【附件内容（只读）】\n" + digest})
+            content_parts.extend(getattr(context, "image_parts", []) or [])
+            model_messages = list(history) + [{"role": "user", "content": content_parts}]
+            model_messages, usage_report = ContextCompressor.evaluate_and_compress(
+                messages=model_messages,
+                max_tokens=max_tokens_budget,
+                context_key=ctx_limit_key,
+            )
+
+            # The model role is decided by the FINAL payload: any real image part
+            # makes this a vision request, otherwise it is plain reasoning.
+            has_images = any(
+                isinstance(m.get("content"), list)
+                and any(
+                    isinstance(p, dict) and p.get("type") == "image_url"
+                    for p in m["content"]
+                )
+                for m in model_messages
+            )
+            role = "vision" if has_images else "reasoning"
+
+            try:
+                response = await self.llm.chat_completion(
+                    model_messages, role=role, max_tokens=2000
+                )
+                reply = response["choices"][0]["message"].get("content", "") or ""
+            except Exception as exc:
+                logger.error("Attachment chat LLM call failed: %s", exc)
+                reply = f"附件内容读取失败：{exc}"
+
+            memory.add_message(role="user", content=user_message or "（已附加文件）")
+            memory.add_message(role="assistant", content=reply)
+            if hasattr(session, "schedule_persist"):
+                session.schedule_persist()
+
+        if on_event:
+            await _emit(
+                on_event,
+                {"type": "context_usage", "usage": usage_report.to_dict()},
+            )
+        return {
+            "reply": reply,
+            "role": role,
+            "has_images": has_images,
+            "usage": usage_report.to_dict(),
+        }
 
     # ------------------------------------------------------------------
     # Pending confirmation lifecycle (PR6-hardening round 2)
@@ -709,6 +818,9 @@ class AgentRuntime:
             on_event=on_event,
             request_document_epoch=record_epoch,
             request_base_revision=record_revision,
+            # Restore the UI context captured when the user asked for the plan,
+            # not whatever the client has selected at confirmation time.
+            ui_context=record.get("ui_context"),
             transport=transport,
             mode="plan",
             approved_plan=record.get("plan", ""),
