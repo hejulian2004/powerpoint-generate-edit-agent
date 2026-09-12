@@ -874,8 +874,8 @@ class MutationGateway:
             )
             if target_el_id:
                 batch.last_target_id = target_el_id
-                if session is not None and hasattr(session, "last_target_id"):
-                    session.last_target_id = target_el_id
+                if session is not None and hasattr(session, "document"):
+                    session.document.last_target_id = target_el_id
 
             if batch.error:
                 emit({

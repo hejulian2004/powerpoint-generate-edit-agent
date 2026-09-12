@@ -239,15 +239,15 @@ class PresentationStore:
 
     @property
     def presentation(self) -> PresentationIR:
-        return self.active_session.pres
+        return self.active_session.document.presentation
 
     @property
     def history(self):
-        return self.active_session.history
+        return self.active_session.history_service.stack
 
     @history.setter
     def history(self, h):
-        self.active_session.history = h
+        self.active_session.history_service.stack = h
 
     def get_presentation(self) -> PresentationIR:
         return self.active_session.pres
@@ -319,7 +319,7 @@ class PresentationStore:
         sess = self.session_manager.get_session(session_id)
         if not sess:
             raise KeyError(f"Session '{session_id}' not found")
-        return self.export_pptx_bytes(pres=sess.pres)
+        return self.export_pptx_bytes(pres=sess.document.presentation)
 
     def undo(self) -> Optional[Dict[str, Any]]:
         patch = self.active_session.undo()

@@ -1,18 +1,23 @@
 """SessionManager managing registry, lifecycle, and isolation of PPTSession workspaces."""
 
 from __future__ import annotations
-import uuid
 import logging
 from typing import Dict, Any, Optional, List
 
 from ..ir.models import PresentationIR
+from .factory import SessionFactory
 from .session import PPTSession
 
 logger = logging.getLogger(__name__)
 
 
 class SessionManager:
-    """Registry maintaining active PPTSession instances."""
+    """Registry maintaining active PPTSession instances.
+
+    Sessions are created through ``SessionFactory`` so each one owns an
+    independent ``PresentationIR`` (S2). ``DEFAULT_SESSION_ID`` is retained only
+    for explicit bootstrap/test use; production paths must supply a real id (S4).
+    """
 
     DEFAULT_SESSION_ID = "default"
 
@@ -22,15 +27,15 @@ class SessionManager:
     def create_session(
         self,
         pres: Optional[PresentationIR] = None,
-        session_id: Optional[str] = None
+        session_id: Optional[str] = None,
     ) -> PPTSession:
-        sid = session_id or f"sess_{uuid.uuid4().hex[:8]}"
-        if not pres:
-            pres = PresentationIR(title="Untitled Presentation")
-
-        session = PPTSession(session_id=sid, pres=pres)
-        self._sessions[sid] = session
-        logger.info(f"Created session '{sid}' with presentation '{pres.title}'")
+        session = SessionFactory.create(pres, session_id=session_id)
+        self._sessions[session.session_id] = session
+        logger.info(
+            "Created session '%s' with presentation '%s'",
+            session.session_id,
+            session.pres.title,
+        )
         return session
 
     def get_session(self, session_id: str) -> Optional[PPTSession]:
@@ -39,7 +44,7 @@ class SessionManager:
     def get_or_create(
         self,
         session_id: Optional[str] = None,
-        pres_factory: Optional[callable] = None
+        pres_factory: Optional[callable] = None,
     ) -> PPTSession:
         sid = session_id or self.DEFAULT_SESSION_ID
         if sid in self._sessions:
@@ -54,7 +59,7 @@ class SessionManager:
     def delete_session(self, session_id: str) -> bool:
         if session_id in self._sessions:
             del self._sessions[session_id]
-            logger.info(f"Deleted session '{session_id}'")
+            logger.info("Deleted session '%s'", session_id)
             return True
         return False
 

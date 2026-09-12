@@ -22,8 +22,12 @@ FORBIDDEN_TOKENS = (
 
 def _production_sources():
     for path in BACKEND_ROOT.rglob("*.py"):
-        # session.py defines the private primitive; it is the only allowed home.
+        # The CAS-bypassing primitives live in exactly two allowed homes:
+        # the thin aggregate's delegating wrappers and the DocumentService that
+        # actually implements them.
         if path.name == "session.py":
+            continue
+        if path.parts[-2:] == ("services", "document.py"):
             continue
         if "__pycache__" in path.parts:
             continue

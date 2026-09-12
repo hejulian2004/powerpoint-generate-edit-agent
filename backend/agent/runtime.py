@@ -136,7 +136,7 @@ class AgentRuntime:
         #    The raw transcript is owned by this method, so a rejected request must
         #    not append a user turn (it would pollute the conversation with an
         #    instruction that never ran).
-        live_epoch = getattr(session, "document_epoch", None) if session is not None else None
+        live_epoch = session.document.epoch if session is not None else None
         live_revision = pres.version if pres is not None else None
         if session is not None and request_document_epoch is not None and request_document_epoch != live_epoch:
             return await self._reject_turn(
@@ -166,7 +166,7 @@ class AgentRuntime:
 
         if session is not None and hasattr(session, "add_message"):
             session.add_message(role="user", content=user_message)
-            session_messages = list(session.messages)
+            session_messages = list(session.memory.messages)
         else:
             session_messages = [{"role": "user", "content": user_message}]
 
@@ -220,7 +220,7 @@ class AgentRuntime:
                 "session": session,
                 "on_event": on_event,
                 "llm_client": self.llm,
-                "memory": (getattr(session, "agent_memory", None) if session else None) or self.memory,
+                "memory": (session.memory.agent_memory if session else None) or self.memory,
                 "confirmed_tool_ids": confirmed_ids,
                 "ui_context": ctx,
             }
@@ -292,7 +292,7 @@ class AgentRuntime:
                 await on_event({"type": "confirmation_failed", "call_id": call_id, **result})
             return result
 
-        current_version = session.pres.version
+        current_version = session.document.presentation.version
         current_epoch = getattr(session, "document_epoch", None)
         record_epoch = record.get("document_epoch")
         expected_revision = record.get("expected_revision", record["presentation_version"])
@@ -349,7 +349,7 @@ class AgentRuntime:
         )
         batch = await MutationGateway.execute_tool_calls(
             [{"name": claimed["tool"], "arguments": claimed["arguments"], "id": call_id}],
-            session.pres,
+            session.document.presentation,
             session.history,
             session=session,
             confirmed_ids={call_id},
@@ -366,7 +366,7 @@ class AgentRuntime:
                 "error": "confirmation_invalidated",
                 "call_id": call_id,
                 "expected_version": claimed_revision,
-                "current_version": session.pres.version,
+                "current_version": session.document.presentation.version,
                 "message": (
                     "演示文稿在等待确认期间已发生变化，该挂起调用已失效，"
                     "请重新发起指令。"
@@ -381,14 +381,14 @@ class AgentRuntime:
             res.get("element_id") if isinstance(res, dict) else None
         )
         if target_el_id and hasattr(session, "last_target_id"):
-            session.last_target_id = target_el_id
+            session.document.last_target_id = target_el_id
 
         if on_event:
             await on_event({
                 "type": "tool_completed",
                 "tool": claimed["tool"],
                 "result": res,
-                "presentation_version": session.pres.version,
+                "presentation_version": session.document.presentation.version,
                 "confirmed_call_id": call_id,
             })
             await on_event({
@@ -403,7 +403,7 @@ class AgentRuntime:
             "call_id": call_id,
             "tool": claimed["tool"],
             "result": res,
-            "version": session.pres.version,
+            "version": session.document.presentation.version,
         }
 
     async def cancel_pending(

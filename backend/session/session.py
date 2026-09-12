@@ -1,185 +1,192 @@
-"""Interactive PPTSession representing a stateful, multi-turn editing workspace."""
+"""Interactive PPTSession: a thin aggregate over isolated session services.
+
+State ownership (S2/S3) lives in the services:
+
+    PPTSession
+        document:        DocumentService        (IR, epoch, lock, CAS, idempotency)
+        history_service: HistoryService         (undo/redo command stack)
+        checkpoint_service: CheckpointService   (retained snapshots)
+        memory:          MemoryService          (messages, agent/subagent memory)
+        confirmations:   ConfirmationService    (pending low-confidence calls)
+        agent_execution: AgentExecutionService  (exclusive Agent edit window)
+        connection:      ConnectionService      (single writable frontend)
+
+For backward compatibility this class still exposes delegating properties and
+methods (``pres``, ``document_epoch``, ``history``, ``messages``, ...). New code
+must use the service APIs; a contract test forbids *new* direct mutation of the
+legacy surface.
+"""
 
 from __future__ import annotations
-import uuid
-import copy
-import asyncio
-from collections import OrderedDict
+
 from datetime import datetime, timezone
-from dataclasses import dataclass, field
-from typing import Dict, Any, Optional, List
+from typing import Any, Dict, List, Optional
 
 from ..ir.models import PresentationIR, SlideIR
-from ..history.undo_stack import UndoRedoStack
-from ..history.command import MutationCommand
-from .checkpoint import SessionCheckpoint, CheckpointManager
+from .services.document import (
+    COMPLETED_MUTATION_LIMIT,
+    CHECKPOINT_NOT_FOUND,
+    DOCUMENT_EPOCH_MISMATCH,
+    MISSING_REPLACEMENT_STAMP,
+    STALE_GENERATION,
+    STALE_MUTATION,
+    DocumentService,
+    ExportSnapshot,
+    ReplacementResult,
+)
+from .services.agent_execution import AgentExecutionService
+from .services.checkpoint import CheckpointService
+from .services.confirmation import ConfirmationService
+from .services.connection import ConnectionService
+from .services.history import HistoryService
+from .services.memory import MemoryService
 
-# Bounded idempotency window for caller-supplied mutation ids. This is a short
-# retry/dedup buffer, not a mutation history, so it stays small.
-COMPLETED_MUTATION_LIMIT = 256
-
-
-def _default_agent_memory():
-    """Lazily constructs an AgentMemory to avoid an import cycle with backend.agent."""
-    from ..agent.memory import AgentMemory
-    return AgentMemory()
-
-
-# Terminal errors for a compare-and-swap whole-document replacement.
-STALE_GENERATION = "stale_generation"
-DOCUMENT_EPOCH_MISMATCH = "document_epoch_mismatch"
-CHECKPOINT_NOT_FOUND = "checkpoint_not_found"
-STALE_MUTATION = "stale_mutation"
-MISSING_REPLACEMENT_STAMP = "missing_replacement_stamp"
-
-
-@dataclass
-class ReplacementResult:
-    """Outcome of a CAS-guarded whole-document replacement."""
-
-    committed: bool
-    error: Optional[str] = None
-    old_epoch: Optional[str] = None
-    old_revision: Optional[int] = None
-    document_epoch: Optional[str] = None
-    version: Optional[int] = None
-
-    def to_dict(self) -> Dict[str, Any]:
-        return {
-            "committed": self.committed,
-            "error": self.error,
-            "old_epoch": self.old_epoch,
-            "old_revision": self.old_revision,
-            "document_epoch": self.document_epoch,
-            "version": self.version,
-        }
+__all__ = [
+    "CHECKPOINT_NOT_FOUND",
+    "COMPLETED_MUTATION_LIMIT",
+    "DOCUMENT_EPOCH_MISMATCH",
+    "ExportSnapshot",
+    "MISSING_REPLACEMENT_STAMP",
+    "PPTSession",
+    "ReplacementResult",
+    "STALE_GENERATION",
+    "STALE_MUTATION",
+]
 
 
-@dataclass
-class ExportSnapshot:
-    """Immutable deep copy of a document pinned to one epoch/revision.
-
-    Captured under the mutation lock so a long export/render runs against a
-    single deterministic revision even if edits commit mid-flight.
-    """
-
-    presentation: Any
-    document_epoch: str
-    version: int
-
-
-@dataclass
 class PPTSession:
-    """A persistent interactive session with presentation state, history, checkpoints, and dialogue."""
-    session_id: str
-    pres: PresentationIR
-    history: UndoRedoStack = field(default_factory=UndoRedoStack)
-    messages: List[Dict[str, Any]] = field(default_factory=list)
-    checkpoint_mgr: CheckpointManager = field(init=False)
-    iterations: List[Dict[str, Any]] = field(default_factory=list)
-    created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
-    updated_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
-    last_target_id: Optional[str] = None
-    last_action_type: Optional[str] = None
-    pending_confirmations: Dict[str, Dict[str, Any]] = field(default_factory=dict)
-    # Session-scoped agent memory: activity/preferences never leak across sessions.
-    agent_memory: Any = field(default_factory=_default_agent_memory)
-    # Identity of the current document. Rotated whenever the presentation object is
-    # wholesale replaced (import / generation / checkpoint restore) so stale pending
-    # confirmations can never act on a different deck that happens to share a version.
-    document_epoch: str = field(default_factory=lambda: uuid.uuid4().hex)
-    mutation_lock: asyncio.Lock = field(default_factory=asyncio.Lock, repr=False)
-    # (document_epoch, mutation_id) -> {"result": terminal MutationBatchResult,
-    # "payload_hash": logical request fingerprint}. A duplicate id with a different
-    # payload is a protocol violation, not a replay. The hash intentionally
-    # excludes expected_revision / document_epoch: rebase changes the CAS attempt
-    # but not the logical operation.
-    completed_mutations: "OrderedDict[Any, Any]" = field(default_factory=OrderedDict)
+    """A persistent interactive session with isolated presentation state."""
 
-    def __post_init__(self):
-        self.checkpoint_mgr = CheckpointManager(session_id=self.session_id)
-        # Create initial baseline checkpoint
-        self.checkpoint_mgr.create(self.pres, description="Initial session state")
-
-    # ------------------------------------------------------------------
-    # Idempotency cache (caller-supplied mutation ids)
-    # ------------------------------------------------------------------
-
-    def _mutation_cache_key(
+    def __init__(
         self,
-        mutation_id: str,
-        document_epoch: Optional[str] = None,
+        session_id: str,
+        pres: Optional[PresentationIR] = None,
+        *,
+        init_baseline: bool = True,
     ):
-        """Effective key; a None epoch resolves to the live document epoch."""
-        return (
-            document_epoch if document_epoch is not None else self.document_epoch,
-            mutation_id,
+        self.session_id = session_id
+        if pres is None:
+            pres = PresentationIR(title="Untitled Presentation")
+
+        self.history_service = HistoryService()
+        self.checkpoint_service = CheckpointService(session_id=session_id)
+        self.memory = MemoryService()
+        self.confirmations = ConfirmationService()
+
+        # DocumentService needs the history/checkpoint/confirmation collaborators
+        # so a replacement can reset all of them atomically.
+        self.document = DocumentService(
+            session_id,
+            pres,
+            history=self.history_service,
+            checkpoints=self.checkpoint_service,
+            confirmations=self.confirmations,
         )
 
-    def get_cached_mutation_result(
-        self,
-        mutation_id: str,
-        document_epoch: Optional[str] = None,
-        payload_hash: Optional[str] = None,
-    ) -> Optional[Any]:
-        """Returns a deep copy of a terminal outcome, or None. Refreshes LRU order.
+        self.agent_execution = AgentExecutionService()
+        self.connection = ConnectionService()
+        self.iterations: List[Dict[str, Any]] = []
+        self.created_at = datetime.now(timezone.utc)
+        self.updated_at = datetime.now(timezone.utc)
 
-        When both the stored and requested payload hashes are present and differ,
-        this returns None (a miss); callers that need to surface the protocol
-        violation should call `cached_mutation_payload_mismatch` first.
-        """
-        key = self._mutation_cache_key(mutation_id, document_epoch)
-        entry = self.completed_mutations.get(key)
-        if entry is None:
-            return None
-        if isinstance(entry, dict):
-            stored_hash = entry.get("payload_hash")
-            if payload_hash is not None and stored_hash is not None and stored_hash != payload_hash:
-                return None
-            result = entry.get("result")
-        else:
-            result = entry
-        self.completed_mutations.move_to_end(key)
-        return copy.deepcopy(result)
-
-    def cached_mutation_payload_mismatch(
-        self,
-        mutation_id: str,
-        document_epoch: Optional[str] = None,
-        payload_hash: Optional[str] = None,
-    ) -> bool:
-        """True when the same id was already used with a different logical payload."""
-        entry = self.completed_mutations.get(
-            self._mutation_cache_key(mutation_id, document_epoch)
-        )
-        if not isinstance(entry, dict):
-            return False
-        stored_hash = entry.get("payload_hash")
-        return (
-            payload_hash is not None
-            and stored_hash is not None
-            and stored_hash != payload_hash
-        )
-
-    def remember_mutation_result(
-        self,
-        mutation_id: str,
-        result: Any,
-        document_epoch: Optional[str] = None,
-        payload_hash: Optional[str] = None,
-    ) -> None:
-        """Stores a deep-copied terminal outcome, evicting the oldest over the limit."""
-        key = self._mutation_cache_key(mutation_id, document_epoch)
-        self.completed_mutations[key] = {
-            "result": copy.deepcopy(result),
-            "payload_hash": payload_hash,
-        }
-        self.completed_mutations.move_to_end(key)
-        while len(self.completed_mutations) > COMPLETED_MUTATION_LIMIT:
-            self.completed_mutations.popitem(last=False)
+        if init_baseline:
+            self.checkpoint_service.create(pres, description="Initial session state")
 
     # ------------------------------------------------------------------
-    # Pending confirmation lifecycle (PR6-hardening round 2)
+    # Compatibility surface (delegating). New code should use services.
+    # ------------------------------------------------------------------
+
+    @property
+    def pres(self) -> PresentationIR:
+        return self.document.presentation
+
+    @pres.setter
+    def pres(self, val: PresentationIR) -> None:
+        self.document.presentation = val
+
+    @property
+    def document_epoch(self) -> str:
+        return self.document.epoch
+
+    @document_epoch.setter
+    def document_epoch(self, val: str) -> None:
+        self.document.epoch = val
+
+    @property
+    def mutation_lock(self) -> Any:
+        return self.document.mutation_lock
+
+    @property
+    def completed_mutations(self) -> Any:
+        return self.document.completed_mutations
+
+    @property
+    def last_target_id(self) -> Optional[str]:
+        return self.document.last_target_id
+
+    @last_target_id.setter
+    def last_target_id(self, val: Optional[str]) -> None:
+        self.document.last_target_id = val
+
+    @property
+    def last_action_type(self) -> Optional[str]:
+        return self.document.last_action_type
+
+    @last_action_type.setter
+    def last_action_type(self, val: Optional[str]) -> None:
+        self.document.last_action_type = val
+
+    @property
+    def messages(self) -> List[Dict[str, Any]]:
+        return self.memory.messages
+
+    @property
+    def agent_memory(self) -> Any:
+        return self.memory.agent_memory
+
+    @agent_memory.setter
+    def agent_memory(self, val: Any) -> None:
+        self.memory.agent_memory = val
+
+    @property
+    def pending_confirmations(self) -> Dict[str, Dict[str, Any]]:
+        return self.confirmations.pending
+
+    @property
+    def history(self) -> Any:
+        return self.history_service.stack
+
+    @history.setter
+    def history(self, val: Any) -> None:
+        self.history_service.stack = val
+
+    @property
+    def checkpoints(self) -> List[Any]:
+        return self.checkpoint_service.items
+
+    @property
+    def active_slide_id(self) -> Optional[str]:
+        return self.document.active_slide_id
+
+    @active_slide_id.setter
+    def active_slide_id(self, val: Optional[str]) -> None:
+        self.document.active_slide_id = val
+
+    # ------------------------------------------------------------------
+    # Idempotency cache (delegates to DocumentService)
+    # ------------------------------------------------------------------
+
+    def get_cached_mutation_result(self, *args: Any, **kwargs: Any) -> Any:
+        return self.document.get_cached_mutation_result(*args, **kwargs)
+
+    def cached_mutation_payload_mismatch(self, *args: Any, **kwargs: Any) -> Any:
+        return self.document.cached_mutation_payload_mismatch(*args, **kwargs)
+
+    def remember_mutation_result(self, *args: Any, **kwargs: Any) -> Any:
+        return self.document.remember_mutation_result(*args, **kwargs)
+
+    # ------------------------------------------------------------------
+    # Pending confirmation lifecycle (delegates to ConfirmationService)
     # ------------------------------------------------------------------
 
     def register_pending_confirmation(
@@ -193,213 +200,112 @@ class PPTSession:
         document_epoch: Optional[str] = None,
         expected_revision: Optional[int] = None,
     ) -> Dict[str, Any]:
-        """Stores a blocked call so the user can confirm the *original* invocation."""
-        record = {
-            "call_id": call_id,
-            "tool": tool,
-            "arguments": dict(arguments or {}),
-            "confidence": confidence,
-            "presentation_version": presentation_version,
-            "expected_revision": (
-                expected_revision if expected_revision is not None else presentation_version
-            ),
-            "document_epoch": (
-                document_epoch if document_epoch is not None else self.document_epoch
-            ),
-            "target_element_id": target_element_id,
-            "created_at": datetime.now(timezone.utc).isoformat(),
-        }
-        self.pending_confirmations[call_id] = record
+        if document_epoch is None:
+            document_epoch = self.document.epoch
+        record = self.confirmations.register(
+            call_id=call_id,
+            tool=tool,
+            arguments=arguments,
+            confidence=confidence,
+            presentation_version=presentation_version,
+            target_element_id=target_element_id,
+            document_epoch=document_epoch,
+            expected_revision=expected_revision,
+        )
         self.updated_at = datetime.now(timezone.utc)
         return record
 
     def get_pending_confirmation(self, call_id: str) -> Optional[Dict[str, Any]]:
-        return self.pending_confirmations.get(call_id)
+        return self.confirmations.get(call_id)
 
     def consume_pending_confirmation(self, call_id: str) -> Optional[Dict[str, Any]]:
-        record = self.pending_confirmations.pop(call_id, None)
+        record = self.confirmations.consume(call_id)
         if record is not None:
             self.updated_at = datetime.now(timezone.utc)
         return record
 
     def clear_pending_confirmations(self) -> None:
-        if self.pending_confirmations:
-            self.pending_confirmations.clear()
+        if self.confirmations.clear():
             self.updated_at = datetime.now(timezone.utc)
 
-    def _unsafe_install_for_bootstrap(
-        self,
-        pres: PresentationIR,
-        *,
-        clear_history: bool = True,
-        clear_checkpoints: bool = True,
-        checkpoint_description: Optional[str] = None,
-    ) -> None:
-        """PRIVATE, CAS-BYPASSING primitive for bootstrap / test fixtures only.
+    # ------------------------------------------------------------------
+    # Document lifecycle (delegates to DocumentService)
+    # ------------------------------------------------------------------
 
-        Production paths (HTTP routes, agent persistence, store wrappers) MUST use
-        `await commit_replacement(...)`, which owns the lock and enforces the
-        epoch/revision CAS. This method deliberately skips both. Do not expose it
-        as a normal API; a contract test scans production call sites.
-        """
-        self.pres = pres
-        self.document_epoch = uuid.uuid4().hex
-        self.clear_pending_confirmations()
-        self.completed_mutations.clear()
-        self.last_target_id = None
-        self.last_action_type = None
-        if clear_history:
-            self.history.clear()
-        if clear_checkpoints:
-            self.checkpoint_mgr.clear()
-        if checkpoint_description:
-            self.checkpoint_mgr.create(pres, description=checkpoint_description)
+    def _unsafe_install_for_bootstrap(self, *args: Any, **kwargs: Any) -> None:
+        self.document._unsafe_install_for_bootstrap(*args, **kwargs)
         self.updated_at = datetime.now(timezone.utc)
 
-    def _finalize_inplace_replacement_locked(
-        self,
-        *,
-        clear_history: bool = True,
-        clear_checkpoints: bool = True,
-        checkpoint_description: str = "Generated presentation",
-    ) -> None:
-        """Finalize an in-place whole-document replacement.
-
-        The caller has already built the new deck on the SAME ``self.pres`` object
-        (so every held reference stays valid) and MUST already hold
-        ``mutation_lock``. This rotates the document identity, resets the target
-        /action state, drops stale confirmations and the idempotency cache, clears
-        history + checkpoints, and creates a fresh baseline checkpoint so the
-        replacement has the same lifecycle as upload / PPTSpec generation.
-
-        It is intentionally private: raw identity rotation must only be reachable
-        from the gateway's lock-holding replacement path.
-        """
-        self.document_epoch = uuid.uuid4().hex
-        # A replacement is a new document identity; the revision restarts. The
-        # (epoch, revision) pair - never the revision alone - carries identity.
-        self.pres.version = 1
-        self.clear_pending_confirmations()
-        self.completed_mutations.clear()
-        self.last_target_id = None
-        self.last_action_type = None
-        if clear_history:
-            self.history.clear()
-        if clear_checkpoints:
-            self.checkpoint_mgr.clear()
-        self.checkpoint_mgr.create(self.pres, description=checkpoint_description)
+    def _finalize_inplace_replacement_locked(self, *args: Any, **kwargs: Any) -> None:
+        self.document._finalize_inplace_replacement_locked(*args, **kwargs)
         self.updated_at = datetime.now(timezone.utc)
 
-    def _replacement_cas_error(
-        self,
-        expected_epoch: Optional[str],
-        expected_revision: Optional[int],
-        stale_error: str,
-    ) -> Optional[ReplacementResult]:
-        """Returns a rejected ReplacementResult, or None when the CAS passes."""
-        if expected_epoch is not None and expected_epoch != self.document_epoch:
-            return ReplacementResult(
-                committed=False,
-                error=DOCUMENT_EPOCH_MISMATCH,
-                old_epoch=self.document_epoch,
-                old_revision=self.pres.version,
-                document_epoch=self.document_epoch,
-                version=self.pres.version,
-            )
-        if expected_revision is not None and self.pres.version != expected_revision:
-            return ReplacementResult(
-                committed=False,
-                error=stale_error,
-                old_epoch=self.document_epoch,
-                old_revision=self.pres.version,
-                document_epoch=self.document_epoch,
-                version=self.pres.version,
-            )
-        return None
+    def _restore_checkpoint_unchecked(self, *args: Any, **kwargs: Any) -> bool:
+        result = self.document._restore_checkpoint_unchecked(*args, **kwargs)
+        if result:
+            self.updated_at = datetime.now(timezone.utc)
+        return result
 
-    async def commit_replacement(
-        self,
-        pres: PresentationIR,
-        *,
-        expected_epoch: Optional[str],
-        expected_revision: Optional[int],
-        clear_history: bool = True,
-        clear_checkpoints: bool = True,
-        checkpoint_description: Optional[str] = None,
-    ) -> ReplacementResult:
-        """CAS-guarded whole-document replacement (import / generation / load).
+    async def commit_replacement(self, *args: Any, **kwargs: Any) -> ReplacementResult:
+        result = await self.document.commit_replacement(*args, **kwargs)
+        self.updated_at = datetime.now(timezone.utc)
+        return result
 
-        Owns the mutation lock and both CAS checks so callers cannot forget to
-        guard a wholesale overwrite. Both stamps are REQUIRED; passing `None`
-        fails closed rather than silently performing an unconditional overwrite.
-        """
-        async with self.mutation_lock:
-            old_epoch = self.document_epoch
-            old_revision = self.pres.version
-            if expected_epoch is None or expected_revision is None:
-                return ReplacementResult(
-                    committed=False,
-                    error=MISSING_REPLACEMENT_STAMP,
-                    old_epoch=old_epoch,
-                    old_revision=old_revision,
-                    document_epoch=self.document_epoch,
-                    version=self.pres.version,
-                )
-            rejection = self._replacement_cas_error(
-                expected_epoch, expected_revision, STALE_GENERATION
-            )
-            if rejection is not None:
-                return rejection
-            self._unsafe_install_for_bootstrap(
-                pres,
-                clear_history=clear_history,
-                clear_checkpoints=clear_checkpoints,
-                checkpoint_description=checkpoint_description,
-            )
-            return ReplacementResult(
-                committed=True,
-                error=None,
-                old_epoch=old_epoch,
-                old_revision=old_revision,
-                document_epoch=self.document_epoch,
-                version=self.pres.version,
-            )
+    async def commit_checkpoint_restore(self, *args: Any, **kwargs: Any) -> ReplacementResult:
+        result = await self.document.commit_checkpoint_restore(*args, **kwargs)
+        self.updated_at = datetime.now(timezone.utc)
+        return result
 
-    async def snapshot_for_export(self) -> "ExportSnapshot":
-        """Pin a deep copy of the document to one epoch/revision under the lock.
+    async def snapshot_for_export(self) -> ExportSnapshot:
+        return await self.document.snapshot_for_export()
 
-        The caller renders from the returned copy; subsequent edits cannot alter
-        what is written to disk.
-        """
-        async with self.mutation_lock:
-            return ExportSnapshot(
-                presentation=copy.deepcopy(self.pres),
-                document_epoch=self.document_epoch,
-                version=self.pres.version,
-            )
-
-    @property
-    def checkpoints(self) -> List[SessionCheckpoint]:
-        return self.checkpoint_mgr.checkpoints
-
-    @property
-    def active_slide_id(self) -> Optional[str]:
-        return self.pres.active_slide_id
-
-    @active_slide_id.setter
-    def active_slide_id(self, val: Optional[str]):
-        self.pres.active_slide_id = val
+    # ------------------------------------------------------------------
+    # Cursor
+    # ------------------------------------------------------------------
 
     def get_active_slide(self) -> Optional[SlideIR]:
-        return self.pres.get_active_slide()
+        return self.document.get_active_slide()
 
     def set_active_slide(self, slide_id: str) -> bool:
-        slide = self.pres.get_slide(slide_id)
-        if slide:
-            self.pres.active_slide_id = slide_id
+        ok = self.document.set_active_slide(slide_id)
+        if ok:
             self.updated_at = datetime.now(timezone.utc)
-            return True
-        return False
+        return ok
+
+    # ------------------------------------------------------------------
+    # History / checkpoints
+    # ------------------------------------------------------------------
+
+    def undo(self) -> Any:
+        cmd = self.history_service.undo(self.document.presentation)
+        if cmd:
+            self.updated_at = datetime.now(timezone.utc)
+        return cmd
+
+    def redo(self) -> Any:
+        cmd = self.history_service.redo(self.document.presentation)
+        if cmd:
+            self.updated_at = datetime.now(timezone.utc)
+        return cmd
+
+    def create_checkpoint(
+        self,
+        description: str = "",
+        score: Optional[float] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> Any:
+        cp = self.checkpoint_service.create(
+            pres=self.document.presentation,
+            description=description,
+            score=score,
+            metadata=metadata,
+        )
+        self.updated_at = datetime.now(timezone.utc)
+        return cp
+
+    # ------------------------------------------------------------------
+    # Conversation / iterations
+    # ------------------------------------------------------------------
 
     def add_message(
         self,
@@ -407,129 +313,19 @@ class PPTSession:
         content: str,
         tool_calls: Optional[List[Dict[str, Any]]] = None,
         vision_critique: Optional[str] = None,
-        visual_review: Optional[Dict[str, Any]] = None
+        visual_review: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
-        msg = {
-            "id": f"msg_{uuid.uuid4().hex[:8]}",
-            "role": role,
-            "content": content,
-            "timestamp": datetime.now(timezone.utc).timestamp(),
-            "tool_calls": tool_calls or [],
-            "vision_critique": vision_critique,
-            "visual_review": visual_review
-        }
-        self.messages.append(msg)
+        msg = self.memory.add_message(
+            role=role,
+            content=content,
+            tool_calls=tool_calls,
+            vision_critique=vision_critique,
+            visual_review=visual_review,
+        )
         self.updated_at = datetime.now(timezone.utc)
         return msg
 
-    def create_checkpoint(
-        self,
-        description: str = "",
-        score: Optional[float] = None,
-        metadata: Optional[Dict[str, Any]] = None
-    ) -> SessionCheckpoint:
-        cp = self.checkpoint_mgr.create(
-            pres=self.pres,
-            description=description,
-            score=score,
-            metadata=metadata
-        )
-        self.updated_at = datetime.now(timezone.utc)
-        return cp
-
-    def _restore_checkpoint_unchecked(
-        self, checkpoint_id: str, clear_history: bool = True
-    ) -> bool:
-        """Raw, CAS-free projection rollback.
-
-        Private on purpose: whole-document replacement is only legal through
-        `commit_checkpoint_restore`, which owns the mutation lock and enforces the
-        epoch/revision CAS. Bootstrap seeding uses `_unsafe_install_for_bootstrap`.
-        """
-        restored = self.checkpoint_mgr.restore(checkpoint_id)
-        if restored:
-            self.pres = restored
-            # Restoring is a document-level rollback: rotate identity and drop stale
-            # confirmations that were bound to the previous revision.
-            self.document_epoch = uuid.uuid4().hex
-            self.clear_pending_confirmations()
-            self.completed_mutations.clear()
-            if clear_history:
-                self.history.clear()
-            else:
-                self.history.record(
-                    action="restore_checkpoint",
-                    description=f"Restored to checkpoint {checkpoint_id}",
-                    source="session_checkpoint"
-                )
-            self.updated_at = datetime.now(timezone.utc)
-            return True
-        return False
-
-    async def commit_checkpoint_restore(
-        self,
-        checkpoint_id: str,
-        *,
-        expected_epoch: Optional[str],
-        expected_revision: Optional[int],
-        clear_history: bool = True,
-    ) -> ReplacementResult:
-        """CAS-guarded checkpoint restore. Owns the mutation lock.
-
-        A restore is a whole-document rollback: it must reject when the live
-        document moved past the caller's view, instead of blindly overwriting a
-        newer revision. Both stamps are REQUIRED and fail closed when missing.
-        """
-        async with self.mutation_lock:
-            old_epoch = self.document_epoch
-            old_revision = self.pres.version
-            if expected_epoch is None or expected_revision is None:
-                return ReplacementResult(
-                    committed=False,
-                    error=MISSING_REPLACEMENT_STAMP,
-                    old_epoch=old_epoch,
-                    old_revision=old_revision,
-                    document_epoch=self.document_epoch,
-                    version=self.pres.version,
-                )
-            rejection = self._replacement_cas_error(
-                expected_epoch, expected_revision, STALE_MUTATION
-            )
-            if rejection is not None:
-                return rejection
-            if not self._restore_checkpoint_unchecked(
-                checkpoint_id, clear_history=clear_history
-            ):
-                return ReplacementResult(
-                    committed=False,
-                    error=CHECKPOINT_NOT_FOUND,
-                    old_epoch=old_epoch,
-                    old_revision=old_revision,
-                    document_epoch=self.document_epoch,
-                    version=self.pres.version,
-                )
-            return ReplacementResult(
-                committed=True,
-                error=None,
-                old_epoch=old_epoch,
-                old_revision=old_revision,
-                document_epoch=self.document_epoch,
-                version=self.pres.version,
-            )
-
-    def undo(self) -> Optional[MutationCommand]:
-        cmd = self.history.undo(self.pres)
-        if cmd:
-            self.updated_at = datetime.now(timezone.utc)
-        return cmd
-
-    def redo(self) -> Optional[MutationCommand]:
-        cmd = self.history.redo(self.pres)
-        if cmd:
-            self.updated_at = datetime.now(timezone.utc)
-        return cmd
-
-    def record_iteration(self, iteration_data: Any):
+    def record_iteration(self, iteration_data: Any) -> None:
         if hasattr(iteration_data, "to_dict"):
             self.iterations.append(iteration_data.to_dict())
         else:
@@ -539,16 +335,16 @@ class PPTSession:
     def to_dict(self) -> Dict[str, Any]:
         return {
             "session_id": self.session_id,
-            "title": self.pres.title,
-            "slides_count": len(self.pres.slides),
+            "title": self.document.presentation.title,
+            "slides_count": len(self.document.presentation.slides),
             "active_slide_id": self.active_slide_id,
-            "version": self.pres.version,
-            "messages_count": len(self.messages),
+            "version": self.document.presentation.version,
+            "messages_count": len(self.memory.messages),
             "checkpoints_count": len(self.checkpoints),
             "created_at": self.created_at.isoformat(),
             "updated_at": self.updated_at.isoformat(),
-            "can_undo": self.history.can_undo(),
-            "can_redo": self.history.can_redo(),
-            "last_target_id": self.last_target_id,
-            "pending_confirmations_count": len(self.pending_confirmations),
+            "can_undo": self.history_service.can_undo(),
+            "can_redo": self.history_service.can_redo(),
+            "last_target_id": self.document.last_target_id,
+            "pending_confirmations_count": len(self.confirmations.pending),
         }
