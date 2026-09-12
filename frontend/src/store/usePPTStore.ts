@@ -51,13 +51,6 @@ export type MutationPrecondition =
   | {
       kind: 'slide'
       slideId: string
-      // Top-level element ids observed at authoring time. Used by destructive
-      // slide operations (clear / delete / duplicate / layout) so a remote
-      // content change is detected instead of silently overwritten.
-      elementIds?: string[]
-      // Full content fingerprint (id + type + geometry + text), never existence
-      // only: a same-id element whose content changed is still a conflict.
-      contentHash?: string
       // Slide background observed at authoring time (set_slide_background).
       background?: any
     }
@@ -216,43 +209,6 @@ const captureStructurePrecondition = (
   return precondition
 }
 
-const captureSlidePrecondition = (slideId: string): MutationPrecondition => ({
-  kind: 'slide',
-  slideId
-})
-
-// Stable content fingerprint for a slide's top-level elements. Content changes
-// (same ids, different geometry/text) must be a conflict, so ids alone are not
-// enough.
-const hashSlideContent = (slide: SlideIR): string =>
-  JSON.stringify(
-    slide.elements.map((el) => ({
-      id: el.id,
-      type: el.type,
-      x: el.x,
-      y: el.y,
-      width: el.width,
-      height: el.height,
-      text: (el as any).text_content?.plain_text ?? null
-    }))
-  )
-
-// Destructive slide operations freeze the slide's content fingerprint so a
-// remote content change is a conflict rather than a silent overwrite.
-const captureSlideFingerprint = (
-  pres: PresentationIR | null,
-  slideId: string | null | undefined
-): MutationPrecondition | null => {
-  const slide = slideOf(pres, slideId)
-  if (!slide) return null
-  return {
-    kind: 'slide',
-    slideId: slide.id,
-    elementIds: slide.elements.map((e) => e.id),
-    contentHash: hashSlideContent(slide)
-  }
-}
-
 const captureBackgroundPrecondition = (
   pres: PresentationIR | null,
   slideId: string | null | undefined
@@ -306,16 +262,9 @@ const preconditionConflicts = (
     }
     return false
   }
-  // slide precondition: existence plus the captured per-operation fingerprint.
+  // slide precondition: existence plus any captured background snapshot.
   const slide = authoritative.slides.find((s) => s.id === pre.slideId)
   if (!slide) return true
-  if (pre.elementIds) {
-    const ids = slide.elements.map((e) => e.id).join('/')
-    if (ids !== pre.elementIds.join('/')) return true
-  }
-  if (pre.contentHash !== undefined) {
-    if (hashSlideContent(slide) !== pre.contentHash) return true
-  }
   if (pre.background !== undefined) {
     if (JSON.stringify(slide.background) !== JSON.stringify(pre.background)) return true
   }
@@ -1224,28 +1173,23 @@ export const usePPTStore = create<PPTState>((set, get) => ({
     if (!slideId) return
     get().executeDirectAction(
       'delete_slide',
-      { slide_id_or_num: slideId },
-      { precondition: captureSlideFingerprint(base, slideId) ?? captureSlidePrecondition(slideId) }
+      { slide_id_or_num: slideId }
     )
   },
 
   duplicateSlide: (slideId: string) => {
-    const base = get().confirmedPresentation ?? get().presentation
     get().executeDirectAction(
       'duplicate_slide',
-      { slide_id: slideId },
-      { precondition: captureSlideFingerprint(base, slideId) ?? captureSlidePrecondition(slideId) }
+      { slide_id: slideId }
     )
   },
 
   clearSlideElements: (slideId?: string, keepTitle = true) => {
-    const { activeSlideId, confirmedPresentation, presentation } = get()
+    const { activeSlideId } = get()
     const target = slideId ?? activeSlideId
-    const base = confirmedPresentation ?? presentation
     get().executeDirectAction(
       'clear_slide_elements',
-      { slide_id: target, keep_title: keepTitle },
-      { precondition: target ? captureSlideFingerprint(base, target) ?? undefined : undefined }
+      { slide_id: target, keep_title: keepTitle }
     )
   },
 

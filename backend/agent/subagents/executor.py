@@ -149,17 +149,15 @@ class ExecutorSubagent:
 
         # Request-local targeting: the requesting client's active slide overrides
         # the snapshot's slide for planning only. The live IR is never touched.
+        # NOTE: an invalid/stale client hint is ignored here. It is NOT safe to
+        # "clear" it as a fail-closed measure, because slide-scoped tools resolve a
+        # missing `slide_id` to `pres.get_active_slide()` at execution time; proper
+        # fail-closed targeting must be enforced at the execution boundary.
         from ..uicontext import UIContext
         ctx = UIContext.from_any(ui_context)
         if planning_snapshot is not None and ctx.active_slide_id:
             if planning_snapshot.get_slide(ctx.active_slide_id):
                 planning_snapshot.active_slide_id = ctx.active_slide_id
-            else:
-                # The client's view is stale/invalid: do NOT silently fall back to
-                # the snapshot's (possibly foreign/live) active slide, or the plan
-                # could target a slide the requester never saw. Clear it so
-                # slide-scoped calls must be explicit.
-                planning_snapshot.active_slide_id = None
 
         # 1. Broadcast lifecycle start: Main agent pauses waiting for executor subagent
         if on_event:
