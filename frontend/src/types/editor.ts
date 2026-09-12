@@ -76,7 +76,7 @@ export interface ChatMessage {
   isStreaming?: boolean
 }
 
-export type MutationStatus = 'idle' | 'pending' | 'committed' | 'rolled_back' | 'resynced' | 'failed' | 'offline'
+export type MutationStatus = 'idle' | 'pending' | 'committed' | 'rolled_back' | 'resynced' | 'resyncing' | 'failed' | 'offline'
 
 export interface PreviewUpdateEvent {
   type: 'preview_update'

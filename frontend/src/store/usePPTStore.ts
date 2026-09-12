@@ -527,7 +527,7 @@ interface PPTState {
   sessionId: string
   isBootstrapping: boolean
   sessionTakenOver: boolean
-  editLockState: 'editable' | 'agent_lock_pending' | 'agent_locked'
+  editLockState: EditLockState
   needsResync: boolean
   presentation: PresentationIR | null
   confirmedPresentation: PresentationIR | null
@@ -659,6 +659,21 @@ interface PPTState {
   getSelectedElement: () => ElementIR | null
   getEditorState: () => PPTEditorState
 }
+
+export type EditLockState = 'editable' | 'agent_lock_pending' | 'agent_locked'
+
+// Central authorization predicate: the single question that decides whether this
+// client may author a document mutation. Enforced at the store choke points
+// (`executeDirectAction` / `sendOrQueueMutation` / `dispatchNextMutation` and the
+// optimistic authoring paths), not merely by disabled buttons.
+const canAuthorMutation = (state: {
+  editLockState: EditLockState
+  sessionTakenOver: boolean
+  needsResync: boolean
+}): boolean =>
+  state.editLockState === 'editable' &&
+  !state.sessionTakenOver &&
+  !state.needsResync
 
 export const usePPTStore = create<PPTState>((set, get) => ({
   sessionId: '',
@@ -981,6 +996,9 @@ export const usePPTStore = create<PPTState>((set, get) => ({
   }),
 
   sendOrQueueMutation: (message, mutation) => {
+    // Choke point: no mutation may be authored while the Agent owns the document,
+    // the session was taken over, or a resync is pending.
+    if (!canAuthorMutation(get())) return
     const state = get()
     const { ws, documentEpoch } = state
     const sequence = mutation.clientSequence ?? (state.clientSequence + 1)
@@ -1002,6 +1020,9 @@ export const usePPTStore = create<PPTState>((set, get) => ({
   },
 
   dispatchNextMutation: () => {
+    // Never dispatch while frozen/taken-over/resyncing: a queued mutation from a
+    // previous epoch must not leak into the Agent's document.
+    if (!canAuthorMutation(get())) return
     const {
       ws, outbox, inFlightMutationId, documentEpoch, confirmedRevision, hasServerRevision
     } = get()
@@ -1130,6 +1151,7 @@ export const usePPTStore = create<PPTState>((set, get) => ({
   },
 
   executeDirectAction: (action: string, payload: Record<string, any> = {}, options) => {
+    if (!canAuthorMutation(get())) return
     const { sessionId, activeSlideId } = get()
     const mutationId = newMutationId()
     if (options?.selectTargetOnAck) selectTargetOnAck.add(mutationId)
@@ -1457,13 +1479,28 @@ export const usePPTStore = create<PPTState>((set, get) => ({
         const type = data.type
 
         if (type === 'document_frozen') {
-          const locked = data.edit_lock?.locked === true
-          set((state) => ({
-            editLockState: locked ? 'agent_locked' : 'editable',
-            // Frozen while local edits are queued: do NOT replay them into the
-            // Agent's document. Resync once the turn's canonical snapshot lands.
-            needsResync: locked && state.pendingMutations.length > 0 ? true : state.needsResync
-          }))
+          const locked = data.edit_lock?.locked !== false
+          if (!locked) {
+            set({ editLockState: 'editable' })
+            return
+          }
+          // The Agent now owns the document. Any local mutation chain is obsolete:
+          // it was authored against a revision the Agent is about to rewrite and
+          // must never be replayed into the Agent's result. Retire it fully and
+          // wait for the turn's terminal canonical snapshot.
+          set((state) => {
+            for (const p of state.pendingMutations) selectTargetOnAck.delete(p.mutationId)
+            return {
+              editLockState: 'agent_locked',
+              needsResync: true,
+              pendingMutations: [],
+              outbox: [],
+              inFlightMutationId: null,
+              inFlightMessage: null,
+              presentation: state.confirmedPresentation ?? state.presentation,
+              mutationStatus: 'resyncing'
+            }
+          })
         } else if (type === 'session_taken_over') {
           set({ sessionTakenOver: true })
           get().addMessage({
@@ -1611,11 +1648,27 @@ export const usePPTStore = create<PPTState>((set, get) => ({
           const rejectedId: string | undefined = data.mutation_id
           if (rejectedId) selectTargetOnAck.delete(rejectedId)
           const error: string = data.error ?? ''
+          if (error === 'stale_connection' || error === 'session_taken_over') {
+            // A superseded socket may not write. Stop all authoring locally.
+            set({ sessionTakenOver: true })
+            return
+          }
           if (error === 'document_frozen') {
-            set((state) => ({
-              editLockState: 'agent_locked',
-              needsResync: state.pendingMutations.length > 0 || state.needsResync
-            }))
+            // Retire the in-flight/queued chain (it must never be replayed into
+            // the Agent's document) and wait for the terminal snapshot.
+            set((state) => {
+              for (const p of state.pendingMutations) selectTargetOnAck.delete(p.mutationId)
+              return {
+                editLockState: 'agent_locked',
+                needsResync: true,
+                pendingMutations: [],
+                outbox: [],
+                inFlightMutationId: null,
+                inFlightMessage: null,
+                presentation: state.confirmedPresentation ?? state.presentation,
+                mutationStatus: 'resyncing'
+              }
+            })
             return
           }
           const isStale = error === 'stale_mutation' || error === 'document_epoch_mismatch'
@@ -1954,6 +2007,8 @@ export const usePPTStore = create<PPTState>((set, get) => ({
   },
 
   updateElementDirect: (elemId, updates) => {
+    // Guard BEFORE the optimistic apply so a frozen document never drifts locally.
+    if (!canAuthorMutation(get())) return
     const { activeSlideId, presentation, confirmedPresentation, sessionId } = get()
 
     if (presentation) {
@@ -2002,6 +2057,8 @@ export const usePPTStore = create<PPTState>((set, get) => ({
 
   updateElementsDirect: (entries) => {
     if (entries.length === 0) return
+    // Guard BEFORE the optimistic apply so a frozen document never drifts locally.
+    if (!canAuthorMutation(get())) return
     const { activeSlideId, presentation, sessionId } = get()
 
     if (presentation) {

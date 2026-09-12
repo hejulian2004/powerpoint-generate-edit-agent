@@ -14,6 +14,9 @@ export const Header: React.FC = () => {
     sessionId,
     mutationStatus,
     pendingMutations,
+    editLockState,
+    sessionTakenOver,
+    needsResync,
     triggerUndo,
     triggerRedo,
     addNewSlide,
@@ -21,6 +24,8 @@ export const Header: React.FC = () => {
     setPptspecModalOpen,
     awaitDirectSyncBarrier
   } = usePPTStore()
+
+  const canAuthor = editLockState === 'editable' && !sessionTakenOver && !needsResync
 
   const pendingCount = pendingMutations.length
   const syncFailed = mutationStatus === 'failed' || mutationStatus === 'rolled_back'
@@ -48,6 +53,11 @@ export const Header: React.FC = () => {
   const handleUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]
     if (!file) return
+    if (!canAuthor) {
+      alert('演示文稿正在被 Agent 编辑，暂不可导入。')
+      if (fileInputRef.current) fileInputRef.current.value = ''
+      return
+    }
 
     const formData = new FormData()
     formData.append('file', file)
@@ -156,8 +166,9 @@ export const Header: React.FC = () => {
       <div className="flex items-center gap-2">
         <button
           onClick={() => setPptspecModalOpen(true)}
+          disabled={!canAuthor}
           title="使用外部 AI 分析结果生成 PPT (CanonicalPPTSpec)"
-          className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg bg-blue-50 hover:bg-blue-100 text-blue-700 border border-blue-200 transition-all shadow-xs"
+          className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg bg-blue-50 hover:bg-blue-100 text-blue-700 border border-blue-200 transition-all shadow-xs disabled:opacity-40 disabled:cursor-not-allowed"
         >
           <Sparkles className="w-3.5 h-3.5 text-blue-600" />
           <span>AI 论文导入生成</span>
@@ -172,8 +183,9 @@ export const Header: React.FC = () => {
         />
         <button
           onClick={() => fileInputRef.current?.click()}
+          disabled={!canAuthor}
           title="导入本地 PPTX 演示文稿并转换为 PPT-IR"
-          className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg bg-panel hover:bg-subtle text-secondary hover:text-main border border-line hover:border-line-strong shadow-xs transition-all"
+          className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg bg-panel hover:bg-subtle text-secondary hover:text-main border border-line hover:border-line-strong shadow-xs transition-all disabled:opacity-40 disabled:cursor-not-allowed"
         >
           <Upload className="w-3.5 h-3.5 text-muted" />
           <span>导入 PPTX</span>
