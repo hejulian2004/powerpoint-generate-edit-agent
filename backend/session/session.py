@@ -88,6 +88,9 @@ class PPTSession:
         self.iterations: List[Dict[str, Any]] = []
         self.created_at = datetime.now(timezone.utc)
         self.updated_at = datetime.now(timezone.utc)
+        # Attached by WorkspaceManager; marks committed state dirty for debounced
+        # durable persistence (contract P3).
+        self.persistence: Any = None
 
         if init_baseline:
             self.checkpoint_service.create(pres, description="Initial session state")
@@ -249,11 +252,13 @@ class PPTSession:
     async def commit_replacement(self, *args: Any, **kwargs: Any) -> ReplacementResult:
         result = await self.document.commit_replacement(*args, **kwargs)
         self.updated_at = datetime.now(timezone.utc)
+        self.schedule_persist()
         return result
 
     async def commit_checkpoint_restore(self, *args: Any, **kwargs: Any) -> ReplacementResult:
         result = await self.document.commit_checkpoint_restore(*args, **kwargs)
         self.updated_at = datetime.now(timezone.utc)
+        self.schedule_persist()
         return result
 
     async def snapshot_for_export(self) -> ExportSnapshot:
@@ -331,6 +336,14 @@ class PPTSession:
         else:
             self.iterations.append(iteration_data)
         self.updated_at = datetime.now(timezone.utc)
+
+    def schedule_persist(self) -> None:
+        """Marks committed state dirty for debounced durable persistence.
+
+        No-op when no persistence service is attached (unit tests, pure IR use).
+        """
+        if self.persistence is not None:
+            self.persistence.schedule(self)
 
     def to_dict(self) -> Dict[str, Any]:
         return {

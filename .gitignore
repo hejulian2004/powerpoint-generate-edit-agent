@@ -28,3 +28,6 @@ scratch/
 artifacts/
 *.pptx
 *.pdf
+
+# Workspace persistence (Phase 3): SQLite DB + WAL/SHM sidecars
+data/

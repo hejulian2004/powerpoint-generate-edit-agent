@@ -263,6 +263,8 @@ class AgentRuntime:
                     tool_calls=executed_tools,
                     vision_critique=vision_critique
                 )
+            if session is not None and hasattr(session, "schedule_persist"):
+                session.schedule_persist()
 
             return {
                 "reply": reply,
@@ -277,6 +279,8 @@ class AgentRuntime:
             err_msg = f"LangGraph 运行异常: {str(e)}"
             if session is not None and hasattr(session, "add_message"):
                 session.add_message(role="assistant", content=err_msg)
+            if session is not None and hasattr(session, "schedule_persist"):
+                session.schedule_persist()
             if on_event:
                 await on_event({"type": "agent_error", "error": err_msg})
             return {

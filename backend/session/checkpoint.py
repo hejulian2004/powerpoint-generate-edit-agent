@@ -33,6 +33,41 @@ class SessionCheckpoint:
             "metadata": self.metadata,
         }
 
+    def to_snapshot(self) -> Dict[str, Any]:
+        """Serializes the checkpoint INCLUDING the presentation snapshot.
+
+        ``to_dict`` is the public/API shape and intentionally omits the (large) IR
+        payload; persistence needs it, so it has a dedicated method.
+        """
+        return {
+            "id": self.id,
+            "session_id": self.session_id,
+            "presentation": self.pres_snapshot.model_dump(),
+            "version": self.version,
+            "description": self.description,
+            "score": self.score,
+            "created_at": self.created_at.isoformat(),
+            "metadata": copy.deepcopy(self.metadata),
+        }
+
+    @classmethod
+    def from_snapshot(cls, data: Dict[str, Any]) -> "SessionCheckpoint":
+        created_raw = data.get("created_at")
+        try:
+            created_at = datetime.fromisoformat(created_raw) if created_raw else datetime.now(timezone.utc)
+        except (TypeError, ValueError):
+            created_at = datetime.now(timezone.utc)
+        return cls(
+            id=data["id"],
+            session_id=data["session_id"],
+            pres_snapshot=PresentationIR.model_validate(data["presentation"]),
+            version=data.get("version", 1),
+            description=data.get("description", ""),
+            score=data.get("score"),
+            created_at=created_at,
+            metadata=copy.deepcopy(data.get("metadata") or {}),
+        )
+
 
 class CheckpointManager:
     """Manages creation, retention, and restoration of session checkpoints."""
