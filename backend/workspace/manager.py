@@ -44,6 +44,9 @@ class WorkspaceManager:
     def _bind(self, session) -> None:
         session.persistence = self._persistence
 
+    async def list_session_ids(self):
+        return await self._repo.list_ids()
+
     async def _save_session(self, session) -> None:
         await self._repo.save(session_to_snapshot(session))
 

@@ -8,10 +8,10 @@ import { PPTSpecImportModal } from './components/PPTSpecImportModal'
 import { usePPTStore } from './store/usePPTStore'
 
 export const App: React.FC = () => {
-  const { initWebSocket } = usePPTStore()
+  const { bootstrapWorkspace } = usePPTStore()
 
   useEffect(() => {
-    initWebSocket()
+    bootstrapWorkspace()
 
     // Global keyboard shortcuts for power-user editing
     const handleKeyDown = (e: KeyboardEvent) => {
