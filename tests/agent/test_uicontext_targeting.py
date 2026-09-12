@@ -175,3 +175,26 @@ def test_llm_tool_call_without_slide_id_is_threaded_from_uic():
         assert plan.tool_calls[0]["arguments"]["slide_id"] == "slide_2"
 
     asyncio.run(_run())
+
+
+def test_invalid_uic_active_slide_does_not_fall_back_to_live_slide():
+    """A stale/invalid client active slide must not silently target the live slide."""
+    async def _run():
+        pres = _pres(active="slide_1")
+        session = PPTSession(session_id="sess_uic_invalid", pres=pres)
+        plan = await ExecutorSubagent.plan_task(
+            intent="generate_slide",
+            user_query="新增一页时间线",
+            plan_desc="",
+            pres=pres,
+            memory=None,
+            llm_client=_StubExecutorLLM(),
+            session=session,
+            ui_context={"active_slide_id": "slide_missing", "ui_context_revision": 5},
+        )
+        assert plan.tool_calls
+        # The invalid client hint is cleared, so the call is NOT threaded with the
+        # live active slide ('slide_1').
+        assert plan.tool_calls[0]["arguments"].get("slide_id") != "slide_1"
+
+    asyncio.run(_run())

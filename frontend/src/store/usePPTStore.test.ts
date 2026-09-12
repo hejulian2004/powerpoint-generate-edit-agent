@@ -30,7 +30,6 @@ const resetStore = () => {
     clientId: 'client_test',
     uiContextRevision: 0,
     clientSequence: 0,
-    localEffectLedger: [],
     mutationStatus: 'idle'
   })
 }
@@ -1131,6 +1130,38 @@ describe('usePPTStore mutation pipeline', () => {
     expect(usePPTStore.getState().mutationStatus).toBe('resynced')
   })
 
+  it('rebase drops a never-policy delete_slide even when content is unchanged', () => {
+    const slide = makeSlide([makeShape('s1', 0, 0)], 'slide_1')
+    const pres = makePresentation([slide], 5)
+    usePPTStore.getState().setPresentation(pres)
+    const ws = connect()
+    ws.emit('presentation_loaded', {
+      presentation: pres,
+      active_slide_id: slide.id,
+      version: 5,
+      document_epoch: 'epoch_A'
+    })
+
+    usePPTStore.getState().deleteSlide('slide_1')
+    const sent = ws.sentMessages().find((m) => m.action === 'delete_slide')!
+    expect(sent).toBeTruthy()
+
+    // Identical authoritative content: a destructive op still must not replay.
+    const authoritative = makePresentation([makeSlide([makeShape('s1', 0, 0)], 'slide_1')], 6)
+    ws.emit('mutation_rejected', {
+      mutation_id: sent.mutation_id,
+      error: 'stale_mutation',
+      version: 6,
+      document_epoch: 'epoch_A',
+      presentation: authoritative,
+      active_slide_id: slide.id
+    })
+
+    expect(usePPTStore.getState().pendingMutations).toHaveLength(0)
+    expect(usePPTStore.getState().outbox).toHaveLength(0)
+    expect(usePPTStore.getState().mutationStatus).toBe('resynced')
+  })
+
   it('rebase drops a never-policy optimize_layout even with no preconditions', () => {
     const slide = makeSlide([makeShape('s1', 0, 0)], 'slide_1')
     const pres = makePresentation([slide], 5)
@@ -1200,7 +1231,7 @@ describe('usePPTStore mutation pipeline', () => {
     expect(usePPTStore.getState().mutationStatus).toBe('resynced')
   })
 
-  it('a local effect from a LATER mutation cannot excuse a foreign change', () => {
+  it('a foreign field change conflicts with a pending same-field edit', () => {
     const slide = makeSlide([makeShape('s1', 0, 0)], 'slide_1')
     const pres = makePresentation([slide], 10)
     usePPTStore.getState().setPresentation(pres)
@@ -1215,20 +1246,9 @@ describe('usePPTStore mutation pipeline', () => {
     usePPTStore.getState().updateElementDirect('s1', { x: 40 })
     const headId = ws.sentMessages().find((m) => m.type === 'direct_update_element')!.mutation_id
 
-    // Seed a ledger entry that belongs to a FUTURE mutation (sequence 99). Even
-    // though its value matches the authoritative snapshot, it must NOT excuse
-    // the remote change for our earlier pending edit.
-    usePPTStore.setState({
-      localEffectLedger: [{
-        elementId: 's1',
-        field: 'x',
-        value: 700,
-        mutationId: 'mut_future',
-        clientSequence: 99,
-        confirmedRevision: 12
-      }]
-    })
-
+    // The authoritative deck moved `s1.x` to 700 by a foreign write while our
+    // x=40 edit was in flight. There is no local-effect ledger to excuse that:
+    // it must fail safe as a conflict and resync.
     const authoritative = makePresentation([makeSlide([makeShape('s1', 700, 0)], 'slide_1')], 11)
     ws.emit('mutation_rejected', {
       mutation_id: headId,
