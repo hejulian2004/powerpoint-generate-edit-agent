@@ -394,6 +394,67 @@ def add_shape(
 @tools.register({
     "type": "function",
     "function": {
+        "name": "add_image",
+        "description": "Insert an image onto a slide. `src` accepts a data:image/*;base64 URI or an asset URL.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "slide_id": {"type": "string", "description": "Slide ID or empty for active slide"},
+                "src": {"type": "string", "description": "Image data URI or asset URL"},
+                "alt_text": {"type": "string", "description": "Accessibility / provenance description"},
+                "x": {"type": "number", "description": "X coordinate in px (0-1280)", "default": 340},
+                "y": {"type": "number", "description": "Y coordinate in px (0-720)", "default": 110},
+                "width": {"type": "number", "description": "Width in px", "default": 600},
+                "height": {"type": "number", "description": "Height in px", "default": 400}
+            },
+            "required": ["src"]
+        }
+    }
+})
+def add_image(
+    pres: PresentationIR,
+    history: HistoryManager,
+    slide_id: Optional[str] = None,
+    src: str = "",
+    alt_text: Optional[str] = None,
+    x: float = 340.0,
+    y: float = 110.0,
+    width: float = 600.0,
+    height: float = 400.0
+) -> Dict[str, Any]:
+    slide = pres.get_slide(slide_id) if slide_id else pres.get_active_slide()
+    if not slide:
+        return {"success": False, "error": "Slide not found"}
+    if not src:
+        return {"success": False, "error": "Image source (src) is required"}
+
+    elem = ImageElementIR(
+        id=f"image_{uuid.uuid4().hex[:6]}",
+        name="Image",
+        src=src,
+        alt_text=alt_text,
+        x=x,
+        y=y,
+        width=width,
+        height=height,
+    )
+    slide.add_element(elem)
+    pres.version += 1
+
+    history.record(
+        action="add_element",
+        description="插入图片",
+        slide_id=slide.id,
+        element_id=elem.id,
+        after=elem.model_dump()
+    )
+
+    return {"success": True, "element_id": elem.id, "message": "已成功插入图片"}
+
+
+@tools.register({
+    "type": "function",
+    "function": {
         "name": "add_connector",
         "description": "Add an arrow or connector line connecting points or elements.",
         "parameters": {

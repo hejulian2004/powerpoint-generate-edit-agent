@@ -360,6 +360,7 @@ async def websocket_endpoint(websocket: WebSocket):
                         request_base_revision=request_revision,
                         ui_context=data.get("ui_context"),
                         transport=transport,
+                        mode=data.get("mode"),
                     )
 
                     # Transcript is owned by AgentRuntime.run_turn.
@@ -374,6 +375,73 @@ async def websocket_endpoint(websocket: WebSocket):
                         "session_id": session.session_id,
                         "error": str(e)
                     })
+
+            # User's natural-language message is empty but the turn carries a plan
+            # execution directive (confirmed plan) or other control command below.
+            elif msg_type == "new_conversation":
+                session.reset_conversation()
+                await store.broadcast(
+                    {"type": "conversation_reset", "session_id": session.session_id},
+                    session_id=session.session_id,
+                )
+                await _broadcast_state(session)
+
+            elif msg_type == "compress_context":
+                async def on_event(ev: dict):
+                    if "session_id" not in ev:
+                        ev["session_id"] = session.session_id
+                    await store.broadcast(ev, session_id=session.session_id)
+
+                await store.agent_runtime.compress_context(session, on_event=on_event)
+
+            elif msg_type == "set_plan_mode":
+                mode = session.set_interaction_mode(data.get("mode", "auto"))
+                await store.broadcast(
+                    {
+                        "type": "plan_mode_changed",
+                        "session_id": session.session_id,
+                        "mode": mode,
+                    },
+                    session_id=session.session_id,
+                )
+
+            elif msg_type in ("confirm_plan", "cancel_plan"):
+                plan_id = data.get("plan_id")
+                if not plan_id:
+                    await websocket.send_json({
+                        "type": "plan_failed",
+                        "session_id": session.session_id,
+                        "error": "plan_id is required",
+                    })
+                    continue
+
+                async def on_event(ev: dict):
+                    if "session_id" not in ev:
+                        ev["session_id"] = session.session_id
+                    await store.broadcast(ev, session_id=session.session_id)
+
+                if msg_type == "confirm_plan":
+                    await store.agent_runtime.confirm_plan(
+                        session, plan_id, on_event=on_event, transport=transport
+                    )
+                else:
+                    await store.agent_runtime.cancel_plan(
+                        session, plan_id, on_event=on_event
+                    )
+                await _broadcast_state(session)
+
+            elif msg_type == "vision_review":
+                async def on_event(ev: dict):
+                    if "session_id" not in ev:
+                        ev["session_id"] = session.session_id
+                    await store.broadcast(ev, session_id=session.session_id)
+
+                await store.agent_runtime.review_visuals(
+                    session,
+                    target=data.get("target"),
+                    on_event=on_event,
+                    transport=transport,
+                )
 
             # User explicitly confirms (or cancels) a pending low-confidence call
             elif msg_type in ("confirm_tool_call", "cancel_tool_call"):

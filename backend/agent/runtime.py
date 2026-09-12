@@ -142,8 +142,16 @@ class AgentRuntime:
         request_base_revision: Optional[int] = None,
         ui_context: Optional[Any] = None,
         transport: Optional[Any] = None,
+        mode: Optional[str] = None,
+        approved_plan: Optional[str] = None,
+        record_user_message: bool = True,
     ) -> Dict[str, Any]:
         """Runs an interactive turn executed through the LangGraph state machine.
+
+        `mode` selects the session interaction mode ("auto" | "plan"). When
+        `approved_plan` is supplied the plan critic stage is bypassed and the frozen
+        plan executes directly (used by the plan-confirmation lifecycle). In that
+        path `record_user_message=False` avoids duplicating the original user turn.
 
         `confirmed_tool_ids` lets a caller explicitly unblock previously flagged
         call ids for this turn (used by the confirmation lifecycle when replaying
@@ -249,13 +257,26 @@ class AgentRuntime:
         max_tokens_budget = CONTEXT_LIMIT_PRESETS.get(ctx_limit_key, 256 * 1024)
 
         if session is not None and hasattr(session, "add_message"):
-            session.add_message(role="user", content=user_message)
+            if record_user_message:
+                session.add_message(role="user", content=user_message)
             session_messages = list(session.memory.messages)
         else:
-            session_messages = [{"role": "user", "content": user_message}]
+            session_messages = (
+                [{"role": "user", "content": user_message}]
+                if record_user_message
+                else []
+            )
 
+        # A user-triggered manual compression anchor persists across turns: the
+        # model-facing window is rebuilt from the anchor plus the live tail, while
+        # the raw transcript (state["raw_messages"]) is never rewritten.
+        manual_anchor = getattr(session_memory, "compressed_anchor", None) if session_memory else None
+        manual_through = getattr(session_memory, "compression_through_index", 0) if session_memory else 0
+        model_base_messages = ContextCompressor.assemble_model_messages(
+            session_messages, manual_anchor, manual_through
+        )
         compressed_messages, usage_report = ContextCompressor.evaluate_and_compress(
-            messages=session_messages,
+            messages=model_base_messages,
             max_tokens=max_tokens_budget,
             context_key=ctx_limit_key
         )
@@ -306,7 +327,14 @@ class AgentRuntime:
             "turn_invalidated": False,
             "subagent_memories": seeded_subagent_memories,
             "agent_turn_id": turn_id,
+            "interaction_mode": (
+                mode
+                or (getattr(session, "interaction_mode", "auto") if session is not None else "auto")
+            ),
+            "plan_preapproved": bool(approved_plan),
         }
+        if approved_plan:
+            initial_state["plan"] = approved_plan
 
         config = {
             "configurable": {
@@ -379,6 +407,51 @@ class AgentRuntime:
             # cancellation (a `finally` always runs for CancelledError).
             if session is not None and admitted:
                 session.agent_execution.end_turn(turn_id)
+
+    # ------------------------------------------------------------------
+    # Manual context compression (user-triggered slash command)
+    # ------------------------------------------------------------------
+
+    async def compress_context(
+        self,
+        session: Any,
+        on_event: Optional[Callable[[Dict[str, Any]], Any]] = None,
+    ) -> Dict[str, Any]:
+        """Force-condenses the transcript and persists the anchor for later turns.
+
+        The raw transcript is preserved; only the model-facing window shrinks. The
+        resulting usage report is emitted so the frontend gauge updates.
+        """
+        from .context_compressor import ContextCompressor, CONTEXT_LIMIT_PRESETS
+
+        ctx_limit_key = getattr(settings, "context_limit", "256k").lower()
+        max_tokens_budget = CONTEXT_LIMIT_PRESETS.get(ctx_limit_key, 256 * 1024)
+
+        memory = getattr(session, "memory", None) if session is not None else None
+        messages = list(getattr(memory, "messages", []) or [])
+        anchor, through_index, report = ContextCompressor.build_anchor(
+            messages, max_tokens=max_tokens_budget, context_key=ctx_limit_key
+        )
+        applied = anchor is not None
+        if applied and memory is not None:
+            memory.compressed_anchor = anchor
+            memory.compression_through_index = through_index
+            memory.compression_report = report.to_dict()
+        if session is not None and hasattr(session, "schedule_persist"):
+            session.schedule_persist()
+
+        if on_event:
+            await _emit(on_event, {"type": "context_usage", "usage": report.to_dict()})
+            await _emit(
+                on_event,
+                {
+                    "type": "context_compressed",
+                    "applied": applied,
+                    "covered_messages": through_index if applied else 0,
+                    "usage": report.to_dict(),
+                },
+            )
+        return {"applied": applied, "covered_messages": through_index if applied else 0, "usage": report.to_dict()}
 
     # ------------------------------------------------------------------
     # Pending confirmation lifecycle (PR6-hardening round 2)
@@ -553,4 +626,206 @@ class AgentRuntime:
         }
         if on_event:
             await on_event({"type": "confirmation_cancelled", **result})
+        return result
+
+    # ------------------------------------------------------------------
+    # Plan-confirmation lifecycle (plan interaction mode)
+    # ------------------------------------------------------------------
+
+    async def confirm_plan(
+        self,
+        session: Any,
+        plan_id: str,
+        on_event: Optional[Callable[[Dict[str, Any]], Any]] = None,
+        transport: Optional[Any] = None,
+    ) -> Dict[str, Any]:
+        """Executes a frozen plan after explicit user approval.
+
+        Mirrors :meth:`confirm_pending`: the connection ownership is re-checked,
+        the plan must still match the document identity it was drafted against,
+        and only one claimant may consume it.
+        """
+        if transport is not None and session is not None:
+            try:
+                session.connection.assert_current(
+                    transport.websocket, transport.connection_generation
+                )
+            except ConnectionTakenOver:
+                result = {
+                    "success": False,
+                    "error": STALE_CONNECTION,
+                    "plan_id": plan_id,
+                    "message": "会话已在其他窗口接管，计划确认未执行。",
+                }
+                if on_event:
+                    await _emit(on_event, {"type": "plan_failed", **result})
+                return result
+
+        record = session.get_pending_plan(plan_id) if session else None
+        if record is None:
+            result = {
+                "success": False,
+                "error": "unknown_plan",
+                "plan_id": plan_id,
+                "message": f"未找到待确认的计划（plan_id: {plan_id}）。",
+            }
+            if on_event:
+                await _emit(on_event, {"type": "plan_failed", **result})
+            return result
+
+        current_epoch = getattr(session, "document_epoch", None)
+        current_revision = session.document.presentation.version
+        record_epoch = record.get("document_epoch")
+        record_revision = record.get("expected_revision")
+
+        if record_epoch != current_epoch or (
+            record_revision is not None and record_revision != current_revision
+        ):
+            session.consume_pending_plan(plan_id)
+            result = {
+                "success": False,
+                "error": "plan_invalidated",
+                "plan_id": plan_id,
+                "document_epoch": current_epoch,
+                "version": current_revision,
+                "message": (
+                    "计划生成后演示文稿已被修改，原计划已失效，请重新下达指令以生成新计划。"
+                ),
+            }
+            if on_event:
+                await _emit(on_event, {"type": "plan_invalidated", **result})
+            return result
+
+        # Single-claimant: consume before any await so only one confirmation runs.
+        session.consume_pending_plan(plan_id)
+        if on_event:
+            await _emit(on_event, {"type": "plan_approved", "plan_id": plan_id})
+
+        result = await self.run_turn(
+            user_message=record.get("user_query", ""),
+            pres=session.document.presentation,
+            history=session.history,
+            session=session,
+            on_event=on_event,
+            request_document_epoch=record_epoch,
+            request_base_revision=record_revision,
+            transport=transport,
+            mode="plan",
+            approved_plan=record.get("plan", ""),
+            record_user_message=False,
+        )
+        if on_event:
+            await _emit(
+                on_event,
+                {"type": "plan_resolved", "plan_id": plan_id, "success": True},
+            )
+        return {"success": True, "plan_id": plan_id, **result}
+
+    async def cancel_plan(
+        self,
+        session: Any,
+        plan_id: str,
+        on_event: Optional[Callable[[Dict[str, Any]], Any]] = None,
+    ) -> Dict[str, Any]:
+        """Discards a pending plan without executing it."""
+        record = session.consume_pending_plan(plan_id) if session else None
+        result = {
+            "success": record is not None,
+            "plan_id": plan_id,
+            "cancelled": record is not None,
+            "message": "已取消该计划。" if record else f"未找到待确认的计划（plan_id: {plan_id}）。",
+        }
+        if on_event:
+            await _emit(on_event, {"type": "plan_cancelled", **result})
+        return result
+
+    # ------------------------------------------------------------------
+    # On-demand visual review (user-triggered slash command, read-only)
+    # ------------------------------------------------------------------
+
+    async def review_visuals(
+        self,
+        session: Any,
+        target: Optional[str] = None,
+        on_event: Optional[Callable[[Dict[str, Any]], Any]] = None,
+        transport: Optional[Any] = None,
+    ) -> Dict[str, Any]:
+        """Runs the blind visual critic on selected slides. Never mutates the deck."""
+        if transport is not None and session is not None:
+            try:
+                session.connection.assert_current(
+                    transport.websocket, transport.connection_generation
+                )
+            except ConnectionTakenOver:
+                result = {
+                    "success": False,
+                    "error": STALE_CONNECTION,
+                    "message": "会话已在其他窗口接管，视觉审查未执行。",
+                }
+                if on_event:
+                    await _emit(on_event, {"type": "vision_review_result", **result})
+                return result
+
+        from .review_targeting import build_slide_manifest, resolve_review_targets
+        from ..quality.service import QualityService
+
+        manifest = build_slide_manifest(session)
+        index_by_id = {m["slide_id"]: m["index"] for m in manifest}
+        slide_ids = await resolve_review_targets(self.llm, target, manifest)
+
+        presentation = session.document.presentation if session is not None else None
+        reviews: List[Dict[str, Any]] = []
+        for slide_id in slide_ids:
+            slide = presentation.get_slide(slide_id) if presentation is not None else None
+            if slide is None:
+                continue
+            if on_event:
+                await _emit(
+                    on_event,
+                    {
+                        "type": "agent_thinking",
+                        "status": "vision_review",
+                        "text": f"正在审查第 {index_by_id.get(slide_id)} 页视觉排版...",
+                    },
+                )
+            review = await QualityService.review_slide(
+                slide, llm_client=self.llm, on_event=on_event
+            )
+            payload = review.to_dict()
+            reviews.append(
+                {
+                    "slide_id": slide_id,
+                    "page": index_by_id.get(slide_id),
+                    "score": payload.get("score"),
+                    "defects_count": payload.get("defects_count"),
+                    "needs_auto_correction": payload.get("needs_auto_correction"),
+                    "critique_summary": payload.get("critique_summary"),
+                    "multimodal_feedback": payload.get("multimodal_feedback"),
+                }
+            )
+
+        scores = [
+            r["score"] for r in reviews if isinstance(r.get("score"), (int, float))
+        ]
+        overall = {
+            "score": round(sum(scores) / len(scores), 1) if scores else 0.0,
+            "defects_count": sum(int(r.get("defects_count") or 0) for r in reviews),
+            "needs_auto_correction": any(r.get("needs_auto_correction") for r in reviews),
+            "critique_summary": "\n".join(
+                f"第{r.get('page')}页: {r.get('critique_summary') or ''}".strip()
+                for r in reviews
+            ),
+        }
+
+        result = {
+            "success": True,
+            "type": "vision_review_result",
+            "session_id": getattr(session, "session_id", None),
+            "target": target or "all",
+            "targets": [r["slide_id"] for r in reviews],
+            "slide_reviews": reviews,
+            "overall": overall,
+        }
+        if on_event:
+            await _emit(on_event, result)
         return result

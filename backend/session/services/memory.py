@@ -28,6 +28,21 @@ class MemoryService:
         self.agent_memory: Any = _default_agent_memory()
         # subagent_name -> SubagentSessionMemory; lazily created on demand.
         self.subagent_memories: Dict[str, Any] = {}
+        # Manual (user-triggered) compression state. The anchor is a synthetic
+        # system message that stands in for the first ``compression_through_index``
+        # raw transcript messages; the raw transcript itself is never rewritten.
+        self.compressed_anchor: Optional[Dict[str, Any]] = None
+        self.compression_through_index: int = 0
+        self.compression_report: Optional[Dict[str, Any]] = None
+
+    def clear_conversation(self) -> None:
+        """Starts a fresh conversation while leaving document/deck state untouched."""
+        self.messages.clear()
+        self.agent_memory = _default_agent_memory()
+        self.subagent_memories.clear()
+        self.compressed_anchor = None
+        self.compression_through_index = 0
+        self.compression_report = None
 
     def add_message(
         self,

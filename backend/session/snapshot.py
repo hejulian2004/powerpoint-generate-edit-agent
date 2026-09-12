@@ -22,6 +22,9 @@ class SessionSnapshot:
     messages: List[Dict[str, Any]] = field(default_factory=list)
     agent_memory: Dict[str, Any] = field(default_factory=dict)
     subagent_memories: Dict[str, Any] = field(default_factory=dict)
+    # Persisted manual context-compression anchor (raw transcript is untouched).
+    compressed_anchor: Optional[Dict[str, Any]] = None
+    compression_through_index: int = 0
     checkpoints: List[Dict[str, Any]] = field(default_factory=list)
     created_at: str = ""
     updated_at: str = ""
@@ -53,6 +56,8 @@ def session_to_snapshot(session: Any) -> SessionSnapshot:
         messages=copy.deepcopy(mem.messages),
         agent_memory=mem.agent_memory.to_dict(),
         subagent_memories={name: m.to_dict() for name, m in mem.subagent_memories.items()},
+        compressed_anchor=copy.deepcopy(mem.compressed_anchor),
+        compression_through_index=mem.compression_through_index,
         checkpoints=session.checkpoint_service.to_snapshots(),
         created_at=session.created_at.isoformat(),
         updated_at=session.updated_at.isoformat(),
@@ -72,5 +77,9 @@ def snapshot_to_session(snapshot: SessionSnapshot) -> Any:
         name: SubagentSessionMemory.from_dict(payload)
         for name, payload in (snapshot.subagent_memories or {}).items()
     }
+    session.memory.compressed_anchor = copy.deepcopy(getattr(snapshot, "compressed_anchor", None))
+    session.memory.compression_through_index = int(
+        getattr(snapshot, "compression_through_index", 0) or 0
+    )
     session.checkpoint_service.restore_from_snapshots(snapshot.checkpoints)
     return session
