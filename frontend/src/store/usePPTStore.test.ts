@@ -1287,3 +1287,49 @@ describe('usePPTStore mutation pipeline', () => {
     expect(sent.document_epoch).toBe('epoch_A')
   })
 })
+
+describe('generation stage lifecycle', () => {
+  beforeEach(() => {
+    installFakeWebSocket()
+    resetStore()
+    usePPTStore.setState({
+      isAgentThinking: false,
+      thinkingStatus: '',
+      generationStage: null,
+      visualRemediation: null
+    })
+  })
+
+  it('enters thinking on a non-terminal stage', () => {
+    const ws = connect()
+    ws.emit('generation_stage', { phase: 'paper_visual_analysis', current: 1, total: 3 })
+    const state = usePPTStore.getState()
+    expect(state.isAgentThinking).toBe(true)
+    expect(state.generationStage?.phase).toBe('paper_visual_analysis')
+  })
+
+  it('clears thinking on completed', () => {
+    const ws = connect()
+    ws.emit('generation_progress', { status: 'preview' })
+    expect(usePPTStore.getState().isAgentThinking).toBe(true)
+
+    ws.emit('generation_progress', { status: 'completed' })
+    const state = usePPTStore.getState()
+    expect(state.isAgentThinking).toBe(false)
+    expect(state.generationStage).toBeNull()
+    expect(state.mutationStatus).toBe('idle')
+  })
+
+  it.each(['validation_failed', 'grounding_failed', 'stale_generation', 'failed', 'error'])(
+    'clears thinking and reports failure on %s',
+    (status) => {
+      const ws = connect()
+      ws.emit('generation_progress', { status: 'preview' })
+      ws.emit('generation_progress', { status, text: 'stopped' })
+      const state = usePPTStore.getState()
+      expect(state.isAgentThinking).toBe(false)
+      expect(state.generationStage).toBeNull()
+      expect(state.mutationStatus).toBe('failed')
+    }
+  )
+})

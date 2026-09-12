@@ -27,6 +27,17 @@ import {
   translateElement
 } from '../editor/geometry/adapter'
 
+// Terminal generation statuses (paper generation is REST-initiated, so the
+// store must clear its own thinking lifecycle when one of these arrives).
+export const TERMINAL_GENERATION_STATUSES = new Set([
+  'completed',
+  'validation_failed',
+  'grounding_failed',
+  'stale_generation',
+  'failed',
+  'error'
+])
+
 export type AlignMode =
   | 'left' | 'center' | 'right'
   | 'top' | 'middle' | 'bottom'
@@ -1889,6 +1900,28 @@ export const usePPTStore = create<PPTState>((set, get) => ({
           set({ isAgentThinking: true, thinkingStatus: data.text || '视觉多模态校验中...' })
         } else if (type === 'generation_stage' || type === 'generation_progress') {
           const stage = data as GenerationStageEvent
+          const key = String(stage.phase || stage.status || '')
+          // Terminal generation states end the turn lifecycle locally (paper
+          // generation is REST-initiated, so no agent_finished arrives).
+          if (TERMINAL_GENERATION_STATUSES.has(key)) {
+            const failed = key !== 'completed'
+            set({
+              isAgentThinking: false,
+              thinkingStatus: '',
+              visualRemediation: null,
+              generationStage: null,
+              mutationStatus: failed ? 'failed' : 'idle'
+            })
+            if (failed) {
+              get().addMessage({
+                id: `gen_${Date.now()}`,
+                role: 'assistant',
+                content: `⚠️ 生成终止: ${stage.text || stage.error || key}`,
+                timestamp: Date.now()
+              })
+            }
+            return
+          }
           const phaseLabels: Record<string, string> = {
             paper_visual_analysis: '论文视觉解析',
             paper_plan: '论文方案规划',
@@ -1899,7 +1932,6 @@ export const usePPTStore = create<PPTState>((set, get) => ({
             deck_revisit: '视觉复审返工',
             rendering: '编译图元'
           }
-          const key = String(stage.phase || stage.status || '')
           const label = phaseLabels[key]
           const progress = stage.total && stage.current ? ` (${stage.current}/${stage.total})` : ''
           set({
