@@ -55,6 +55,9 @@ export type MutationPrecondition =
       // slide operations (clear / delete / duplicate / layout) so a remote
       // content change is detected instead of silently overwritten.
       elementIds?: string[]
+      // Full content fingerprint (id + type + geometry + text), never existence
+      // only: a same-id element whose content changed is still a conflict.
+      contentHash?: string
       // Slide background observed at authoring time (set_slide_background).
       background?: any
     }
@@ -72,9 +75,12 @@ const REBASE_POLICY: Record<string, RebasePolicy> = {
   duplicate_element: 'preconditioned',
   group_elements: 'preconditioned',
   ungroup_elements: 'preconditioned',
-  delete_slide: 'preconditioned',
-  duplicate_slide: 'preconditioned',
-  clear_slide_elements: 'preconditioned',
+  // Destructive / whole-slide or whole-deck operations are never replayed onto a
+  // newer authoritative snapshot: replaying them could delete or rewrite content
+  // the user never saw. They fail safe as conflicts.
+  delete_slide: 'never',
+  duplicate_slide: 'never',
+  clear_slide_elements: 'never',
   generate_slide_layout: 'preconditioned',
   align_elements: 'preconditioned',
   set_slide_background: 'preconditioned',
@@ -86,21 +92,6 @@ const REBASE_POLICY: Record<string, RebasePolicy> = {
 
 const rebasePolicyFor = (operationName: string): RebasePolicy =>
   REBASE_POLICY[operationName] ?? 'never'
-
-// A field write already CONFIRMED by the server for THIS client. Used during a
-// stale rebase to recognise a snapshot value caused by our own prior mutation,
-// so an earlier same-field edit is not misclassified as a foreign conflict.
-// `mutationId` / `clientSequence` / `confirmedRevision` make the ledger
-// CAUSALLY scoped: only an effect from an EARLIER mutation in this client's own
-// ordered chain may excuse a remote value.
-export interface LocalEffect {
-  elementId: string
-  field: string
-  value: any
-  mutationId?: string
-  clientSequence?: number
-  confirmedRevision?: number
-}
 
 export interface PendingMutation {
   mutationId: string
@@ -177,57 +168,6 @@ const findElementInPresentation = (
   return null
 }
 
-// Bounded, newest-last. Only our own server-confirmed `update_element` field
-// writes are recorded, so a rebase can tell "our earlier mutation" apart from a
-// foreign change without ever touching `authoredBaseRevision`.
-const LOCAL_EFFECT_LIMIT = 256
-
-const recordLocalEffects = (
-  ledger: LocalEffect[],
-  mutation: PendingMutation | undefined,
-  confirmedRevision?: number
-): LocalEffect[] => {
-  if (!mutation) return ledger
-  let next = ledger
-  for (const op of mutation.operations) {
-    if (op.name !== 'update_element' || !op.payload?.element_id) continue
-    const elementId = String(op.payload.element_id)
-    for (const [field, value] of Object.entries(op.payload)) {
-      if (field === 'element_id' || field === 'slide_id') continue
-      next = [...next, {
-        elementId,
-        field,
-        value,
-        mutationId: mutation.mutationId,
-        clientSequence: mutation.clientSequence,
-        confirmedRevision
-      }]
-    }
-  }
-  if (next === ledger) return ledger
-  return next.length > LOCAL_EFFECT_LIMIT
-    ? next.slice(next.length - LOCAL_EFFECT_LIMIT)
-    : next
-}
-
-const isOwnLocalEffect = (
-  ledger: LocalEffect[],
-  elementId: string,
-  field: string,
-  value: any,
-  pendingSequence?: number
-): boolean =>
-  ledger.some(
-    (effect) =>
-      effect.elementId === elementId &&
-      effect.field === field &&
-      JSON.stringify(effect.value) === JSON.stringify(value) &&
-      // Causal scope: the effect must come from an EARLIER mutation in this
-      // client's own ordered chain - never from a later/foreign write.
-      (pendingSequence === undefined ||
-        (effect.clientSequence !== undefined && effect.clientSequence < pendingSequence))
-  )
-
 const findElementRecord = (
   elements: ElementIR[],
   id: string,
@@ -281,7 +221,23 @@ const captureSlidePrecondition = (slideId: string): MutationPrecondition => ({
   slideId
 })
 
-// Destructive slide operations freeze the slide's top-level element ids so a
+// Stable content fingerprint for a slide's top-level elements. Content changes
+// (same ids, different geometry/text) must be a conflict, so ids alone are not
+// enough.
+const hashSlideContent = (slide: SlideIR): string =>
+  JSON.stringify(
+    slide.elements.map((el) => ({
+      id: el.id,
+      type: el.type,
+      x: el.x,
+      y: el.y,
+      width: el.width,
+      height: el.height,
+      text: (el as any).text_content?.plain_text ?? null
+    }))
+  )
+
+// Destructive slide operations freeze the slide's content fingerprint so a
 // remote content change is a conflict rather than a silent overwrite.
 const captureSlideFingerprint = (
   pres: PresentationIR | null,
@@ -289,7 +245,12 @@ const captureSlideFingerprint = (
 ): MutationPrecondition | null => {
   const slide = slideOf(pres, slideId)
   if (!slide) return null
-  return { kind: 'slide', slideId: slide.id, elementIds: slide.elements.map((e) => e.id) }
+  return {
+    kind: 'slide',
+    slideId: slide.id,
+    elementIds: slide.elements.map((e) => e.id),
+    contentHash: hashSlideContent(slide)
+  }
 }
 
 const captureBackgroundPrecondition = (
@@ -320,17 +281,17 @@ const captureFieldPrecondition = (
 
 const preconditionConflicts = (
   authoritative: PresentationIR,
-  pre: MutationPrecondition,
-  ledger: LocalEffect[],
-  pendingSequence?: number
+  pre: MutationPrecondition
 ): boolean => {
   if (pre.kind === 'field') {
     const remoteEl = findElementInPresentation(authoritative, pre.elementId)
     if (!remoteEl) return true
-    return Object.keys(pre.fields).some((key) => {
-      if (JSON.stringify((remoteEl as any)[key]) === JSON.stringify(pre.fields[key])) return false
-      return !isOwnLocalEffect(ledger, pre.elementId, key, (remoteEl as any)[key], pendingSequence)
-    })
+    // No local-effect ledger: any field the user did not author in THIS exact
+    // precondition that differs remotely is a foreign conflict. Simpler and
+    // fail-safe; never excuse a remote value.
+    return Object.keys(pre.fields).some(
+      (key) => JSON.stringify((remoteEl as any)[key]) !== JSON.stringify(pre.fields[key])
+    )
   }
   if (pre.kind === 'structure') {
     const slide = authoritative.slides.find((s) => s.id === pre.slideId)
@@ -351,6 +312,9 @@ const preconditionConflicts = (
   if (pre.elementIds) {
     const ids = slide.elements.map((e) => e.id).join('/')
     if (ids !== pre.elementIds.join('/')) return true
+  }
+  if (pre.contentHash !== undefined) {
+    if (hashSlideContent(slide) !== pre.contentHash) return true
   }
   if (pre.background !== undefined) {
     if (JSON.stringify(slide.background) !== JSON.stringify(pre.background)) return true
@@ -663,10 +627,6 @@ interface PPTState {
   uiContextRevision: number
   // Monotonic per-client logical mutation ordering.
   clientSequence: number
-  // Bounded ledger of this client's OWN confirmed field writes. A stale rebase
-  // uses it to avoid treating our own committed effect as a remote conflict.
-  // Never feeds `authoredBaseRevision`; it only explains a snapshot delta.
-  localEffectLedger: LocalEffect[]
   contextUsage: ContextUsageData | null
   setContextUsage: (usage: ContextUsageData | null) => void
 
@@ -806,7 +766,6 @@ export const usePPTStore = create<PPTState>((set, get) => ({
   })(),
   uiContextRevision: 0,
   clientSequence: 0,
-  localEffectLedger: [],
   contextUsage: {
     current_tokens: 1200,
     max_tokens: 256 * 1024,
@@ -863,8 +822,7 @@ export const usePPTStore = create<PPTState>((set, get) => ({
   setPresentation: (pres) => set({
     presentation: pres,
     confirmedPresentation: pres,
-    activeSlideId: pres.active_slide_id || (pres.slides[0] ? pres.slides[0].id : null),
-    localEffectLedger: []
+    activeSlideId: pres.active_slide_id || (pres.slides[0] ? pres.slides[0].id : null)
   }),
 
   // The single entry point for adopting a server document. Installs the
@@ -924,7 +882,6 @@ export const usePPTStore = create<PPTState>((set, get) => ({
         documentEpoch: loadedEpoch ?? state.documentEpoch,
         confirmedRevision: loadedRevision,
         hasServerRevision: true,
-        localEffectLedger: epochChanged ? [] : state.localEffectLedger,
         mutationStatus: hasPending ? 'pending' : 'idle'
       }
     })
@@ -1673,20 +1630,6 @@ export const usePPTStore = create<PPTState>((set, get) => ({
               ? state.editingElementId
               : null
 
-            const epochChanged = typeof data.document_epoch === 'string'
-              && state.documentEpoch !== null
-              && data.document_epoch !== state.documentEpoch
-            const acked = ackId
-              ? state.pendingMutations.find((p) => p.mutationId === ackId)
-              : undefined
-            const localEffectLedger = epochChanged
-              ? []
-              : recordLocalEffects(
-                  state.localEffectLedger,
-                  acked,
-                  typeof data.version === 'number' ? data.version : state.confirmedRevision
-                )
-
             return {
               sessionId: data.session_id || state.sessionId,
               presentation,
@@ -1708,7 +1651,6 @@ export const usePPTStore = create<PPTState>((set, get) => ({
               selectedElementIds: selectedIds,
               selectedElementId: selectedId,
               editingElementId: editingId,
-              localEffectLedger,
               activeRightTab: selectedId ? 'inspector' : state.activeRightTab
             }
           })
@@ -1807,9 +1749,7 @@ export const usePPTStore = create<PPTState>((set, get) => ({
                 conflicted = false
               } else {
                 conflicted = preconditions.length === 0 || preconditions.some((pre) =>
-                  preconditionConflicts(
-                    authoritative, pre, preState.localEffectLedger, m.clientSequence
-                  )
+                  preconditionConflicts(authoritative, pre)
                 )
               }
               if (conflicted) {

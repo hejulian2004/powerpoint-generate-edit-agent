@@ -597,7 +597,7 @@ class MutationGateway:
         # inconsistent or malformed envelope fails closed with ZERO writes.
         # A replacement is only meaningful with a session (it rotates that
         # session's document identity); session-less callers (direct graph
-        # tests) remain additive.
+        # tests / in-place generation) remain additive.
         detected_replacement = session is not None and any(
             _is_replacement_op(c) for c in calls
         )
