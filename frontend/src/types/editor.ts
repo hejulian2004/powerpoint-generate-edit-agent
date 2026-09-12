@@ -47,6 +47,7 @@ export interface GenerationStageEvent {
   phase?: string
   status?: string
   text?: string
+  error?: string
   current?: number
   total?: number
 }
