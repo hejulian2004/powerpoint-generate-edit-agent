@@ -38,7 +38,7 @@ from typing import Any, Callable, Dict, List, Literal, Optional
 from langchain_core.runnables import RunnableConfig
 from langgraph.graph import END, START, StateGraph
 
-from ...compiler.presentation_ir import compile_layout_to_presentation_ir
+from ...compiler.presentation_ir import compile_layout_to_presentation_ir, theme_from_art_direction
 from ...evaluation.schema import IssueSeverity, VisualIssue
 from ...ir.svg_renderer import SVGRenderer
 from ...layout.engine import generate_deck_layout
@@ -52,6 +52,7 @@ from ...pptspec.schema import CanonicalPPTSpec
 from ...pptspec.validator import validate_truthfulness
 from ...quality import QualityService
 from ...session.manager import session_manager
+from ..grounding import blocking_verdicts
 from .generation_state import PPTGenerationState
 
 logger = logging.getLogger(__name__)
@@ -70,6 +71,165 @@ async def _safe_emit(on_event: Optional[Callable], event_data: Dict[str, Any]):
                 await res
     except Exception as e:
         logger.debug(f"Failed to emit event: {e}")
+
+
+# =====================================================================
+# Paper truthfulness (fact boundary) helpers
+# =====================================================================
+
+def _paper_source_text(paper_ir: Any) -> str:
+    """Concatenated PaperIR text that exclusively may ground deck claims."""
+    parts: List[str] = []
+    if getattr(paper_ir, "title", None):
+        parts.append(str(paper_ir.title))
+    if getattr(paper_ir, "abstract", None):
+        parts.append(str(paper_ir.abstract))
+    for section in getattr(paper_ir, "sections", []) or []:
+        if getattr(section, "title", None):
+            parts.append(str(section.title))
+        parts.extend(str(p) for p in getattr(section, "paragraphs", []) or [] if p)
+    for figure in getattr(paper_ir, "figures", []) or []:
+        if getattr(figure, "caption", None):
+            parts.append(str(figure.caption))
+    for table in getattr(paper_ir, "tables", []) or []:
+        if getattr(table, "caption", None):
+            parts.append(str(table.caption))
+    return "\n".join(p for p in parts if p and p.strip())
+
+
+def _paper_plan_claim_text(plan: Any) -> str:
+    parts: List[str] = []
+    for slide in getattr(plan, "slides", []) or []:
+        for value in (getattr(slide, "title", None), getattr(slide, "objective", None)):
+            if value:
+                parts.append(str(value))
+        parts.extend(str(m) for m in getattr(slide, "key_messages", []) or [] if m)
+    return "\n".join(parts)
+
+
+def _evidence_ref_exists(ref: Any, paper_ir: Any) -> bool:
+    text = str(ref or "").strip()
+    if not text:
+        return False
+    prefix, sep, value = text.partition(":")
+    prefix = prefix.strip().lower() if sep else ""
+    target = (value if sep else text).strip().lower()
+    if not target:
+        return False
+    if prefix in ("", "section"):
+        for section in getattr(paper_ir, "sections", []) or []:
+            number = str(getattr(section, "number", "") or "").strip().lower()
+            title = str(getattr(section, "title", "") or "").strip().lower()
+            if target in (number, title):
+                return True
+        if prefix == "section":
+            return False
+    if prefix in ("", "figure"):
+        for figure in getattr(paper_ir, "figures", []) or []:
+            fid = str(getattr(figure, "id", "") or "").strip().lower()
+            xref = str(getattr(figure, "xref_label", "") or "").strip().lower()
+            if target in (fid, xref):
+                return True
+        if prefix == "figure":
+            return False
+    if prefix in ("", "table"):
+        for table in getattr(paper_ir, "tables", []) or []:
+            tid = str(getattr(table, "id", "") or "").strip().lower()
+            xref = str(getattr(table, "xref_label", "") or "").strip().lower()
+            if target in (tid, xref):
+                return True
+        if prefix == "table":
+            return False
+    return False
+
+
+def _validate_paper_plan_grounding(
+    plan: Any,
+    paper_ir: Any,
+    *,
+    strict_policy: bool = True,
+) -> List[str]:
+    """Return truthfulness violations for a plan (empty == grounded).
+
+    Numeric data claims are ALWAYS enforced. Policy phrases (SOTA, 企业级, ...)
+    are enforced only for LLM-authored plans (``strict_policy``); the deterministic
+    legacy planner is curated template text and is exempt from the phrase policy.
+    """
+    source_text = _paper_source_text(paper_ir)
+    claim_text = _paper_plan_claim_text(plan)
+    errors: List[str] = []
+    seen: set = set()
+
+    def _add(message: str) -> None:
+        if message not in seen:
+            seen.add(message)
+            errors.append(message)
+
+    for verdict in blocking_verdicts(claim_text, source_text, placeholder_ok=False):
+        is_numeric = verdict.category == "numeric"
+        if not is_numeric and not strict_policy:
+            continue
+        if verdict.decision == "PLACEHOLDER":
+            _add(f"UNGROUNDED_CLAIM: '{verdict.claim}' is not supported by PaperIR")
+        else:
+            _add(f"UNSUPPORTED_TEXTUAL_FACT: '{verdict.claim}' is not grounded in PaperIR")
+
+    for slide in getattr(plan, "slides", []) or []:
+        for ref in getattr(slide, "factual_evidence_ids", []) or []:
+            if not _evidence_ref_exists(ref, paper_ir):
+                _add(
+                    f"INVALID_EVIDENCE_REFERENCE: '{ref}' on slide "
+                    f"{getattr(slide, 'index', '?')} does not exist in PaperIR"
+                )
+    return errors
+
+
+def _format_truthfulness_feedback(errors: List[str]) -> str:
+    lines = [
+        "TRUTHFULNESS VIOLATIONS: the previous plan contained claims that are NOT",
+        "grounded in the provided paper facts. Remove or rewrite them and return the",
+        "complete JSON again. Numbers and factual claims may ONLY come from the paper.",
+    ]
+    lines.extend(f"- {e}" for e in errors[:8])
+    return "\n".join(lines)
+
+
+def _paper_source_images_by_slide(state: PPTGenerationState) -> Dict[str, List[str]]:
+    """Trusted page/crop data URIs per slide for the source-aware critic."""
+    if state.get("source_type") != "paper":
+        return {}
+    plan = state.get("presentation_plan")
+    if plan is None:
+        return {}
+    from ...design.paper_assets import paper_source_images_by_slide
+
+    return paper_source_images_by_slide(
+        state.get("paper_ir"),
+        state.get("paper_visual_ir"),
+        state.get("paper_cache_dir"),
+        getattr(plan, "slides", []) or [],
+    )
+
+
+def _candidate_raster_provider(layout: Any) -> Optional[str]:
+    """Render a single candidate LayoutSpec to a PPT screenshot data URI."""
+    try:
+        from ...compiler.presentation_ir import compile_layout_to_presentation_ir
+        from ...eval.renderer_snapshot import SlideSnapshotRenderer
+        from ...layout.schema import Canvas, DeckLayoutSpec
+
+        deck = DeckLayoutSpec(
+            title="_candidate",
+            canvas=layout.canvas or Canvas(),
+            slides=[layout],
+        )
+        pres = compile_layout_to_presentation_ir(deck)
+        if not pres.slides:
+            return None
+        return SlideSnapshotRenderer.render_data_uri(pres.slides[0], scale=1.0)
+    except Exception as exc:  # pragma: no cover - renderer dependent
+        logger.debug("Candidate raster provider failed: %s", exc)
+        return None
 
 
 # =====================================================================
@@ -236,6 +396,7 @@ async def paper_plan_node(state: PPTGenerationState, config: RunnableConfig) -> 
         state.get("paper_visual_ir"),
         user_prompt=state.get("user_prompt", ""),
         duration_minutes=int(state.get("duration_minutes", 15) or 15),
+        contact_sheet_dir=state.get("paper_cache_dir"),
         on_event=on_event,
     )
     deck_spec = map_presentation_plan_to_deck_spec(plan, paper_ir)
@@ -248,6 +409,105 @@ async def paper_plan_node(state: PPTGenerationState, config: RunnableConfig) -> 
         "layout_source": "llm" if used_llm else "fallback_template",
         "fallback_reason": None if used_llm else "art_direction_unavailable",
         "status": "paper_planned",
+    }
+
+
+async def paper_truthfulness_node(state: PPTGenerationState, config: RunnableConfig) -> Dict[str, Any]:
+    """Validate the Art Director plan against PaperIR; one repair then hard fail.
+
+    This is the paper branch's equivalent of ``validate_truthfulness``: numbers and
+    factual claims produced by the LLM must be grounded in the paper text, and every
+    ``factual_evidence_ids`` handle must reference a real PaperIR section/figure/table.
+    A single targeted repair round is attempted; persistent violations terminate the
+    graph without persisting a deck (never a silent fallback).
+    """
+    configurable = config.get("configurable", {})
+    on_event = configurable.get("on_event")
+    llm_client = configurable.get("llm_client")
+
+    plan = state.get("presentation_plan")
+    paper_ir = state.get("paper_ir")
+    if plan is None or paper_ir is None:
+        return {"status": state.get("status", "paper_planned")}
+
+    await _safe_emit(
+        on_event,
+        {"type": "generation_progress", "status": "grounding", "text": "校验论文事实边界与证据引用..."},
+    )
+
+    attempts = int(state.get("paper_truthfulness_attempts", 0) or 0)
+    strict_policy = state.get("generation_mode") == "llm_native"
+    errors = _validate_paper_plan_grounding(plan, paper_ir, strict_policy=strict_policy)
+
+    if errors and attempts < 1:
+        await _safe_emit(
+            on_event,
+            {
+                "type": "generation_progress",
+                "status": "repairing_grounding",
+                "text": "发现未grounded主张，进行 1 次定向修复...",
+            },
+        )
+        from ...design import build_plan_and_direction
+        from ...slidespec.mapper import map_presentation_plan_to_deck_spec
+
+        rework_prompt = (
+            (state.get("user_prompt") or "") + "\n\n" + _format_truthfulness_feedback(errors)
+        ).strip()
+        art_direction, repaired_plan, used_llm = await build_plan_and_direction(
+            llm_client,
+            paper_ir,
+            state.get("paper_visual_ir"),
+            user_prompt=rework_prompt,
+            duration_minutes=int(state.get("duration_minutes", 15) or 15),
+            contact_sheet_dir=state.get("paper_cache_dir"),
+            on_event=on_event,
+        )
+        attempts += 1
+        if repaired_plan is not None:
+            remaining = _validate_paper_plan_grounding(
+                repaired_plan, paper_ir, strict_policy=strict_policy
+            )
+            if not remaining:
+                deck_spec = map_presentation_plan_to_deck_spec(repaired_plan, paper_ir)
+                return {
+                    "deck_art_direction": art_direction,
+                    "presentation_plan": repaired_plan,
+                    "deck_spec": deck_spec,
+                    "generation_mode": "llm_native" if used_llm else "legacy_template",
+                    "layout_source": "llm" if used_llm else "fallback_template",
+                    "fallback_reason": None if used_llm else "art_direction_unavailable",
+                    "paper_truthfulness_attempts": attempts,
+                    "paper_truthfulness_errors": [],
+                    "status": "paper_truthfulness_passed",
+                    "error": None,
+                }
+            errors = remaining
+
+    if errors:
+        message = "PAPER_TRUTHFULNESS_FAILED: " + "; ".join(errors[:8])
+        await _safe_emit(
+            on_event,
+            {
+                "type": "generation_progress",
+                "status": "grounding_failed",
+                "error": message,
+                "text": "论文事实边界校验失败，已阻止生成。",
+            },
+        )
+        return {
+            "paper_truthfulness_attempts": attempts,
+            "paper_truthfulness_errors": errors,
+            "status": "validation_failed",
+            "error": message,
+            "validation_errors": list(state.get("validation_errors", [])) + errors,
+        }
+
+    return {
+        "paper_truthfulness_attempts": attempts,
+        "paper_truthfulness_errors": [],
+        "status": "paper_truthfulness_passed",
+        "error": None,
     }
 
 
@@ -369,7 +629,25 @@ async def compile_presentation_ir_node(state: PPTGenerationState, config: Runnab
 
     deck_layout = state["deck_layout"]
     assert deck_layout is not None, "DeckLayoutSpec cannot be None"
-    pres_ir = compile_layout_to_presentation_ir(deck_layout)
+
+    asset_resolver = None
+    if state.get("source_type") == "paper":
+        from ...design.paper_assets import make_paper_asset_resolver
+
+        asset_resolver = make_paper_asset_resolver(
+            state.get("paper_ir"),
+            state.get("paper_visual_ir"),
+            state.get("paper_cache_dir"),
+        )
+
+    art_direction = state.get("deck_art_direction")
+    theme_override = None
+    if art_direction is not None:
+        theme_override = theme_from_art_direction(art_direction)
+
+    pres_ir = compile_layout_to_presentation_ir(
+        deck_layout, theme_override=theme_override, asset_resolver=asset_resolver
+    )
 
     generation = {
         "mode": state.get("generation_mode", "legacy_template"),
@@ -420,12 +698,19 @@ async def preview_node(state: PPTGenerationState, config: RunnableConfig) -> Dic
     await _safe_emit(on_event, {"type": "generation_progress", "status": "preview", "text": "生成 SVG 预览渲染..."})
 
     pres_ir = state["presentation_ir"]
+    rasters: Dict[str, str] = {}
     if pres_ir:
+        from ...eval.renderer_snapshot import SlideSnapshotRenderer
+
         for slide in pres_ir.slides:
             # Pre-render SVG to ensure fidelity and catch exceptions
             SVGRenderer.render_slide(slide)
+            try:
+                rasters[slide.id] = SlideSnapshotRenderer.render_data_uri(slide, scale=1.0)
+            except Exception as exc:  # pragma: no cover - renderer dependent
+                logger.debug("Slide raster for %s failed: %s", slide.id, exc)
 
-    return {"status": "preview_rendered"}
+    return {"status": "preview_rendered", "slide_rasters": rasters}
 
 
 async def visual_review_node(state: PPTGenerationState, config: RunnableConfig) -> Dict[str, Any]:
@@ -477,6 +762,102 @@ async def visual_repair_node(state: PPTGenerationState, config: RunnableConfig) 
         "deck_layout": patched_deck_layout,
         "repair_iteration": iteration,
         "status": "visual_repaired",
+    }
+
+
+async def deck_visual_review_node(state: PPTGenerationState, config: RunnableConfig) -> Dict[str, Any]:
+    """Source-aware deck-level multimodal review (S4 / Phase 9).
+
+    Runs only for the paper branch and only when a vision-capable client exists.
+    Read-only: aggregates a ``DeckCritique`` and lists ``slides_to_revisit``. The
+    critic receives each rendered slide screenshot alongside the paper page/crop it
+    claims to represent.
+    """
+    configurable = config.get("configurable", {})
+    on_event = configurable.get("on_event")
+    llm_client = configurable.get("llm_client")
+
+    if state.get("source_type") != "paper":
+        return {"status": "deck_review_skipped", "slides_to_revisit": []}
+    llm_available = bool(llm_client and getattr(llm_client, "api_key", None))
+    if not llm_available:
+        return {"status": "deck_review_skipped", "slides_to_revisit": []}
+
+    deck_layout = state.get("deck_layout")
+    art_direction = state.get("deck_art_direction")
+    if deck_layout is None or art_direction is None:
+        return {"status": "deck_review_skipped", "slides_to_revisit": []}
+
+    await _safe_emit(
+        on_event,
+        {"type": "generation_progress", "status": "deck_review", "text": "Deck 级论文对照视觉复审..."},
+    )
+
+    from ...design.deck_critic import review_deck
+    from ...design.color_validator import validate_deck_colors
+
+    color_report = validate_deck_colors(art_direction, deck_layout.slides)
+    critique = await review_deck(
+        deck_layout.slides,
+        llm_client,
+        raster_data_uris=state.get("slide_rasters") or {},
+        source_images_by_slide=_paper_source_images_by_slide(state),
+        color_report=color_report,
+        on_event=on_event,
+    )
+    return {
+        "deck_review": critique.to_dict(),
+        "slides_to_revisit": list(critique.slides_to_revisit),
+        "status": "deck_reviewed",
+    }
+
+
+async def deck_revisit_node(state: PPTGenerationState, config: RunnableConfig) -> Dict[str, Any]:
+    """Re-design ONLY the slides flagged by the deck critic (bounded)."""
+    configurable = config.get("configurable", {})
+    on_event = configurable.get("on_event")
+    llm_client = configurable.get("llm_client")
+
+    deck_layout = state.get("deck_layout")
+    deck_spec = state.get("deck_spec")
+    plan = state.get("presentation_plan")
+    art_direction = state.get("deck_art_direction")
+    revisit = state.get("slides_to_revisit") or []
+    assert deck_layout is not None and deck_spec is not None and plan is not None
+
+    await _safe_emit(
+        on_event,
+        {
+            "type": "generation_progress",
+            "status": "deck_revisit",
+            "text": f"针对 {len(revisit)} 页进行视觉复审返工...",
+        },
+    )
+
+    from ...design.aesthetic_refiner import refine_deck_aesthetics
+    from ...design.layout_designer import DeckDesignResult
+
+    result = DeckDesignResult(deck_layout=deck_layout, plans=[])
+    refined = await refine_deck_aesthetics(
+        llm_client,
+        result,
+        deck_spec,
+        plan,
+        art_direction,
+        paper_ir=state.get("paper_ir"),
+        paper_visual_ir=state.get("paper_visual_ir"),
+        canvas=deck_layout.canvas,
+        raster_data_uris=state.get("slide_rasters") or {},
+        source_images_by_slide=_paper_source_images_by_slide(state),
+        raster_provider=_candidate_raster_provider,
+        only_slide_indices=revisit,
+        include_multimodal=True,
+        on_event=on_event,
+    )
+    return {
+        "deck_layout": refined.deck_layout,
+        "deck_revisit_round": int(state.get("deck_revisit_round", 0) or 0) + 1,
+        "status": "deck_revisited",
     }
 
 
@@ -582,8 +963,8 @@ def validation_route(state: PPTGenerationState) -> Literal["compile_slidespec_no
     return "__end__"
 
 
-def visual_repair_route(state: PPTGenerationState) -> Literal["visual_repair_node", "persist_session_node"]:
-    """Route based on visual issues and max iteration bound."""
+def visual_repair_route(state: PPTGenerationState) -> Literal["visual_repair_node", "deck_visual_review_node"]:
+    """Route geometry self-heal, then hand off to the deck-level review."""
     issues = state.get("visual_issues", [])
     iteration = state.get("repair_iteration", 0)
     max_iterations = state.get("max_repair_iterations", 3)
@@ -593,6 +974,19 @@ def visual_repair_route(state: PPTGenerationState) -> Literal["visual_repair_nod
     if has_fixable_issues and iteration < max_iterations:
         return "visual_repair_node"
 
+    return "deck_visual_review_node"
+
+
+def deck_visual_review_route(state: PPTGenerationState) -> Literal["deck_revisit_node", "persist_session_node"]:
+    """Revisit flagged slides for a bounded number of rounds, else persist."""
+    if state.get("source_type") != "paper":
+        return "persist_session_node"
+    revisit = state.get("slides_to_revisit") or []
+    round_index = int(state.get("deck_revisit_round", 0) or 0)
+    from ...config import settings
+
+    if revisit and round_index < settings.max_deck_revisit_rounds:
+        return "deck_revisit_node"
     return "persist_session_node"
 
 
@@ -601,8 +995,13 @@ def entry_route(state: PPTGenerationState) -> Literal["paper_plan_node", "ingest
     return "paper_plan_node" if state.get("source_type") == "paper" else "ingest_node"
 
 
-def paper_plan_route(state: PPTGenerationState) -> Literal["paper_design_node", "__end__"]:
+def paper_plan_route(state: PPTGenerationState) -> Literal["paper_truthfulness_node", "__end__"]:
     """Terminate early when the paper branch has no PaperIR."""
+    return "__end__" if state.get("status") == "validation_failed" else "paper_truthfulness_node"
+
+
+def paper_truthfulness_route(state: PPTGenerationState) -> Literal["paper_design_node", "__end__"]:
+    """Terminate when the paper plan cannot be grounded in PaperIR."""
     return "__end__" if state.get("status") == "validation_failed" else "paper_design_node"
 
 
@@ -621,12 +1020,15 @@ def build_generation_graph() -> Any:
     workflow.add_node("repair_spec_node", repair_spec_node)
     workflow.add_node("compile_slidespec_node", compile_slidespec_node)
     workflow.add_node("paper_plan_node", paper_plan_node)
+    workflow.add_node("paper_truthfulness_node", paper_truthfulness_node)
     workflow.add_node("paper_design_node", paper_design_node)
     workflow.add_node("layout_node", layout_node)
     workflow.add_node("compile_presentation_ir_node", compile_presentation_ir_node)
     workflow.add_node("preview_node", preview_node)
     workflow.add_node("visual_review_node", visual_review_node)
     workflow.add_node("visual_repair_node", visual_repair_node)
+    workflow.add_node("deck_visual_review_node", deck_visual_review_node)
+    workflow.add_node("deck_revisit_node", deck_revisit_node)
     workflow.add_node("persist_session_node", persist_session_node)
 
     # 2. Entry: paper branch (PaperIR + PaperVisualIR) vs PPTSpec branch
@@ -641,6 +1043,14 @@ def build_generation_graph() -> Any:
     workflow.add_conditional_edges(
         "paper_plan_node",
         paper_plan_route,
+        {
+            "paper_truthfulness_node": "paper_truthfulness_node",
+            "__end__": END,
+        },
+    )
+    workflow.add_conditional_edges(
+        "paper_truthfulness_node",
+        paper_truthfulness_route,
         {
             "paper_design_node": "paper_design_node",
             "__end__": END,
@@ -676,11 +1086,22 @@ def build_generation_graph() -> Any:
         visual_repair_route,
         {
             "visual_repair_node": "visual_repair_node",
-            "persist_session_node": "persist_session_node",
+            "deck_visual_review_node": "deck_visual_review_node",
         },
     )
     # Loop back from visual repair to re-compile PresentationIR and re-review
     workflow.add_edge("visual_repair_node", "compile_presentation_ir_node")
+
+    # 5b. Deck-level source-aware review (paper branch) and bounded revisit loop
+    workflow.add_conditional_edges(
+        "deck_visual_review_node",
+        deck_visual_review_route,
+        {
+            "deck_revisit_node": "deck_revisit_node",
+            "persist_session_node": "persist_session_node",
+        },
+    )
+    workflow.add_edge("deck_revisit_node", "compile_presentation_ir_node")
 
     # 6. Finalization
     workflow.add_edge("persist_session_node", END)

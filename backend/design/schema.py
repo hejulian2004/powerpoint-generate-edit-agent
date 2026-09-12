@@ -52,6 +52,9 @@ class ColorDirection(BaseModel):
     primary_text: str = Field(..., description="Primary text color")
     secondary_text: str = Field(..., description="Secondary text color")
 
+    background_color: Optional[str] = Field(None, description="Deck background color")
+    surface_color: Optional[str] = Field(None, description="Card/surface fill color")
+
     primary_accent: str = Field(..., description="Primary accent color")
     secondary_accent: Optional[str] = Field(None, description="Optional secondary accent")
 
@@ -67,6 +70,8 @@ class ColorDirection(BaseModel):
     @field_validator(
         "primary_text",
         "secondary_text",
+        "background_color",
+        "surface_color",
         "primary_accent",
         "secondary_accent",
         "semantic_positive",

@@ -186,7 +186,11 @@ def _color_findings(color_report: Any, slide_id: str) -> List[Dict[str, Any]]:
     return findings
 
 
-def _vision_messages(layout: LayoutSpec, raster_data_uri: Optional[str]) -> List[Dict[str, Any]]:
+def _vision_messages(
+    layout: LayoutSpec,
+    raster_data_uri: Optional[str],
+    source_image_data_uris: Optional[Sequence[str]] = None,
+) -> List[Dict[str, Any]]:
     user_prompt = (
         "Audit this single slide's visual layout. "
         f"Deterministic rule score will be fused with your aesthetic rating.\n\n"
@@ -197,6 +201,20 @@ def _vision_messages(layout: LayoutSpec, raster_data_uri: Optional[str]) -> List
         content.append(
             {"type": "image_url", "image_url": {"url": raster_data_uri, "detail": "low"}}
         )
+    if source_image_data_uris:
+        content.append(
+            {
+                "type": "text",
+                "text": (
+                    "【Source paper pages/crops relevant to this slide】: compare the "
+                    "slide against the original paper visuals for coverage."
+                ),
+            }
+        )
+        for data_uri in source_image_data_uris[:4]:
+            content.append(
+                {"type": "image_url", "image_url": {"url": data_uri, "detail": "low"}}
+            )
     return [
         {"role": "system", "content": VISUAL_CRITIC_SYSTEM_PROMPT},
         {"role": "user", "content": content},
@@ -208,6 +226,7 @@ async def critique_slide(
     llm_client: Any = None,
     include_multimodal: bool = True,
     raster_data_uri: Optional[str] = None,
+    source_image_data_uris: Optional[Sequence[str]] = None,
     color_report: Any = None,
     on_event: Optional[Callable] = None,
 ) -> SlideCritique:
@@ -241,7 +260,7 @@ async def critique_slide(
     has_vision_api = bool(llm_client and getattr(llm_client, "api_key", None))
     if include_multimodal and has_vision_api:
         try:
-            messages = _vision_messages(layout, raster_data_uri)
+            messages = _vision_messages(layout, raster_data_uri, source_image_data_uris)
             role = "vision" if raster_data_uri else "reasoning"
             response = await llm_client.chat_completion(messages, role=role, max_tokens=800)
             vision_feedback = response["choices"][0]["message"].get("content", "")
@@ -308,11 +327,13 @@ async def critique_deck(
     llm_client: Any = None,
     include_multimodal: bool = True,
     raster_data_uris: Optional[Dict[str, str]] = None,
+    source_images_by_slide: Optional[Dict[str, Sequence[str]]] = None,
     color_report: Any = None,
     on_event: Optional[Callable] = None,
 ) -> List[SlideCritique]:
     """Critique every slide in a deck (read-only)."""
     rasters = raster_data_uris or {}
+    source_images = source_images_by_slide or {}
     results: List[SlideCritique] = []
     total = len(layouts)
     for idx, layout in enumerate(layouts, start=1):
@@ -332,6 +353,7 @@ async def critique_deck(
                 llm_client=llm_client,
                 include_multimodal=include_multimodal,
                 raster_data_uri=rasters.get(layout.slide_id),
+                source_image_data_uris=source_images.get(layout.slide_id),
                 color_report=color_report,
                 on_event=on_event,
             )

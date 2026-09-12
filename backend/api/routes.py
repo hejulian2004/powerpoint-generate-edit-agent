@@ -775,7 +775,15 @@ async def analyze_paper(
     from pathlib import Path as _Path
 
     from ..paper import extract_paper
-    from ..paper_visual import analyze_paper_visual, load_or_render, save_visual_ir
+    from ..paper_visual import (
+        analyze_paper_visual,
+        compute_analysis_fingerprint,
+        load_or_render,
+        load_visual_ir,
+        resolve_vision_model,
+        save_paper_ir,
+        save_visual_ir,
+    )
     from ..paper_visual.cache import crops_dir
 
     with tempfile.TemporaryDirectory() as tmp:
@@ -792,14 +800,25 @@ async def analyze_paper(
             raise HTTPException(status_code=422, detail=f"PAPER_RENDER_FAILED: {exc}")
 
         llm = getattr(store.agent_runtime, "llm", None)
-        visual_ir = await analyze_paper_visual(
-            paper_ir,
-            render_result.assets,
-            llm_client=llm,
-            crop_output_dir=str(crops_dir(cache_dir)),
-            source_sha256=render_result.pdf_sha256,
-        )
-        save_visual_ir(visual_ir, cache_dir)
+        vision_model = resolve_vision_model(llm)
+        expected_fingerprint = compute_analysis_fingerprint(vision_model)
+        analysis_cache_hit = False
+        visual_ir = None
+        if not force:
+            cached = load_visual_ir(cache_dir, expected_fingerprint=expected_fingerprint)
+            if cached is not None and cached.source_sha256 == render_result.pdf_sha256:
+                visual_ir = cached
+                analysis_cache_hit = True
+        if visual_ir is None:
+            visual_ir = await analyze_paper_visual(
+                paper_ir,
+                render_result.assets,
+                llm_client=llm,
+                crop_output_dir=str(crops_dir(cache_dir)),
+                source_sha256=render_result.pdf_sha256,
+            )
+            save_visual_ir(visual_ir, cache_dir)
+        save_paper_ir(paper_ir, cache_dir)
 
     return {
         "success": True,
@@ -807,6 +826,7 @@ async def analyze_paper(
         "pdf_sha256": render_result.pdf_sha256,
         "cache_key": cache_dir.name,
         "cache_hit": render_result.cache_hit,
+        "analysis_cache_hit": analysis_cache_hit,
         "page_count": render_result.page_count,
         "vision_model": visual_ir.vision_model,
         "analysis_version": visual_ir.analysis_version,
@@ -819,38 +839,66 @@ async def analyze_paper(
 
 @router.post("/paper/generate")
 async def api_generate_from_paper(payload: Dict[str, Any] = Body(...)):
-    """Generate a deck from an analyzed paper (PaperIR + optional PaperVisualIR).
+    """Generate a deck from an analyzed paper via a trusted cache capability handle.
+
+    The request carries only ``session_id`` + ``cache_key`` (as returned by
+    ``/api/paper/analyze``). The server reloads ``PaperIR`` and ``PaperVisualIR``
+    from ``output/paper_cache/{cache_key}`` and re-canonicalizes every asset path
+    against that root; clients can never submit a server filesystem path.
 
     Runs the LLM-native paper -> PPT pipeline (art direction -> free-form per-slide
     layouts -> aesthetic refinement -> PresentationIR) and persists through the
-    generation graph's CAS ``commit_replacement`` (epoch rotation). The paper must
-    already be analyzed via ``/api/paper/analyze``.
+    generation graph's CAS ``commit_replacement`` (epoch rotation).
     """
     session_id = str(payload.get("session_id") or "").strip()
     if not session_id:
         raise HTTPException(status_code=400, detail="session_id is required")
 
-    paper_ir_data = payload.get("paper_ir")
-    if not paper_ir_data:
+    cache_key = payload.get("cache_key")
+    if not cache_key:
         raise HTTPException(
             status_code=400,
-            detail="paper_ir is required (analyze the PDF via /api/paper/analyze first)",
+            detail="cache_key is required (analyze the PDF via /api/paper/analyze first)",
         )
 
-    from ..paper.schema import PaperIR
-    from ..paper_visual.schema import PaperVisualIR
+    from ..paper_visual import (
+        PaperCacheError,
+        canonicalize_visual_ir,
+        compute_analysis_fingerprint,
+        load_paper_ir,
+        load_visual_ir,
+        resolve_cache_dir,
+        resolve_vision_model,
+    )
 
     try:
-        paper_ir = PaperIR.model_validate(paper_ir_data)
-    except Exception as exc:
-        raise HTTPException(status_code=422, detail=f"INVALID_PAPER_IR: {exc}")
+        cache_dir = resolve_cache_dir(cache_key)
+    except PaperCacheError as exc:
+        raise HTTPException(status_code=422, detail=f"INVALID_CACHE_KEY: {exc}")
 
-    paper_visual_ir = None
-    if payload.get("paper_visual_ir"):
-        try:
-            paper_visual_ir = PaperVisualIR.model_validate(payload["paper_visual_ir"])
-        except Exception as exc:
-            raise HTTPException(status_code=422, detail=f"INVALID_PAPER_VISUAL_IR: {exc}")
+    paper_ir = load_paper_ir(cache_dir)
+    if paper_ir is None:
+        raise HTTPException(
+            status_code=422,
+            detail="PAPER_IR_NOT_CACHED: cache_key has no paper_ir.json",
+        )
+
+    expected_fingerprint = compute_analysis_fingerprint(
+        resolve_vision_model(getattr(store.agent_runtime, "llm", None))
+    )
+    paper_visual_ir = load_visual_ir(cache_dir, expected_fingerprint=expected_fingerprint)
+    if paper_visual_ir is None:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "PAPER_VISUAL_IR_STALE: cache_key has no paper_visual_ir.json for the "
+                "current vision model / analysis version; re-run /api/paper/analyze"
+            ),
+        )
+    try:
+        paper_visual_ir = canonicalize_visual_ir(paper_visual_ir, cache_dir)
+    except PaperCacheError as exc:
+        raise HTTPException(status_code=422, detail=f"INVALID_VISUAL_ASSET_PATH: {exc}")
 
     user_prompt = str(payload.get("user_prompt") or "")
     try:
@@ -873,6 +921,7 @@ async def api_generate_from_paper(payload: Dict[str, Any] = Body(...)):
         "mode": "generate",
         "paper_ir": paper_ir,
         "paper_visual_ir": paper_visual_ir,
+        "paper_cache_dir": str(cache_dir),
         "user_prompt": user_prompt,
         "duration_minutes": duration_minutes,
         "max_repair_iterations": 2,
@@ -902,6 +951,12 @@ async def api_generate_from_paper(payload: Dict[str, Any] = Body(...)):
                 "running; the generated result was discarded instead of overwriting "
                 "your changes."
             ),
+        )
+
+    if gen_result.get("status") == "validation_failed":
+        raise HTTPException(
+            status_code=422,
+            detail=f"PAPER_VALIDATION_FAILED: {gen_result.get('error') or 'paper plan failed validation'}",
         )
 
     if gen_result.get("error") or not gen_result.get("presentation_ir"):

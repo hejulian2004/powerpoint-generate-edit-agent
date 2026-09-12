@@ -23,6 +23,7 @@ export const ChatPanel: React.FC = () => {
     isAgentThinking,
     thinkingStatus,
     visualRemediation,
+    generationStage,
     contextUsage,
     sendChatMessage,
     activeRightTab,
@@ -241,6 +242,22 @@ export const ChatPanel: React.FC = () => {
                   <Loader2 className="w-3.5 h-3.5 animate-spin text-blue-600 shrink-0" />
                   <span className="truncate font-semibold text-main">{thinkingStatus || 'Agent 正在规划排版策略...'}</span>
                 </div>
+
+                {/* Generation stage progress (paper analysis -> preview -> critics) */}
+                {generationStage && (generationStage.phase || generationStage.status) && (
+                  <div className="bg-subtle border border-line rounded-lg p-2 text-[10px] text-muted space-y-1">
+                    <div className="flex items-center justify-between">
+                      <span className="text-[9px] uppercase tracking-wider px-1.5 py-0.5 rounded bg-indigo-100 text-indigo-800 font-semibold">
+                        {generationStage.phase || generationStage.status}
+                      </span>
+                      {generationStage.total ? (
+                        <span className="font-tabular text-indigo-600 font-bold">
+                          {generationStage.current ?? 0} / {generationStage.total}
+                        </span>
+                      ) : null}
+                    </div>
+                  </div>
+                )}
 
                 {/* Real-time Visual Remediation Telemetry Banner */}
                 {visualRemediation && (

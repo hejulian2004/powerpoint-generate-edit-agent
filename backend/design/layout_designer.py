@@ -23,6 +23,7 @@ from ..paper.schema import PaperIR
 from ..paper_visual.schema import PaperVisualIR
 from ..presentation.schema import PresentationPlan, SlidePlan
 from .json_utils import extract_json
+from .color_validator import validate_deck_colors
 from .layout_compiler import compile_llm_layout, hard_validate_layout
 from .layout_context import build_slide_layout_context
 from .layout_schema import LayoutElementPlan, LLMLayoutPlan
@@ -65,7 +66,9 @@ def _coerce_plan(payload: Any, slide: SlideSpec) -> LLMLayoutPlan:
     if not isinstance(payload, dict):
         raise ValueError("layout plan must be a JSON object")
     data = dict(payload)
-    data.setdefault("slide_id", f"slide_{slide.index}")
+    # Document identity is owned by the server, never the LLM: force the canonical
+    # slide id so duplicate/hallucinated ids can never create duplicate SlideIR ids.
+    data["slide_id"] = f"slide_{slide.index}"
     elements_raw = data.get("elements")
     if not isinstance(elements_raw, list) or not elements_raw:
         raise ValueError("layout plan must contain a non-empty elements list")
@@ -99,6 +102,36 @@ def _summarize_plan(plan: Optional[LLMLayoutPlan]) -> Optional[str]:
             f"({el.x:.0f},{el.y:.0f},{el.width:.0f}x{el.height:.0f})"
         )
     return "\n".join(lines)
+
+
+def _trusted_asset_path(raw_path: str) -> Optional[Path]:
+    """Resolve an asset path and require it to live under the paper cache root.
+
+    Defense in depth: even though ``/api/paper/generate`` re-canonicalizes paths,
+    the layout designer refuses to read anything outside the trusted cache root.
+    """
+    if not raw_path:
+        return None
+    from ..paper_visual.cache import DEFAULT_CACHE_ROOT
+
+    try:
+        root = Path(DEFAULT_CACHE_ROOT).resolve()
+        resolved = Path(raw_path).resolve()
+    except OSError:
+        return None
+    if resolved != root and root not in resolved.parents:
+        logger.warning("Skipping asset outside trusted cache root: %s", resolved)
+        return None
+    return resolved
+
+
+def _asset_data_uri(path: Path) -> str:
+    import mimetypes
+
+    mime, _ = mimetypes.guess_type(str(path))
+    mime = mime or "image/webp"
+    encoded = base64.b64encode(path.read_bytes()).decode("ascii")
+    return f"data:{mime};base64,{encoded}"
 
 
 async def design_slide_layout(
@@ -139,14 +172,17 @@ async def design_slide_layout(
 
     content: List[Dict[str, Any]] = [{"type": "text", "text": context.text}]
     for path in context.image_paths:
+        trusted = _trusted_asset_path(path)
+        if trusted is None:
+            continue
         try:
-            encoded = base64.b64encode(Path(path).read_bytes()).decode("ascii")
+            data_uri = _asset_data_uri(trusted)
         except OSError:
             continue
         content.append(
             {
                 "type": "image_url",
-                "image_url": {"url": f"data:image/png;base64,{encoded}", "detail": "high"},
+                "image_url": {"url": data_uri, "detail": "high"},
             }
         )
 
@@ -172,6 +208,17 @@ def _legacy_layout(slide_spec: SlideSpec, canvas: Canvas) -> LayoutSpec:
     layout = generate_layout(slide_spec, canvas=canvas, validate=True)
     layout.metadata["layout_source"] = "fallback_template"
     return layout
+
+
+def _augment_report_with_colors(report, layout: LayoutSpec, art_direction: DeckArtDirection):
+    """Promote error-level WCAG contrast failures into the hard validation report.
+
+    The color validator stays read-only; this is where its findings become a gate.
+    """
+    color_report = validate_deck_colors(art_direction, [layout])
+    for issue in color_report.errors:
+        report.add_error(f"Contrast: {issue.description}")
+    return color_report
 
 
 async def design_deck_layouts(
@@ -218,6 +265,7 @@ async def design_deck_layouts(
 
         compiled = compile_llm_layout(plan, slide, active_canvas)
         report = hard_validate_layout(compiled, slide)
+        _augment_report_with_colors(report, compiled, art_direction)
         rounds = 0
         while not report.is_valid and rounds < repair_budget:
             rounds += 1
@@ -238,6 +286,7 @@ async def design_deck_layouts(
             plan = repaired
             compiled = compile_llm_layout(plan, slide, active_canvas)
             report = hard_validate_layout(compiled, slide)
+            _augment_report_with_colors(report, compiled, art_direction)
 
         compiled.metadata["validation_rounds"] = rounds
         validation_rounds[slide.index] = rounds

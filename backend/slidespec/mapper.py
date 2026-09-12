@@ -331,6 +331,18 @@ def map_slide_plan_to_slide_spec(
         "source_tables": slide.source_tables,
     }
 
+    for position, block in enumerate(blocks, start=1):
+        if block.block_id:
+            continue
+        kind = getattr(block, "kind", "block")
+        if kind == "figure":
+            suffix = getattr(block, "source_figure_id", "") or str(position)
+        elif kind == "table":
+            suffix = getattr(block, "source_table_id", "") or str(position)
+        else:
+            suffix = f"{position:02d}"
+        block.block_id = f"slide_{slide.index}_{kind}_{suffix}"
+
     return SlideSpec(
         index=slide.index,
         slide_type=slide_type,

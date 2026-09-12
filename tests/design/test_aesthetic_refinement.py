@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 
 from backend.design.aesthetic_refiner import refine_deck_aesthetics, summarize_critiques
 from backend.design.layout_compiler import compile_llm_layout, hard_validate_layout
@@ -126,3 +127,45 @@ def test_summarize_critiques(deck_spec_two_slides):
     assert summary["slides"] == 1
     assert summary["flagged"] == 1
     assert summary["min_score"] == summary["mean_score"]
+
+
+def test_min_aesthetic_gain_constant():
+    from backend.design.aesthetic_refiner import MIN_AESTHETIC_GAIN
+
+    assert MIN_AESTHETIC_GAIN == 2.0
+
+
+def test_low_contrast_candidate_is_rejected(
+    design_client_cls, deck_spec_two_slides, presentation_plan_two_slides, art_direction
+):
+    from tests.design import conftest as design_conftest
+
+    def low_contrast_builder(messages, role="reasoning"):
+        payload = design_conftest.valid_layout_payload(
+            design_conftest._slide_id_from_messages(messages),
+            design_conftest.blocks_from_messages(messages),
+        )
+        for element in payload["elements"]:
+            if element.get("element_type") == "TEXT":
+                element["text_color"] = "#F7F7F7"
+        return json.dumps(payload)
+
+    client = design_client_cls(low_contrast_builder)
+    base = _base_result(deck_spec_two_slides.slides[0])
+
+    refined = asyncio.run(
+        refine_deck_aesthetics(
+            client,
+            base,
+            deck_spec_two_slides,
+            presentation_plan_two_slides,
+            art_direction,
+            canvas=Canvas(),
+            max_rounds=2,
+            include_multimodal=False,
+        )
+    )
+
+    # The contrast-invalid candidate must not be accepted.
+    assert client.calls  # the designer was invoked
+    assert refined.deck_layout.slides[0] is base.deck_layout.slides[0]

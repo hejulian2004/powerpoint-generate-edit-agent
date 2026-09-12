@@ -23,6 +23,7 @@ from ..ir.models import (
     ElementStyleIR,
     FillStyle,
     FontIR,
+    ImageElementIR,
     ParagraphIR,
     PresentationIR,
     RunIR,
@@ -38,7 +39,52 @@ from ..layout.schema import DeckLayoutSpec, ElementType, LayoutElement, LayoutSp
 logger = logging.getLogger(__name__)
 
 
-def compile_layout_element_to_ir(element: LayoutElement) -> Any:
+def theme_from_art_direction(art_direction: Any) -> Dict[str, Any]:
+    """Derive the OOXML theme from the deck's LLM art direction (theme ownership).
+
+    The compiler owns deck-level colors; the LLM only decides the palette. Any
+    accidental per-element color is therefore only a fallback, never the source of
+    truth for the deck background/surface.
+    """
+    color_direction = getattr(art_direction, "color_direction", None)
+    if color_direction is None:
+        return {}
+
+    primary = getattr(color_direction, "primary_accent", None) or "#2563EB"
+    secondary = getattr(color_direction, "primary_text", None) or "#0F172A"
+    background = getattr(color_direction, "background_color", None) or "#FFFFFF"
+    surface = getattr(color_direction, "surface_color", None) or "#F8FAFC"
+    secondary_accent = getattr(color_direction, "secondary_accent", None) or primary
+
+    return {
+        "name": "LLM Art Direction",
+        "primary_color": primary,
+        "secondary_color": secondary,
+        "background_color": background,
+        "card_background": surface,
+        "color_scheme": {
+            "accent1": primary,
+            "accent2": secondary_accent,
+            "accent3": getattr(color_direction, "semantic_positive", None) or "#10B981",
+            "accent4": getattr(color_direction, "semantic_warning", None) or "#F59E0B",
+            "accent5": getattr(color_direction, "semantic_negative", None) or "#EF4444",
+            "accent6": secondary_accent,
+            "dk1": secondary,
+            "lt1": background,
+            "dk2": getattr(color_direction, "secondary_text", None) or "#334155",
+            "lt2": surface,
+            "hlink": primary,
+            "folHlink": secondary_accent,
+        },
+    }
+
+
+def compile_layout_element_to_ir(
+    element: LayoutElement,
+    asset_resolver: Optional[Any] = None,
+    asset_sink: Optional[Dict[str, str]] = None,
+    theme: Optional[Dict[str, Any]] = None,
+) -> Any:
     """Compile a single LayoutElement into the appropriate PresentationIR element model."""
     x = float(element.geometry.x)
     y = float(element.geometry.y)
@@ -46,15 +92,46 @@ def compile_layout_element_to_ir(element: LayoutElement) -> Any:
     h = float(element.geometry.height)
     source_ref = element.source_block_id or element.element_id
     source_evidence_ids = list(getattr(element, "source_evidence_ids", []))
+    theme = theme or {}
+    surface_color = theme.get("card_background") or "#F8FAFC"
+    accent_color = theme.get("primary_color") or "#3B82F6"
+    text_default = theme.get("secondary_color") or "#1E293B"
 
     # -------------------------------------------------------------
-    # 1. Figure Placeholder Element
+    # 1. Figure Element (real trusted crop) or Placeholder fallback
     # -------------------------------------------------------------
     if element.element_type == ElementType.FIGURE:
         payload = element.content if isinstance(element.content, dict) else {}
         label = payload.get("xref_label") or payload.get("label") or "FIGURE"
         caption = payload.get("caption") or ""
         page = payload.get("source_page")
+
+        resolved = asset_resolver(element) if asset_resolver is not None else None
+        if resolved and resolved.get("src"):
+            asset_id = resolved.get("asset_id") or element.element_id
+            if asset_sink is not None:
+                asset_sink[asset_id] = resolved["src"]
+            figure_style = ElementStyleIR(
+                fill=FillStyle(type="none"),
+                border=BorderStyle(color="#E2E8F0", width=0.0, style="none"),
+                radius=0.0,
+                padding=0.0,
+            )
+            return ImageElementIR(
+                id=element.element_id,
+                name=f"Figure_{label}",
+                x=x,
+                y=y,
+                width=w,
+                height=h,
+                z_index=element.z_index,
+                source_ref=source_ref,
+                source_evidence_ids=source_evidence_ids,
+                src=resolved["src"],
+                asset_id=asset_id,
+                alt_text=resolved.get("alt_text") or caption or label,
+                style=figure_style,
+            )
 
         paras: List[ParagraphIR] = [
             ParagraphIR(
@@ -267,9 +344,10 @@ def compile_layout_element_to_ir(element: LayoutElement) -> Any:
     # 3. Container Element (Cards / Group Backgrounds)
     # -------------------------------------------------------------
     if element.element_type == ElementType.CONTAINER:
-        fill_color = element.style.background_color or "#F8FAFC"
+        fill_color = element.style.background_color or surface_color
         border_color = element.style.border_color or "#E2E8F0"
         border_w = element.style.border_width if element.style.border_width > 0 else 1.0
+        radius = element.style.corner_radius if element.style.corner_radius is not None else 0.0
 
         return ShapeElementIR(
             id=element.element_id,
@@ -285,7 +363,7 @@ def compile_layout_element_to_ir(element: LayoutElement) -> Any:
             style=ElementStyleIR(
                 fill=FillStyle(type="solid", color=fill_color, alpha=1.0),
                 border=BorderStyle(color=border_color, width=border_w),
-                radius=element.style.corner_radius or 8.0,
+                radius=radius,
             ),
         )
 
@@ -294,10 +372,11 @@ def compile_layout_element_to_ir(element: LayoutElement) -> Any:
     # -------------------------------------------------------------
     if element.element_type == ElementType.BADGE:
         text_str = str(element.content) if element.content is not None else ""
-        fill_color = element.style.background_color or "#EFF6FF"
-        border_color = element.style.border_color or "#3B82F6"
-        text_color = (element.style.text.color if element.style.text else None) or "#1D4ED8"
+        fill_color = element.style.background_color or surface_color
+        border_color = element.style.border_color or accent_color
+        text_color = (element.style.text.color if element.style.text else None) or accent_color
         font_size = (element.style.text.font_size if element.style.text else 14.0)
+        radius = element.style.corner_radius if element.style.corner_radius is not None else 0.0
 
         return ShapeElementIR(
             id=element.element_id,
@@ -313,7 +392,7 @@ def compile_layout_element_to_ir(element: LayoutElement) -> Any:
             style=ElementStyleIR(
                 fill=FillStyle(type="solid", color=fill_color, alpha=1.0),
                 border=BorderStyle(color=border_color, width=1.0),
-                radius=element.style.corner_radius or 6.0,
+                radius=radius,
                 padding=element.style.padding or 4.0,
             ),
             text_content=TextContentIR.from_plain_text(
@@ -332,8 +411,9 @@ def compile_layout_element_to_ir(element: LayoutElement) -> Any:
     font_sz = t_style.font_size if t_style else 16.0
     is_bold = (t_style.font_weight == "bold") if t_style else False
     is_italic = t_style.italic if t_style else False
-    text_color = (t_style.color if t_style else None) or "#1E293B"
+    text_color = (t_style.color if t_style else None) or text_default
     alignment = (t_style.alignment if t_style else "left")
+    text_radius = element.style.corner_radius if element.style.corner_radius is not None else 0.0
 
     fill = FillStyle(type="solid", color=element.style.background_color) if element.style.background_color else FillStyle(type="none")
     border = BorderStyle(color=element.style.border_color, width=element.style.border_width) if element.style.border_color else BorderStyle(style="none", width=0.0)
@@ -352,7 +432,7 @@ def compile_layout_element_to_ir(element: LayoutElement) -> Any:
             fill=fill,
             border=border,
             padding=element.style.padding or 4.0,
-            radius=element.style.corner_radius or 0.0,
+            radius=text_radius,
         ),
         text_content=TextContentIR.from_plain_text(
             text_val,
@@ -365,32 +445,14 @@ def compile_layout_element_to_ir(element: LayoutElement) -> Any:
 def compile_layout_to_presentation_ir(
     deck_layout: DeckLayoutSpec,
     theme_override: Optional[Dict[str, Any]] = None,
+    asset_resolver: Optional[Any] = None,
 ) -> PresentationIR:
-    """Compile a DeckLayoutSpec into PresentationIR."""
-    slides_ir: List[SlideIR] = []
+    """Compile a DeckLayoutSpec into PresentationIR.
 
-    for slide_layout in deck_layout.slides:
-        elements_ir = []
-        slide_title = None
-
-        for el in slide_layout.elements:
-            ir_el = compile_layout_element_to_ir(el)
-            elements_ir.append(ir_el)
-            if el.source_block_id in ("header_title", "title") and el.content:
-                slide_title = str(el.content)
-
-        slide_ir = SlideIR(
-            id=slide_layout.slide_id,
-            slide_num=slide_layout.slide_index,
-            title=slide_title,
-            width=int(slide_layout.canvas.width),
-            height=int(slide_layout.canvas.height),
-            background=FillStyle(type="solid", color="#FFFFFF", alpha=1.0),
-            elements=elements_ir,
-            notes=slide_layout.speaker_notes or "",
-        )
-        slides_ir.append(slide_ir)
-
+    ``theme_override`` carries the deck-level palette derived from the LLM art
+    direction (see :func:`theme_from_art_direction`); the compiler then owns the
+    slide background and container/surface defaults.
+    """
     default_theme = {
         "name": "Academic Clean",
         "primary_color": "#2563EB",
@@ -421,6 +483,38 @@ def compile_layout_to_presentation_ir(
     if theme_override:
         default_theme.update(theme_override)
 
+    slide_background = default_theme.get("background_color") or "#FFFFFF"
+
+    slides_ir: List[SlideIR] = []
+    assets: Dict[str, str] = {}
+
+    for slide_layout in deck_layout.slides:
+        elements_ir = []
+        slide_title = None
+
+        for el in slide_layout.elements:
+            ir_el = compile_layout_element_to_ir(
+                el,
+                asset_resolver=asset_resolver,
+                asset_sink=assets,
+                theme=default_theme,
+            )
+            elements_ir.append(ir_el)
+            if el.source_block_id in ("header_title", "title") and el.content:
+                slide_title = str(el.content)
+
+        slide_ir = SlideIR(
+            id=slide_layout.slide_id,
+            slide_num=slide_layout.slide_index,
+            title=slide_title,
+            width=int(slide_layout.canvas.width),
+            height=int(slide_layout.canvas.height),
+            background=FillStyle(type="solid", color=slide_background, alpha=1.0),
+            elements=elements_ir,
+            notes=slide_layout.speaker_notes or "",
+        )
+        slides_ir.append(slide_ir)
+
     return PresentationIR(
         id=f"pres_{deck_layout.title[:12].strip().replace(' ', '_')}",
         title=deck_layout.title,
@@ -428,6 +522,7 @@ def compile_layout_to_presentation_ir(
         height=int(deck_layout.canvas.height),
         theme=default_theme,
         slides=slides_ir,
+        assets=assets,
         active_slide_id=slides_ir[0].id if slides_ir else None,
         version=1,
     )

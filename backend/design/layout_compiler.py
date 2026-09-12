@@ -95,15 +95,67 @@ def _build_style(plan: LayoutElementPlan) -> ElementStyle:
     )
 
 
+def _canonical_block_content(block: Any) -> Any:
+    """Canonical content a SlideSpec block contributes (facts are never LLM-authored)."""
+    kind = getattr(block, "kind", "")
+    if kind == "text":
+        return getattr(block, "content", "")
+    if kind == "badge":
+        return getattr(block, "text", "")
+    if kind == "figure":
+        return {
+            "source_figure_id": getattr(block, "source_figure_id", ""),
+            "xref_label": getattr(block, "xref_label", ""),
+            "caption": getattr(block, "caption", ""),
+            "source_page": getattr(block, "source_page", None),
+        }
+    if kind == "table":
+        columns = list(getattr(block, "columns", []) or [])
+        rows = [list(r) for r in getattr(block, "rows", []) or []]
+        return {
+            "source_table_id": getattr(block, "source_table_id", ""),
+            "xref_label": getattr(block, "xref_label", ""),
+            "caption": getattr(block, "caption", ""),
+            "columns": columns,
+            "rows": rows,
+            "highlight_cells": list(getattr(block, "highlight_cells", []) or []),
+            "placeholder": bool(getattr(block, "placeholder", False)) or not (columns and rows),
+            "source_page": getattr(block, "source_page", None),
+        }
+    return ""
+
+
+def _canonical_content_for_ref(ref: str, slide_spec: SlideSpec, blocks_by_id: Dict[str, Any]) -> Any:
+    if ref in ("header_title", "title"):
+        return slide_spec.title
+    if ref in ("header_subtitle", "subtitle"):
+        return slide_spec.subtitle or ""
+    block = blocks_by_id.get(ref)
+    if block is None:
+        return ""
+    return _canonical_block_content(block)
+
+
 def compile_llm_layout(
     plan: LLMLayoutPlan,
     slide_spec: SlideSpec,
     canvas: Optional[Canvas] = None,
 ) -> LayoutSpec:
-    """Compile an ``LLMLayoutPlan`` into a ``LayoutSpec`` (no design rewriting)."""
+    """Compile an ``LLMLayoutPlan`` into a ``LayoutSpec`` (no design rewriting).
+
+    Fact boundary: any element bound to a ``source_block_id`` gets its content
+    **exclusively** from the SlideSpec. The LLM's ``content`` for bound elements is
+    discarded unconditionally, so the layout model can never alter text or numbers.
+    """
     active_canvas = canvas or Canvas()
+    blocks_by_id = {b.block_id: b for b in slide_spec.blocks if b.block_id}
     elements: List[LayoutElement] = []
     for element_plan in plan.elements:
+        content = element_plan.content
+        if element_plan.source_block_id:
+            content = _canonical_content_for_ref(
+                element_plan.source_block_id, slide_spec, blocks_by_id
+            )
         elements.append(
             LayoutElement(
                 element_id=element_plan.element_id,
@@ -117,7 +169,7 @@ def compile_llm_layout(
                     height=max(0.0, float(element_plan.height)),
                 ),
                 style=_build_style(element_plan),
-                content=element_plan.content,
+                content=content,
                 z_index=int(element_plan.z_index),
             )
         )
@@ -151,6 +203,21 @@ def compile_llm_layout(
     return layout
 
 
+def _block_type_error(element: LayoutElement, block: Any) -> Optional[str]:
+    """Return an error string when an element type cannot carry its source block."""
+    kind = getattr(block, "kind", "")
+    element_type = element.element_type
+    if kind == "figure" and element_type != ElementType.FIGURE:
+        return f"Figure block '{block.block_id}' must be rendered by a FIGURE element"
+    if kind == "table" and element_type != ElementType.TABLE:
+        return f"Table block '{block.block_id}' must be rendered by a TABLE element"
+    if kind == "text" and element_type != ElementType.TEXT:
+        return f"Text block '{block.block_id}' must be rendered by a TEXT element"
+    if kind == "badge" and element_type not in (ElementType.BADGE, ElementType.TEXT):
+        return f"Badge block '{block.block_id}' must be rendered by a BADGE/TEXT element"
+    return None
+
+
 def hard_validate_layout(
     layout: LayoutSpec,
     slide_spec: Optional[SlideSpec] = None,
@@ -158,9 +225,11 @@ def hard_validate_layout(
     """Hard-validate a compiled layout; returns precise, repairable diagnostics."""
     report = validate_layout(layout)
 
-    valid_block_ids = set()
+    blocks_by_id: Dict[str, Any] = {}
     if slide_spec is not None:
-        valid_block_ids = {b.block_id for b in slide_spec.blocks if b.block_id}
+        blocks_by_id = {b.block_id: b for b in slide_spec.blocks if b.block_id}
+
+    referenced: Dict[str, List[LayoutElement]] = {}
 
     for el in layout.elements:
         if el.element_type in (ElementType.TEXT, ElementType.BADGE):
@@ -175,17 +244,21 @@ def hard_validate_layout(
                     f"Element '{el.element_id}' font size {font_size:.1f} is small for body text"
                 )
 
-        if (
-            slide_spec is not None
-            and el.source_block_id
-            and valid_block_ids
-            and el.source_block_id not in valid_block_ids
-            and el.source_block_id not in _DEFAULT_BLOCK_IDS
-        ):
-            report.add_error(
-                f"Element '{el.element_id}' references unknown source block "
-                f"'{el.source_block_id}'"
-            )
+        if slide_spec is not None:
+            ref = el.source_block_id
+            if not ref:
+                if el.element_type != ElementType.CONTAINER:
+                    report.add_error(
+                        f"Element '{el.element_id}' has no source_block_id; only "
+                        f"decorative CONTAINER elements may be unbound"
+                    )
+            elif ref not in _DEFAULT_BLOCK_IDS:
+                if blocks_by_id and ref not in blocks_by_id:
+                    report.add_error(
+                        f"Element '{el.element_id}' references unknown source block '{ref}'"
+                    )
+                else:
+                    referenced.setdefault(ref, []).append(el)
 
         if el.element_type == ElementType.FIGURE:
             ratio = el.geometry.aspect_ratio
@@ -193,6 +266,24 @@ def hard_validate_layout(
                 report.add_error(
                     f"Figure '{el.element_id}' aspect ratio {ratio:.2f} is corrupted"
                 )
+
+    if slide_spec is not None and blocks_by_id:
+        for block_id, block in blocks_by_id.items():
+            els = referenced.get(block_id, [])
+            if not els:
+                report.add_error(
+                    f"Required content block '{block_id}' is not rendered by any element"
+                )
+                continue
+            if len(els) > 1:
+                report.add_error(
+                    f"Content block '{block_id}' is rendered by multiple elements "
+                    f"({', '.join(e.element_id for e in els)})"
+                )
+                continue
+            type_error = _block_type_error(els[0], block)
+            if type_error:
+                report.add_error(type_error)
 
     return report
 
