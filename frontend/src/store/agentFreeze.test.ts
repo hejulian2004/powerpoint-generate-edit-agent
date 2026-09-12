@@ -171,4 +171,21 @@ describe('agent edit freeze', () => {
     expect(usePPTStore.getState().editLockState).toBe('editable')
     expect(usePPTStore.getState().isAgentThinking).toBe(false)
   })
+
+  it('barrier fails fast while the Agent owns the document (no timeout wait)', async () => {
+    connect()
+    usePPTStore.setState({ editLockState: 'agent_locked', needsResync: true })
+    await expect(
+      // A 60s timeout proves this is an immediate block, not a timeout.
+      usePPTStore.getState().awaitDirectSyncBarrier({ timeoutMs: 60000 })
+    ).rejects.toMatchObject({ code: 'LOCAL_CHANGES_NOT_SYNCED' })
+  })
+
+  it('barrier fails fast when the session was taken over', async () => {
+    connect()
+    usePPTStore.setState({ sessionTakenOver: true })
+    await expect(
+      usePPTStore.getState().awaitDirectSyncBarrier({ timeoutMs: 60000 })
+    ).rejects.toMatchObject({ code: 'LOCAL_CHANGES_NOT_SYNCED' })
+  })
 })

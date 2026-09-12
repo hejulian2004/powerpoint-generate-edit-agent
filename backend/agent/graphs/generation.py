@@ -326,6 +326,9 @@ async def persist_session_node(state: PPTGenerationState, config: RunnableConfig
         if session is not None:
             # CAS commit: rejects when the user (or another writer) advanced the
             # document while generation was running. Owns the mutation lock.
+            # This is a REST-initiated replacement (the PPTSpec generate endpoint
+            # is not an Agent turn), so it is source="rest": if an Agent turn
+            # holds the session freeze it is rejected DOCUMENT_FROZEN.
             result = await session.commit_replacement(
                 pres_ir,
                 expected_epoch=base_epoch,
@@ -333,6 +336,7 @@ async def persist_session_node(state: PPTGenerationState, config: RunnableConfig
                 clear_history=True,
                 clear_checkpoints=True,
                 checkpoint_description="Generated from CanonicalPPTSpec (PR13)",
+                source="rest",
             )
             committed = result.committed
             commit_error = result.error

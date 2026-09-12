@@ -595,6 +595,7 @@ async def websocket_endpoint(websocket: WebSocket):
                         cp_id,
                         expected_epoch=data.get("document_epoch"),
                         expected_revision=data.get("expected_revision"),
+                        source="rest",
                     )
                     if result.committed:
                         await _broadcast_state(session)

@@ -14,7 +14,7 @@ from ..state.store import store, create_default_demo_presentation
 from ..ir.svg_renderer import SVGRenderer
 from ..config import settings, AppSettings
 from ..session.session import PPTSession
-from ..agent.mutation_gateway import MutationGateway
+from ..agent.mutation_gateway import DOCUMENT_FROZEN, MutationGateway
 from ..protocol.presentation import build_canonical_snapshot, build_presentation_event
 from ..workspace.runtime import get_workspace_manager
 from .websocket import build_preview_update
@@ -270,8 +270,17 @@ async def upload_pptx(
             clear_history=True,
             clear_checkpoints=True,
             checkpoint_description=f"Imported from {file.filename}",
+            source="rest",
         )
         if not result.committed:
+            if result.error == DOCUMENT_FROZEN:
+                raise HTTPException(
+                    status_code=409,
+                    detail=(
+                        "DOCUMENT_FROZEN: 演示文稿正被 Agent 编辑，导入已被拒绝；"
+                        "请等待 Agent 完成后再试。"
+                    ),
+                )
             raise HTTPException(
                 status_code=409,
                 detail=(

@@ -234,6 +234,37 @@ def test_api_upload_and_export():
     assert export_resp.headers.get("x-document-revision")
 
 
+def test_api_upload_rejected_while_agent_frozen():
+    """A REST replacement must not bypass an active Agent edit window."""
+    session = _seed_default_demo()
+    old_epoch = session.document_epoch
+    old_revision = session.pres.version
+    old_slide_ids = [s.id for s in session.pres.slides]
+
+    session.agent_execution.begin_turn("turn_http_freeze")
+    try:
+        with open("demo_input.pptx", "rb") as f:
+            files = {
+                "file": (
+                    "demo_input.pptx",
+                    f,
+                    "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+                )
+            }
+            resp = client.post(
+                f"/api/upload?expected_epoch={old_epoch}"
+                f"&expected_revision={old_revision}",
+                files=files,
+            )
+        assert resp.status_code == 409
+        assert "DOCUMENT_FROZEN" in resp.json()["detail"]
+        assert session.document_epoch == old_epoch
+        assert session.pres.version == old_revision
+        assert [s.id for s in session.pres.slides] == old_slide_ids
+    finally:
+        session.agent_execution.end_turn("turn_http_freeze")
+
+
 @pytest.mark.skipif(
     not _FRONTEND_DIST_INDEX.exists(),
     reason="frontend not built (run `npm run build` in frontend/ to enable SPA serving test)"

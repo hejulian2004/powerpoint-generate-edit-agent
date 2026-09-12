@@ -24,6 +24,10 @@ AGENT_OWNED_SOURCES = frozenset({"agent", "remediation"})
 # a frozen GUI write so the caller can report a precise rejection code.
 AGENT_TURN_IN_PROGRESS = "agent_turn_in_progress"
 
+# A non-owner attempted to mutate a frozen session. Shared by the MutationGateway
+# and the whole-document replacement APIs so one code names the freeze everywhere.
+DOCUMENT_FROZEN = "document_frozen"
+
 
 @dataclass
 class AgentTurn:

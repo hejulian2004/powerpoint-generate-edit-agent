@@ -1094,6 +1094,9 @@ export const usePPTStore = create<PPTState>((set, get) => ({
     const isSynced = () => {
       const s = get()
       return (
+        s.editLockState === 'editable' &&
+        !s.needsResync &&
+        !s.sessionTakenOver &&
         isOnline() &&
         s.pendingMutations.length === 0 &&
         s.outbox.length === 0 &&
@@ -1101,6 +1104,17 @@ export const usePPTStore = create<PPTState>((set, get) => ({
         s.hasServerRevision &&
         s.mutationStatus !== 'failed' &&
         s.mutationStatus !== 'rolled_back'
+      )
+    }
+    // A frozen / resyncing / taken-over session is a terminal local block: a
+    // gated action (chat/upload/generate/restore/export) must fail immediately
+    // rather than wait for a revision that can never arrive.
+    const isBlocked = () => {
+      const s = get()
+      return (
+        s.editLockState !== 'editable' ||
+        s.needsResync ||
+        s.sessionTakenOver
       )
     }
     if (isSynced()) return Promise.resolve()
@@ -1119,6 +1133,10 @@ export const usePPTStore = create<PPTState>((set, get) => ({
         if (isSynced()) {
           if (timer !== undefined) window.clearTimeout(timer)
           resolve()
+          return
+        }
+        if (isBlocked()) {
+          fail()
           return
         }
         if (s.mutationStatus === 'failed' || s.mutationStatus === 'rolled_back') {
