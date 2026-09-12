@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 
 from backend.session.services.connection import (
@@ -67,3 +69,78 @@ def test_second_tab_takes_over_and_old_socket_is_closed():
                 assert session.connection.websocket is not None
     finally:
         store.session_manager.delete_session(sid)
+
+
+def test_superseded_mutation_is_rejected_at_commit_boundary():
+    """An old tab's mutation, queued on the lock, must not commit after takeover.
+
+    The connection generation is re-checked INSIDE the mutation_lock critical
+    section, so a mutation accepted before a newer tab attached is still rejected.
+    """
+    from backend.agent.mutation_gateway import MutationGateway
+    from backend.ir.models import (
+        PresentationIR,
+        SlideIR,
+        TextContentIR,
+        TextElementIR,
+    )
+    from backend.session.factory import SessionFactory
+    from backend.session.services.connection import (
+        STALE_CONNECTION,
+        TransportOwnership,
+    )
+
+    async def _run():
+        pres = PresentationIR(title="Ownership Deck")
+        slide = SlideIR(id="slide_1", slide_num=1)
+        slide.add_element(TextElementIR(
+            id="title_node", x=80.0, y=50.0, width=700.0, height=50.0,
+            text_content=TextContentIR.from_plain_text("Hello"),
+        ))
+        pres.slides.append(slide)
+        pres.active_slide_id = slide.id
+        session = SessionFactory.create(pres, session_id="ownership_race")
+
+        old_ws = object()
+        new_ws = object()
+        _, gen_old = session.connection.attach(old_ws)
+        transport = TransportOwnership(old_ws, gen_old)
+
+        entered = asyncio.Event()
+        release = asyncio.Event()
+
+        async def holder():
+            async with session.document.mutation_lock:
+                entered.set()
+                await release.wait()
+
+        holder_task = asyncio.create_task(holder())
+        await entered.wait()
+
+        call = {
+            "name": "update_element",
+            "arguments": {"slide_id": "slide_1", "element_id": "title_node", "x": 300.0},
+            "id": "call_old",
+        }
+        old_task = asyncio.create_task(MutationGateway.execute_tool_calls(
+            [call], session.pres, session.history, session=session,
+            source="user_direct", bypass_confirmation=True,
+            document_epoch=session.document_epoch,
+            expected_revision=session.pres.version,
+            require_stamps=True,
+            transport=transport,
+        ))
+        await asyncio.sleep(0)
+
+        # A newer tab takes over while the old mutation is queued on the lock.
+        session.connection.attach(new_ws)
+
+        release.set()
+        await holder_task
+        batch = await old_task
+
+        assert batch.error == STALE_CONNECTION
+        assert session.pres.slides[0].elements[0].x == 80.0
+        assert session.history_service.can_undo() is False
+
+    asyncio.run(_run())

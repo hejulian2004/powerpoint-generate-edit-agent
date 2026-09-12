@@ -22,6 +22,7 @@ from ..session.session import PPTSession
 from ..session.services.connection import (
     SESSION_TAKEN_OVER,
     WS_TAKEN_OVER_CODE,
+    TransportOwnership,
 )
 from ..ir.svg_renderer import SVGRenderer
 from ..quality import QualityService
@@ -93,6 +94,7 @@ async def execute_direct_batch(
     client_id: Optional[str] = None,
     client_sequence: Optional[int] = None,
     on_event: Optional[Any] = None,
+    transport: Optional[Any] = None,
 ):
     """Executes a direct (unambiguous user) mutation envelope through the gateway."""
     return await MutationGateway.execute_tool_calls(
@@ -112,6 +114,7 @@ async def execute_direct_batch(
         # Session-backed user writes MUST carry CAS stamps; an unstamped direct
         # mutation is rejected rather than silently applied to "current".
         require_stamps=True,
+        transport=transport,
     )
 
 
@@ -174,6 +177,7 @@ async def _handle_history_action(
     session: PPTSession,
     action: str,
     data: Dict[str, Any],
+    transport: Optional[Any] = None,
 ) -> None:
     """Routes undo/redo through the MutationGateway so CAS + single-writer hold.
 
@@ -189,6 +193,7 @@ async def _handle_history_action(
         expected_revision=data.get("expected_revision"),
         client_id=data.get("client_id"),
         client_sequence=data.get("client_sequence"),
+        transport=transport,
     )
     res = batch.first_result()
     if batch.error or (isinstance(res, dict) and res.get("error")):
@@ -211,6 +216,9 @@ async def websocket_endpoint(websocket: WebSocket):
     previous, generation = session.connection.attach(
         websocket, frontend_instance_id=websocket.query_params.get("frontend_instance_id")
     )
+    # Server-bound proof of ownership for THIS socket. Every mutation/chat this
+    # socket dispatches carries it so the gateway can re-verify at commit time.
+    transport = TransportOwnership(websocket, generation)
     if previous is not None and previous is not websocket:
         try:
             await previous.send_json({
@@ -301,6 +309,7 @@ async def websocket_endpoint(websocket: WebSocket):
                         request_document_epoch=request_epoch,
                         request_base_revision=request_revision,
                         ui_context=data.get("ui_context"),
+                        transport=transport,
                     )
 
                     # Transcript is owned by AgentRuntime.run_turn.
@@ -335,7 +344,7 @@ async def websocket_endpoint(websocket: WebSocket):
                 # The gateway serializes the confirmed mutation internally.
                 if msg_type == "confirm_tool_call":
                     result = await store.agent_runtime.confirm_pending(
-                        session, call_id, on_event=on_event
+                        session, call_id, on_event=on_event, transport=transport
                     )
                 else:
                     result = await store.agent_runtime.cancel_pending(
@@ -369,11 +378,11 @@ async def websocket_endpoint(websocket: WebSocket):
 
             # User triggered Undo
             elif msg_type == "undo":
-                await _handle_history_action(websocket, session, "undo", data)
+                await _handle_history_action(websocket, session, "undo", data, transport)
 
             # User triggered Redo
             elif msg_type == "redo":
-                await _handle_history_action(websocket, session, "redo", data)
+                await _handle_history_action(websocket, session, "redo", data, transport)
 
             # User edited element on canvas directly
             elif msg_type == "direct_update_element":
@@ -387,6 +396,7 @@ async def websocket_endpoint(websocket: WebSocket):
                     expected_revision=data.get("expected_revision"),
                     client_id=data.get("client_id"),
                     client_sequence=data.get("client_sequence"),
+                    transport=transport,
                 )
                 if batch.error or not batch.success:
                     await websocket.send_json(_rejection_payload(session, mutation_id, batch))
@@ -445,6 +455,7 @@ async def websocket_endpoint(websocket: WebSocket):
                     expected_revision=data.get("expected_revision"),
                     client_id=data.get("client_id"),
                     client_sequence=data.get("client_sequence"),
+                    transport=transport,
                 )
 
                 if batch.error or not batch.success:
@@ -518,6 +529,7 @@ async def websocket_endpoint(websocket: WebSocket):
                     expected_revision=data.get("expected_revision"),
                     client_id=data.get("client_id"),
                     client_sequence=data.get("client_sequence"),
+                    transport=transport,
                 )
                 if batch.error or not batch.success:
                     await websocket.send_json(_rejection_payload(session, mutation_id, batch))
