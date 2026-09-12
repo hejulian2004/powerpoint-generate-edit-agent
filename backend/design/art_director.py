@@ -37,6 +37,8 @@ def default_color_direction() -> ColorDirection:
         surface_strategy="subtle sharp-cornered surfaces",
         primary_text="#16181D",
         secondary_text="#5A6472",
+        background_color="#FFFFFF",
+        surface_color="#F8FAFC",
         primary_accent="#C2410C",
         secondary_accent=None,
         semantic_positive="#15803D",

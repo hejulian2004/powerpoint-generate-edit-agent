@@ -29,6 +29,10 @@ from .visual_critic import SlideCritique, critique_slide, format_critique_feedba
 
 logger = logging.getLogger(__name__)
 
+# A candidate must improve the aesthetic score by at least this margin (not just
+# match it) to be accepted. Frozen acceptance invariant.
+MIN_AESTHETIC_GAIN = 2.0
+
 
 async def _safe_emit(on_event: Optional[Callable], data: Dict[str, Any]) -> None:
     if not on_event:
@@ -55,11 +59,21 @@ async def refine_deck_aesthetics(
     paper_visual_ir: Optional[PaperVisualIR] = None,
     canvas: Optional[Canvas] = None,
     raster_data_uris: Optional[Dict[str, str]] = None,
+    source_images_by_slide: Optional[Dict[str, Sequence[str]]] = None,
+    raster_provider: Optional[Callable[[LayoutSpec], Optional[str]]] = None,
+    only_slide_indices: Optional[Sequence[int]] = None,
     max_rounds: Optional[int] = None,
     include_multimodal: bool = True,
     on_event: Optional[Callable] = None,
 ) -> DeckDesignResult:
-    """Refine slides flagged by the visual critic (bounded, per-slide, non-regressing)."""
+    """Refine slides flagged by the visual critic (bounded, per-slide, non-regressing).
+
+    Acceptance order for each candidate is fixed:
+    compile -> hard layout validation -> canonical coverage -> fresh color
+    validation -> screenshot render -> multimodal critic -> score-delta gate.
+    Any earlier correctness gate short-circuits, so no Vision tokens are spent after
+    a failure.
+    """
     active_canvas = canvas or design_result.deck_layout.canvas or Canvas()
     budget = (
         settings.max_aesthetic_refinement_rounds if max_rounds is None else max_rounds
@@ -67,13 +81,11 @@ async def refine_deck_aesthetics(
     if not (llm_client and getattr(llm_client, "api_key", None)):
         budget = 0
     rasters = raster_data_uris or {}
+    source_images = source_images_by_slide or {}
+    targets = set(only_slide_indices) if only_slide_indices is not None else None
     slide_specs = {s.index: s for s in deck_spec.slides}
     plans_by_index = {p.index: p for p in presentation_plan.slides}
     existing_plans = _plan_by_slide_id(design_result)
-
-    color_report = validate_deck_colors(
-        art_direction, design_result.deck_layout.slides
-    )
 
     refined_layouts: List[LayoutSpec] = []
     aesthetic_rounds: Dict[int, int] = {}
@@ -83,18 +95,24 @@ async def refine_deck_aesthetics(
     for position, layout in enumerate(design_result.deck_layout.slides, start=1):
         slide_spec = slide_specs.get(layout.slide_index)
         slide_id = layout.slide_id
+        is_target = targets is None or layout.slide_index in targets
+        use_mm = include_multimodal and is_target
+
+        color_report = validate_deck_colors(art_direction, [layout])
         critique = await critique_slide(
             layout,
             llm_client=llm_client,
-            include_multimodal=include_multimodal,
+            include_multimodal=use_mm,
             raster_data_uri=rasters.get(slide_id),
+            source_image_data_uris=source_images.get(slide_id),
             color_report=color_report,
         )
         current_layout = layout
         rounds = 0
 
         while (
-            critique.needs_refinement
+            is_target
+            and critique.needs_refinement
             and rounds < budget
             and slide_spec is not None
         ):
@@ -126,6 +144,7 @@ async def refine_deck_aesthetics(
                 break
 
             candidate_layout = compile_llm_layout(candidate_plan, slide_spec, active_canvas)
+            # Gate 1+2: geometry, collision, readable type AND canonical coverage.
             if not hard_validate_layout(candidate_layout, slide_spec).is_valid:
                 logger.info(
                     "Aesthetic refinement for %s produced a hard-invalid layout; rejected",
@@ -133,17 +152,41 @@ async def refine_deck_aesthetics(
                 )
                 break
 
+            # Gate 3: fresh WCAG color validation of the candidate (never stale).
+            candidate_color = validate_deck_colors(art_direction, [candidate_layout])
+            if not candidate_color.is_valid:
+                logger.info(
+                    "Aesthetic refinement for %s produced contrast errors; rejected",
+                    slide_id,
+                )
+                break
+
+            # Gate 4: render the candidate screenshot (when a provider is available).
+            candidate_raster = rasters.get(slide_id)
+            if raster_provider is not None:
+                try:
+                    rendered = raster_provider(candidate_layout)
+                    if rendered:
+                        candidate_raster = rendered
+                except Exception as exc:  # pragma: no cover - renderer dependent
+                    logger.debug("Candidate raster render failed: %s", exc)
+
+            # Gate 5: multimodal critic on the candidate.
             candidate_critique = await critique_slide(
                 candidate_layout,
                 llm_client=llm_client,
-                include_multimodal=include_multimodal,
-                raster_data_uri=rasters.get(slide_id),
-                color_report=color_report,
+                include_multimodal=use_mm,
+                raster_data_uri=candidate_raster,
+                source_image_data_uris=source_images.get(slide_id),
+                color_report=candidate_color,
             )
-            if candidate_critique.score < critique.score:
+
+            # Gate 6: strict improvement margin (not just non-regression).
+            if candidate_critique.score < critique.score + MIN_AESTHETIC_GAIN:
                 logger.info(
-                    "Aesthetic refinement for %s regressed score %.1f -> %.1f; rejected",
+                    "Aesthetic refinement for %s did not improve by >= %.1f (%.1f -> %.1f); rejected",
                     slide_id,
+                    MIN_AESTHETIC_GAIN,
                     critique.score,
                     candidate_critique.score,
                 )
@@ -157,10 +200,14 @@ async def refine_deck_aesthetics(
         critique_scores[layout.slide_index] = critique.score
         refined_layouts.append(current_layout)
 
+    color_valid = all(
+        validate_deck_colors(art_direction, [layout]).is_valid for layout in refined_layouts
+    )
+
     metadata = dict(design_result.deck_layout.metadata)
     metadata["aesthetic_rounds"] = aesthetic_rounds
     metadata["critique_scores"] = critique_scores
-    metadata["color_valid"] = color_report.is_valid
+    metadata["color_valid"] = color_valid
 
     refined_deck = DeckLayoutSpec(
         title=design_result.deck_layout.title,

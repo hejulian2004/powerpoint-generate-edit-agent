@@ -18,6 +18,7 @@ def _valid_payload(slide_id: str = "slide_1") -> dict:
         "elements": [
             {
                 "element_id": "title",
+                "source_block_id": "header_title",
                 "element_type": "TEXT",
                 "x": 80,
                 "y": 80,
@@ -30,6 +31,7 @@ def _valid_payload(slide_id: str = "slide_1") -> dict:
             },
             {
                 "element_id": "body",
+                "source_block_id": "b1",
                 "element_type": "TEXT",
                 "x": 80,
                 "y": 260,
@@ -155,3 +157,53 @@ def test_compile_deck_falls_back_for_missing_plan(monkeypatch, deck_spec_two_sli
     assert deck.slides[0].metadata["layout_source"] == "llm"
     assert deck.slides[1].metadata["layout_source"] == "fallback_template"
     assert deck.slides[1].get_elements_by_type(ElementType.TEXT)
+
+
+def test_bound_element_content_is_backfilled_from_slide_spec(deck_spec_two_slides):
+    slide = deck_spec_two_slides.slides[0]
+    payload = _valid_payload()
+    payload["elements"][1]["content"] = "LLM FABRICATED CONTENT"
+    layout = _compile(payload, slide)
+    assert layout.elements[1].content == "A Research Title"
+
+
+def test_unbound_non_container_is_hard_invalid(deck_spec_two_slides):
+    slide = deck_spec_two_slides.slides[0]
+    payload = _valid_payload()
+    payload["elements"][1]["source_block_id"] = None
+    layout = _compile(payload, slide)
+    report = hard_validate_layout(layout, slide)
+    assert not report.is_valid
+    assert any("only decorative CONTAINER" in e for e in report.errors)
+
+
+def test_missing_required_block_is_hard_invalid(deck_spec_two_slides):
+    slide = deck_spec_two_slides.slides[1]
+    payload = _valid_payload("slide_2")
+    payload["elements"][1]["source_block_id"] = "b1"
+    layout = _compile(payload, slide)
+    report = hard_validate_layout(layout, slide)
+    assert not report.is_valid
+    assert any("Required content block 'badge1'" in e for e in report.errors)
+
+
+def test_duplicate_block_reference_is_hard_invalid(deck_spec_two_slides):
+    slide = deck_spec_two_slides.slides[0]
+    payload = _valid_payload()
+    payload["elements"].append(
+        {
+            "element_id": "body2",
+            "source_block_id": "b1",
+            "element_type": "TEXT",
+            "x": 80,
+            "y": 500,
+            "width": 640,
+            "height": 120,
+            "content": "dup",
+            "font_size": 20,
+        }
+    )
+    layout = _compile(payload, slide)
+    report = hard_validate_layout(layout, slide)
+    assert not report.is_valid
+    assert any("rendered by multiple elements" in e for e in report.errors)

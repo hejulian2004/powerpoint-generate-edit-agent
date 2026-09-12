@@ -30,6 +30,8 @@ Return JSON matching:
       "surface_strategy": "...",
       "primary_text": "#RRGGBB",
       "secondary_text": "#RRGGBB",
+      "background_color": "#RRGGBB",
+      "surface_color": "#RRGGBB",
       "primary_accent": "#RRGGBB",
       "secondary_accent": "#RRGGBB or null",
       "semantic_positive": "#RRGGBB or null",
@@ -74,6 +76,10 @@ Hard rules:
    container backgrounds may sit behind text (use a CONTAINER element and z_index).
 5. Font sizes must be readable: body >= 12, captions >= 10, titles >= 20.
 6. Do NOT invent numbers or facts; use only the provided content.
+7. When an element has a source_block_id, its `content` is supplied by the server and
+   will REPLACE whatever you write. Bind each required block to exactly one
+   non-decorative element and do not attempt to author or alter its text. Elements
+   without a source_block_id may only be decorative CONTAINER backgrounds.
 
 Return JSON matching:
 {

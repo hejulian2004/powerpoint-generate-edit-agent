@@ -33,4 +33,17 @@ class PaperVisualAnalysisError(RuntimeError):
         self.warnings = warnings or []
 
 
-__all__ = ["PaperRenderError", "PaperVisualAnalysisError"]
+class PaperCacheError(RuntimeError):
+    """Raised when a cache capability handle or a cached asset path is untrusted.
+
+    ``cache_key`` is an opaque server-issued capability handle, never a path, and
+    every path deserialized from a cached artifact must resolve inside the cache
+    root. A violation here is a tampering signal and must fail closed.
+    """
+
+
+__all__ = [
+    "PaperRenderError",
+    "PaperVisualAnalysisError",
+    "PaperCacheError",
+]

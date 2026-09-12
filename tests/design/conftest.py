@@ -50,45 +50,106 @@ def _slide_id_from_messages(messages: List[Dict[str, Any]], default: str = "slid
     return f"slide_{match.group(1)}" if match else default
 
 
-def valid_layout_payload(slide_id: str = "slide_1") -> Dict[str, Any]:
-    """A layout that passes hard validation (inside canvas, no overlap, readable)."""
+_BLOCK_RE = re.compile(
+    r"\{'kind': '(?P<kind>[^']*)'[^}]*'block_id': '(?P<block_id>[^']+)'"
+)
+
+
+def blocks_from_messages(messages: List[Dict[str, Any]]) -> List[tuple]:
+    """Extract ``(block_id, kind)`` pairs from the slide layout context text."""
+    blocks: List[tuple] = []
+    seen = set()
+    for line in _user_text(messages).splitlines():
+        match = _BLOCK_RE.search(line)
+        if not match:
+            continue
+        block_id = match.group("block_id")
+        if block_id in seen:
+            continue
+        seen.add(block_id)
+        blocks.append((block_id, match.group("kind")))
+    return blocks
+
+
+def valid_layout_payload(
+    slide_id: str = "slide_1",
+    blocks: Optional[List[tuple]] = None,
+) -> Dict[str, Any]:
+    """A layout that passes hard validation and binds every provided content block.
+
+    ``blocks`` is a list of ``(block_id, kind)``; content values are placeholders
+    because the compiler backfills them canonically from the SlideSpec.
+    """
+    block_list = list(blocks) if blocks else [("b1", "text")]
+    elements: List[Dict[str, Any]] = [
+        {
+            "element_id": "title",
+            "source_block_id": "header_title",
+            "element_type": "TEXT",
+            "x": 80,
+            "y": 40,
+            "width": 1120,
+            "height": 80,
+            "z_index": 2,
+            "content": "A Research Title",
+            "font_size": 32,
+            "font_weight": "bold",
+            "text_color": "#16181D",
+            "alignment": "left",
+            "vertical_alignment": "middle",
+            "opacity": 1.0,
+        }
+    ]
+    y = 150.0
+    for position, (block_id, kind) in enumerate(block_list, start=1):
+        element: Dict[str, Any] = {
+            "element_id": f"el_{position}",
+            "source_block_id": block_id,
+            "x": 80,
+            "y": y,
+            "z_index": 1,
+            "opacity": 1.0,
+        }
+        if kind == "figure":
+            element.update(
+                {"element_type": "FIGURE", "width": 500, "height": 220, "content": {}}
+            )
+            y += 240
+        elif kind == "table":
+            element.update(
+                {"element_type": "TABLE", "width": 700, "height": 220, "content": {}}
+            )
+            y += 240
+        elif kind == "badge":
+            element.update(
+                {
+                    "element_type": "BADGE",
+                    "width": 240,
+                    "height": 56,
+                    "content": "SOTA",
+                    "font_size": 14,
+                }
+            )
+            y += 76
+        else:
+            element.update(
+                {
+                    "element_type": "TEXT",
+                    "width": 1120,
+                    "height": 110,
+                    "content": "Key point",
+                    "font_size": 20,
+                    "text_color": "#5A6472",
+                }
+            )
+            y += 130
+        elements.append(element)
     return {
         "slide_id": slide_id,
         "design_rationale": "hero title over supporting points",
         "visual_focal_point": "title",
         "reading_flow": "top to bottom",
-        "elements": [
-            {
-                "element_id": "title",
-                "element_type": "TEXT",
-                "x": 80,
-                "y": 80,
-                "width": 900,
-                "height": 120,
-                "z_index": 2,
-                "content": "A Research Title",
-                "font_size": 40,
-                "font_weight": "bold",
-                "text_color": "#16181D",
-                "alignment": "left",
-                "vertical_alignment": "middle",
-                "opacity": 1.0,
-            },
-            {
-                "element_id": "body",
-                "element_type": "TEXT",
-                "x": 80,
-                "y": 260,
-                "width": 640,
-                "height": 200,
-                "z_index": 1,
-                "content": "Key point one",
-                "font_size": 20,
-                "text_color": "#5A6472",
-                "alignment": "left",
-                "opacity": 1.0,
-            },
-        ],
+        "elements": elements,
     }
 
 
@@ -114,7 +175,12 @@ def invalid_layout_payload(slide_id: str = "slide_1") -> Dict[str, Any]:
 def always_valid_builder(kind: str = "layout") -> Callable[[List[Dict[str, Any]], str], str]:
     def _builder(messages, role="reasoning"):
         if kind == "layout":
-            return json.dumps(valid_layout_payload(_slide_id_from_messages(messages)))
+            return json.dumps(
+                valid_layout_payload(
+                    _slide_id_from_messages(messages),
+                    blocks_from_messages(messages),
+                )
+            )
         return json.dumps(art_direction_payload())
 
     return _builder
@@ -125,7 +191,9 @@ def repair_after_feedback_builder(messages, role="reasoning"):
     slide_id = _slide_id_from_messages(messages)
     text = _user_text(messages)
     if "VALIDATION FEEDBACK" in text:
-        return json.dumps(valid_layout_payload(slide_id))
+        return json.dumps(
+            valid_layout_payload(slide_id, blocks_from_messages(messages))
+        )
     return json.dumps(invalid_layout_payload(slide_id))
 
 
@@ -198,7 +266,12 @@ def paper_pipeline_builder(messages, role="reasoning"):
         system = str(messages[0].get("content", ""))
     if "art_direction" in system:
         return json.dumps(art_direction_payload())
-    return json.dumps(valid_layout_payload(_slide_id_from_messages(messages)))
+    return json.dumps(
+        valid_layout_payload(
+            _slide_id_from_messages(messages),
+            blocks_from_messages(messages),
+        )
+    )
 
 
 class FakeDesignClient:
