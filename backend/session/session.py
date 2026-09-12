@@ -23,6 +23,7 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 from ..ir.models import PresentationIR, SlideIR
+from .snapshot import SessionSnapshot, session_to_snapshot
 from .services.document import (
     COMPLETED_MUTATION_LIMIT,
     CHECKPOINT_NOT_FOUND,
@@ -263,6 +264,16 @@ class PPTSession:
 
     async def snapshot_for_export(self) -> ExportSnapshot:
         return await self.document.snapshot_for_export()
+
+    async def snapshot_for_persistence(self) -> SessionSnapshot:
+        """Atomically captures durable state under the document mutation lock.
+
+        Persistence flushes must observe a consistent revision: taking the lock
+        prevents a concurrent commit from interleaving a half-applied mutation
+        with the snapshot. Ephemeral state is excluded (contract P1/P2).
+        """
+        async with self.document.mutation_lock:
+            return session_to_snapshot(self)
 
     # ------------------------------------------------------------------
     # Cursor

@@ -222,6 +222,55 @@ def test_debounced_schedule_coalesces_writes():
     asyncio.run(_run())
 
 
+def test_concurrent_commit_during_flush_is_not_lost():
+    """A commit that lands while a save is in flight must survive the flush."""
+
+    async def _run():
+        class _GatedRepo:
+            def __init__(self):
+                self.saves = []
+                self.entered = asyncio.Event()
+                self.release = asyncio.Event()
+                self.gate_first = True
+
+            async def save(self, snapshot):
+                self.saves.append(snapshot)
+                if self.gate_first:
+                    self.gate_first = False
+                    self.entered.set()
+                    await self.release.wait()
+
+        repo = _GatedRepo()
+        gate_session = SessionFactory.create(_pres(), session_id="sess_race")
+        service = SessionPersistenceService(
+            repo, lambda sid: gate_session if sid == "sess_race" else None,
+            debounce_seconds=0.01,
+        )
+        gate_session.persistence = service
+
+        # Commit #1 -> flush begins and blocks inside repo.save.
+        gate_session.pres.title = "v1"
+        gate_session.pres.version += 1
+        gate_session.schedule_persist()
+        await asyncio.wait_for(repo.entered.wait(), timeout=1)
+
+        # Commit #2 lands while the first save is in flight.
+        gate_session.pres.title = "v2"
+        gate_session.pres.version += 1
+        gate_session.schedule_persist()
+
+        repo.release.set()
+        await service.flush_all()
+
+        assert repo.saves[-1].presentation["title"] == "v2"
+        assert repo.saves[-1].presentation["version"] == gate_session.pres.version
+        assert "sess_race" not in service.dirty_session_ids
+
+        await service.close()
+
+    asyncio.run(_run())
+
+
 def test_restart_after_commit_rejects_lost_ack_replay(tmp_path):
     """Contract P1 / scenario 16: a lost-ACK replay after restart must not reapply."""
 
