@@ -331,7 +331,7 @@ def paper_pipeline_response_builder():
 
 @pytest.fixture
 def paper_ir_fixture():
-    from backend.paper.schema import PaperIR, PaperMetadata, PaperSection
+    from backend.paper.schema import PaperFigure, PaperIR, PaperMetadata, PaperSection
 
     return PaperIR(
         source_filename="paper.pdf",
@@ -350,6 +350,14 @@ def paper_ir_fixture():
                 page=2,
                 paragraphs=["Our method combines three stages into one pipeline."],
             ),
+        ],
+        figures=[
+            PaperFigure(
+                id="figure1",
+                xref_label="Figure 1",
+                caption="Three-stage pipeline overview",
+                page=2,
+            )
         ],
     )
 

@@ -147,6 +147,7 @@ def _validate_paper_plan_grounding(
     plan: Any,
     paper_ir: Any,
     *,
+    paper_visual_ir: Any = None,
     strict_policy: bool = True,
 ) -> List[str]:
     """Return truthfulness violations for a plan (empty == grounded).
@@ -154,6 +155,12 @@ def _validate_paper_plan_grounding(
     Numeric data claims are ALWAYS enforced. Policy phrases (SOTA, 企业级, ...)
     are enforced only for LLM-authored plans (``strict_policy``); the deterministic
     legacy planner is curated template text and is exempt from the phrase policy.
+
+    Every evidence handle the plan can carry must resolve to a real PaperIR /
+    PaperVisualIR object: ``factual_evidence_ids`` (section/figure/table handles),
+    ``source_sections``, ``source_figures``, ``source_tables``, ``source_pages`` and
+    ``visual_evidence_ids``. A plan that references a non-existent object is
+    ungrounded and must never reach design.
     """
     source_text = _paper_source_text(paper_ir)
     claim_text = _paper_plan_claim_text(plan)
@@ -174,13 +181,66 @@ def _validate_paper_plan_grounding(
         else:
             _add(f"UNSUPPORTED_TEXTUAL_FACT: '{verdict.claim}' is not grounded in PaperIR")
 
+    page_count = int(getattr(getattr(paper_ir, "metadata", None), "page_count", 0) or 0)
+    if page_count <= 0 and paper_visual_ir is not None:
+        page_count = int(getattr(paper_visual_ir, "page_count", 0) or 0)
+    visual_evidence_pool = set()
+    if paper_visual_ir is not None:
+        try:
+            visual_evidence_pool = set(paper_visual_ir.visual_evidence_ids())
+        except Exception:  # pragma: no cover - defensive
+            visual_evidence_pool = set()
+
     for slide in getattr(plan, "slides", []) or []:
+        index = getattr(slide, "index", "?")
+
         for ref in getattr(slide, "factual_evidence_ids", []) or []:
             if not _evidence_ref_exists(ref, paper_ir):
                 _add(
                     f"INVALID_EVIDENCE_REFERENCE: '{ref}' on slide "
-                    f"{getattr(slide, 'index', '?')} does not exist in PaperIR"
+                    f"{index} does not exist in PaperIR"
                 )
+
+        for ref in getattr(slide, "source_sections", []) or []:
+            if not _evidence_ref_exists(f"section:{ref}", paper_ir):
+                _add(
+                    f"INVALID_SECTION_REFERENCE: '{ref}' on slide "
+                    f"{index} does not exist in PaperIR"
+                )
+
+        for ref in getattr(slide, "source_figures", []) or []:
+            if not _evidence_ref_exists(f"figure:{ref}", paper_ir):
+                _add(
+                    f"INVALID_FIGURE_REFERENCE: '{ref}' on slide "
+                    f"{index} does not exist in PaperIR"
+                )
+
+        for ref in getattr(slide, "source_tables", []) or []:
+            if not _evidence_ref_exists(f"table:{ref}", paper_ir):
+                _add(
+                    f"INVALID_TABLE_REFERENCE: '{ref}' on slide "
+                    f"{index} does not exist in PaperIR"
+                )
+
+        if page_count > 0:
+            for page in getattr(slide, "source_pages", []) or []:
+                try:
+                    page_number = int(page)
+                except (TypeError, ValueError):
+                    page_number = -1
+                if page_number < 1 or page_number > page_count:
+                    _add(
+                        f"INVALID_SOURCE_PAGE: '{page}' on slide {index} is outside "
+                        f"1..{page_count}"
+                    )
+
+        for ref in getattr(slide, "visual_evidence_ids", []) or []:
+            if str(ref) not in visual_evidence_pool:
+                _add(
+                    f"INVALID_VISUAL_EVIDENCE_ID: '{ref}' on slide {index} does not "
+                    f"exist in PaperVisualIR"
+                )
+
     return errors
 
 
@@ -211,25 +271,52 @@ def _paper_source_images_by_slide(state: PPTGenerationState) -> Dict[str, List[s
     )
 
 
-def _candidate_raster_provider(layout: Any) -> Optional[str]:
-    """Render a single candidate LayoutSpec to a PPT screenshot data URI."""
-    try:
-        from ...compiler.presentation_ir import compile_layout_to_presentation_ir
-        from ...eval.renderer_snapshot import SlideSnapshotRenderer
-        from ...layout.schema import Canvas, DeckLayoutSpec
+def _make_candidate_raster_provider(
+    state: PPTGenerationState,
+) -> Callable[[Any], Optional[str]]:
+    """Build a raster provider that compiles candidates EXACTLY like production.
 
-        deck = DeckLayoutSpec(
-            title="_candidate",
-            canvas=layout.canvas or Canvas(),
-            slides=[layout],
+    The candidate screenshot shown to the Vision critic must use the same deck
+    theme and paper asset resolution as the final ``PresentationIR``; otherwise the
+    critic reviews a different artifact than the one that gets persisted.
+    """
+    art_direction = state.get("deck_art_direction")
+    theme_override = (
+        theme_from_art_direction(art_direction) if art_direction is not None else None
+    )
+    asset_resolver = None
+    if state.get("source_type") == "paper":
+        from ...design.paper_assets import make_paper_asset_resolver
+
+        asset_resolver = make_paper_asset_resolver(
+            state.get("paper_ir"),
+            state.get("paper_visual_ir"),
+            state.get("paper_cache_dir"),
         )
-        pres = compile_layout_to_presentation_ir(deck)
-        if not pres.slides:
+
+    def _provider(layout: Any) -> Optional[str]:
+        try:
+            from ...eval.renderer_snapshot import SlideSnapshotRenderer
+            from ...layout.schema import Canvas, DeckLayoutSpec
+
+            deck = DeckLayoutSpec(
+                title="_candidate",
+                canvas=layout.canvas or Canvas(),
+                slides=[layout],
+            )
+            pres = compile_layout_to_presentation_ir(
+                deck,
+                theme_override=theme_override,
+                asset_resolver=asset_resolver,
+            )
+            if not pres.slides:
+                return None
+            return SlideSnapshotRenderer.render_data_uri(pres.slides[0], scale=1.0)
+        except Exception as exc:  # pragma: no cover - renderer dependent
+            logger.debug("Candidate raster provider failed: %s", exc)
             return None
-        return SlideSnapshotRenderer.render_data_uri(pres.slides[0], scale=1.0)
-    except Exception as exc:  # pragma: no cover - renderer dependent
-        logger.debug("Candidate raster provider failed: %s", exc)
-        return None
+
+    return _provider
 
 
 # =====================================================================
@@ -437,7 +524,12 @@ async def paper_truthfulness_node(state: PPTGenerationState, config: RunnableCon
 
     attempts = int(state.get("paper_truthfulness_attempts", 0) or 0)
     strict_policy = state.get("generation_mode") == "llm_native"
-    errors = _validate_paper_plan_grounding(plan, paper_ir, strict_policy=strict_policy)
+    errors = _validate_paper_plan_grounding(
+        plan,
+        paper_ir,
+        paper_visual_ir=state.get("paper_visual_ir"),
+        strict_policy=strict_policy,
+    )
 
     if errors and attempts < 1:
         await _safe_emit(
@@ -466,7 +558,10 @@ async def paper_truthfulness_node(state: PPTGenerationState, config: RunnableCon
         attempts += 1
         if repaired_plan is not None:
             remaining = _validate_paper_plan_grounding(
-                repaired_plan, paper_ir, strict_policy=strict_policy
+                repaired_plan,
+                paper_ir,
+                paper_visual_ir=state.get("paper_visual_ir"),
+                strict_policy=strict_policy,
             )
             if not remaining:
                 deck_spec = map_presentation_plan_to_deck_spec(repaired_plan, paper_ir)
@@ -849,7 +944,7 @@ async def deck_revisit_node(state: PPTGenerationState, config: RunnableConfig) -
         canvas=deck_layout.canvas,
         raster_data_uris=state.get("slide_rasters") or {},
         source_images_by_slide=_paper_source_images_by_slide(state),
-        raster_provider=_candidate_raster_provider,
+        raster_provider=_make_candidate_raster_provider(state),
         only_slide_indices=revisit,
         include_multimodal=True,
         on_event=on_event,
@@ -859,6 +954,127 @@ async def deck_revisit_node(state: PPTGenerationState, config: RunnableConfig) -
         "deck_revisit_round": int(state.get("deck_revisit_round", 0) or 0) + 1,
         "status": "deck_revisited",
     }
+
+
+async def final_generation_validation_node(
+    state: PPTGenerationState, config: RunnableConfig
+) -> Dict[str, Any]:
+    """Unified hard correctness gate validating the exact IR that will be persisted.
+
+    Runs after every layout-changing stage (visual repair, deck revisit). It NEVER
+    recompiles: it validates the already-compiled ``presentation_ir`` together with
+    the ``deck_layout`` it was derived from and the ``deck_spec`` plan. Figures are
+    recognized via explicit ``metadata['asset_status']`` ('resolved' | 'placeholder')
+    so no text sniffing is required. Any failure is fail-closed: the graph ends
+    without ever reaching ``commit_replacement``.
+    """
+    configurable = config.get("configurable", {})
+    on_event = configurable.get("on_event")
+
+    deck_layout = state.get("deck_layout")
+    deck_spec = state.get("deck_spec")
+    pres_ir = state.get("presentation_ir")
+    art_direction = state.get("deck_art_direction")
+
+    errors: List[str] = []
+    if deck_layout is None:
+        errors.append("FINAL_VALIDATION: deck_layout is missing")
+    if pres_ir is None:
+        errors.append("FINAL_VALIDATION: presentation_ir is missing")
+
+    if not errors:
+        from ...design.color_validator import validate_deck_colors
+        from ...design.layout_compiler import hard_validate_layout
+        from ...ir.models import ImageElementIR
+
+        slide_specs = (
+            {s.index: s for s in deck_spec.slides} if deck_spec is not None else {}
+        )
+
+        if len(pres_ir.slides) != len(deck_layout.slides):
+            errors.append(
+                "FINAL_VALIDATION: presentation_ir slide count "
+                f"{len(pres_ir.slides)} != deck_layout slide count {len(deck_layout.slides)}"
+            )
+
+        # 1. Hard layout validation (geometry, collisions, readable type).
+        # Canonical block coverage is an LLM-native contract: the free-form layout
+        # model must bind every required content block. The deterministic template
+        # engine never promised 1:1 block binding, so it is validated structurally
+        # only (otherwise a legitimate legacy deck would be blocked).
+        llm_layouts: Dict[str, bool] = {}
+        for layout in deck_layout.slides:
+            is_llm = (getattr(layout, "metadata", {}) or {}).get("layout_source") == "llm"
+            llm_layouts[layout.slide_id] = is_llm
+            slide_spec = slide_specs.get(layout.slide_index) if is_llm else None
+            report = hard_validate_layout(layout, slide_spec)
+            for message in report.errors:
+                errors.append(f"FINAL_LAYOUT[{layout.slide_index}]: {message}")
+
+        # 2. Fresh deck color validation.
+        if art_direction is not None:
+            color_report = validate_deck_colors(art_direction, deck_layout.slides)
+            for issue in color_report.errors:
+                errors.append(f"FINAL_COLOR[{issue.slide_id}]: {issue.description}")
+
+        # 3. Figure asset coverage on the actual IR, via explicit asset_status.
+        layouts_by_index = {l.slide_index: l for l in deck_layout.slides}
+        for slide_ir in pres_ir.slides:
+            if not slide_ir.elements:
+                errors.append(f"FINAL_IR[{slide_ir.id}]: slide has no elements")
+            elements_by_ref = {
+                getattr(el, "source_ref", None): el for el in slide_ir.elements
+            }
+            layout = layouts_by_index.get(slide_ir.slide_num)
+            spec = slide_specs.get(slide_ir.slide_num) if layout else None
+            if spec is None or not llm_layouts.get(slide_ir.id):
+                continue
+            for block in spec.blocks:
+                if getattr(block, "kind", "") != "figure" or not getattr(block, "block_id", ""):
+                    continue
+                element = elements_by_ref.get(block.block_id)
+                if element is None:
+                    errors.append(
+                        f"FINAL_IR[{slide_ir.id}]: figure block '{block.block_id}' is not compiled"
+                    )
+                    continue
+                meta = getattr(element, "metadata", {}) or {}
+                status = meta.get("asset_status")
+                if isinstance(element, ImageElementIR):
+                    if status != "resolved" or not getattr(element, "src", None):
+                        errors.append(
+                            f"FINAL_IR[{slide_ir.id}]: figure '{block.block_id}' is not resolved"
+                        )
+                elif status == "placeholder":
+                    if not meta.get("source_figure_id"):
+                        errors.append(
+                            f"FINAL_IR[{slide_ir.id}]: placeholder '{block.block_id}' has no "
+                            "source_figure_id"
+                        )
+                else:
+                    errors.append(
+                        f"FINAL_IR[{slide_ir.id}]: figure '{block.block_id}' has no explicit "
+                        "asset_status"
+                    )
+
+    if errors:
+        message = "FINAL_GENERATION_VALIDATION_FAILED: " + "; ".join(errors[:8])
+        await _safe_emit(
+            on_event,
+            {
+                "type": "generation_progress",
+                "status": "final_validation_failed",
+                "error": message,
+                "text": "最终一致性校验失败，已阻止写入。",
+            },
+        )
+        return {
+            "status": "validation_failed",
+            "error": message,
+            "validation_errors": list(state.get("validation_errors", [])) + errors,
+        }
+
+    return {"status": "final_validation_passed"}
 
 
 async def persist_session_node(state: PPTGenerationState, config: RunnableConfig) -> Dict[str, Any]:
@@ -977,17 +1193,24 @@ def visual_repair_route(state: PPTGenerationState) -> Literal["visual_repair_nod
     return "deck_visual_review_node"
 
 
-def deck_visual_review_route(state: PPTGenerationState) -> Literal["deck_revisit_node", "persist_session_node"]:
-    """Revisit flagged slides for a bounded number of rounds, else persist."""
+def deck_visual_review_route(
+    state: PPTGenerationState,
+) -> Literal["deck_revisit_node", "final_generation_validation_node"]:
+    """Revisit flagged slides for a bounded number of rounds, else final-validate."""
     if state.get("source_type") != "paper":
-        return "persist_session_node"
+        return "final_generation_validation_node"
     revisit = state.get("slides_to_revisit") or []
     round_index = int(state.get("deck_revisit_round", 0) or 0)
     from ...config import settings
 
     if revisit and round_index < settings.max_deck_revisit_rounds:
         return "deck_revisit_node"
-    return "persist_session_node"
+    return "final_generation_validation_node"
+
+
+def final_validation_route(state: PPTGenerationState) -> Literal["persist_session_node", "__end__"]:
+    """Fail closed: a deck that fails the final gate is never persisted."""
+    return "__end__" if state.get("status") == "validation_failed" else "persist_session_node"
 
 
 def entry_route(state: PPTGenerationState) -> Literal["paper_plan_node", "ingest_node"]:
@@ -1029,6 +1252,7 @@ def build_generation_graph() -> Any:
     workflow.add_node("visual_repair_node", visual_repair_node)
     workflow.add_node("deck_visual_review_node", deck_visual_review_node)
     workflow.add_node("deck_revisit_node", deck_revisit_node)
+    workflow.add_node("final_generation_validation_node", final_generation_validation_node)
     workflow.add_node("persist_session_node", persist_session_node)
 
     # 2. Entry: paper branch (PaperIR + PaperVisualIR) vs PPTSpec branch
@@ -1098,10 +1322,20 @@ def build_generation_graph() -> Any:
         deck_visual_review_route,
         {
             "deck_revisit_node": "deck_revisit_node",
-            "persist_session_node": "persist_session_node",
+            "final_generation_validation_node": "final_generation_validation_node",
         },
     )
     workflow.add_edge("deck_revisit_node", "compile_presentation_ir_node")
+
+    # 5c. Unified hard correctness gate on the exact IR that will be persisted.
+    workflow.add_conditional_edges(
+        "final_generation_validation_node",
+        final_validation_route,
+        {
+            "persist_session_node": "persist_session_node",
+            "__end__": END,
+        },
+    )
 
     # 6. Finalization
     workflow.add_edge("persist_session_node", END)
