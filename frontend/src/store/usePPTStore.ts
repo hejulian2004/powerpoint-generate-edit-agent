@@ -2370,11 +2370,20 @@ export const usePPTStore = create<PPTState>((set, get) => ({
         const detail = data?.detail || data?.error || `HTTP ${res.status}`
         throw new Error(typeof detail === 'string' ? detail : JSON.stringify(detail))
       }
-      // No attachment pipeline applies: continue as a normal chat turn so the
-      // agent can still answer about the file / request.
+      // No attachment pipeline applies: the server answered a read-only
+      // question about the attachment with its content in context. Use that
+      // reply directly; forwarding only the text would drop the attachment.
       if (data?.action === 'chat') {
         set({ isAgentThinking: false, thinkingStatus: '' })
-        if (text.trim()) {
+        const reply = typeof data?.message === 'string' ? data.message.trim() : ''
+        if (reply) {
+          addMessage({
+            id: `assistant_${Date.now()}`,
+            role: 'assistant',
+            content: reply,
+            timestamp: Date.now()
+          })
+        } else if (text.trim()) {
           await get().sendChatMessage(text, { skipLocalEcho: true })
         } else {
           addMessage({

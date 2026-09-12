@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import json
 
 import pytest
 from fastapi.testclient import TestClient
 
 from backend.agent import attachment_router as router
+from backend.agent.attachment_context import build_attachment_context
 from backend.agent.attachment_router import (
     ACTION_CHAT,
     ACTION_IMAGE,
@@ -24,11 +26,14 @@ from backend.agent.attachment_router import (
     detect_kind,
     fallback_action,
 )
+from backend.agent.runtime import AgentRuntime
 from backend.agent.tools import tools
 from backend.api import routes
+from backend.ir.models import PresentationIR
 from backend.main import app
-from backend.state.store import create_default_demo_presentation
 from backend.session.manager import session_manager
+from backend.session.session import PPTSession
+from backend.state.store import create_default_demo_presentation, store
 
 client = TestClient(app)
 
@@ -43,6 +48,13 @@ def _seed_default_demo():
     session.pres = create_default_demo_presentation()
     session.history.clear()
     return session
+
+
+def _stamps(session) -> dict:
+    return {
+        "expected_epoch": session.document_epoch,
+        "expected_revision": session.document.presentation.version,
+    }
 
 
 class _FakeLLM:
@@ -165,13 +177,13 @@ def test_add_image_requires_src():
 # ---------------------------------------------------------------------------
 
 def test_chat_drive_image_insert(monkeypatch):
-    _seed_default_demo()
+    session = _seed_default_demo()
     monkeypatch.setattr(
         router, "classify_intent", lambda llm, message, kinds: _async_return(ACTION_IMAGE)
     )
     resp = client.post(
         "/api/chat/drive",
-        data={"message": "把这张图放到当前页", "session_id": "default"},
+        data={"message": "把这张图放到当前页", "session_id": "default", **_stamps(session)},
         files=[("files", ("figure.png", PNG_BYTES, "image/png"))],
     )
     assert resp.status_code == 200, resp.text
@@ -180,6 +192,42 @@ def test_chat_drive_image_insert(monkeypatch):
     session = session_manager.get_session("default")
     slide = session.document.presentation.slides[0]
     assert any(e.type == "image" for e in slide.elements)
+
+
+def test_chat_drive_image_insert_requires_stamp(monkeypatch):
+    session = _seed_default_demo()
+    monkeypatch.setattr(
+        router, "classify_intent", lambda llm, message, kinds: _async_return(ACTION_IMAGE)
+    )
+    resp = client.post(
+        "/api/chat/drive",
+        data={"message": "把这张图放到当前页", "session_id": "default"},
+        files=[("files", ("figure.png", PNG_BYTES, "image/png"))],
+    )
+    assert resp.status_code == 409
+    assert "MISSING_REPLACEMENT_STAMP" in resp.text
+
+
+def test_chat_drive_image_insert_stale_stamp_is_rejected(monkeypatch):
+    session = _seed_default_demo()
+    monkeypatch.setattr(
+        router, "classify_intent", lambda llm, message, kinds: _async_return(ACTION_IMAGE)
+    )
+    elements_before = len(session.document.presentation.slides[0].elements)
+    resp = client.post(
+        "/api/chat/drive",
+        data={
+            "message": "把这张图放到当前页",
+            "session_id": "default",
+            "expected_epoch": session.document_epoch,
+            # The client's observed revision is behind the live deck.
+            "expected_revision": session.document.presentation.version + 100,
+        },
+        files=[("files", ("figure.png", PNG_BYTES, "image/png"))],
+    )
+    assert resp.status_code == 409, resp.text
+    assert "STALE_IMAGE_INSERT" in resp.text
+    assert len(session.document.presentation.slides[0].elements) == elements_before
 
 
 def test_chat_drive_unknown_only_returns_chat(monkeypatch):
@@ -197,13 +245,13 @@ def test_chat_drive_unknown_only_returns_chat(monkeypatch):
 
 
 def test_chat_drive_paper_requires_pdf(monkeypatch):
-    _seed_default_demo()
+    session = _seed_default_demo()
     monkeypatch.setattr(
         router, "classify_intent", lambda llm, message, kinds: _async_return(ACTION_PAPER)
     )
     resp = client.post(
         "/api/chat/drive",
-        data={"message": "做成PPT", "session_id": "default"},
+        data={"message": "做成PPT", "session_id": "default", **_stamps(session)},
         files=[("files", ("figure.png", PNG_BYTES, "image/png"))],
     )
     assert resp.status_code == 400
@@ -217,7 +265,8 @@ def _patch_router(monkeypatch, action: str):
 
 
 def test_chat_drive_paper_generate(monkeypatch):
-    _seed_default_demo()
+    session = _seed_default_demo()
+    stamps = _stamps(session)
     _patch_router(monkeypatch, ACTION_PAPER)
     captured = {}
 
@@ -234,7 +283,7 @@ def test_chat_drive_paper_generate(monkeypatch):
 
     resp = client.post(
         "/api/chat/drive",
-        data={"message": "把这篇论文做成PPT", "session_id": "default"},
+        data={"message": "把这篇论文做成PPT", "session_id": "default", **stamps},
         files=[("files", ("paper.pdf", b"%PDF-1.4 fake", "application/pdf"))],
     )
     assert resp.status_code == 200, resp.text
@@ -242,10 +291,14 @@ def test_chat_drive_paper_generate(monkeypatch):
     assert captured["analyze_filename"] == "paper.pdf"
     assert captured["paper_payload"]["cache_key"] == "ck_1"
     assert captured["paper_payload"]["user_prompt"] == "把这篇论文做成PPT"
+    # The frozen caller stamp is forwarded to the generation persist.
+    assert captured["paper_payload"]["expected_epoch"] == stamps["expected_epoch"]
+    assert captured["paper_payload"]["expected_revision"] == stamps["expected_revision"]
 
 
 def test_chat_drive_text_generate(monkeypatch):
-    _seed_default_demo()
+    session = _seed_default_demo()
+    stamps = _stamps(session)
     _patch_router(monkeypatch, ACTION_TEXT)
     captured = {}
 
@@ -255,6 +308,7 @@ def test_chat_drive_text_generate(monkeypatch):
 
     async def fake_gen(payload):
         captured["norm_id"] = payload["normalization_id"]
+        captured["gen_payload"] = payload
         return {"success": True, "session_id": "default", "presentation": {"slides": []}}
 
     monkeypatch.setattr(routes, "api_normalize_pptspec", fake_normalize)
@@ -262,13 +316,15 @@ def test_chat_drive_text_generate(monkeypatch):
 
     resp = client.post(
         "/api/chat/drive",
-        data={"message": "根据文档生成幻灯片", "session_id": "default"},
+        data={"message": "根据文档生成幻灯片", "session_id": "default", **stamps},
         files=[("files", ("outline.txt", "产品大纲".encode("utf-8"), "text/plain"))],
     )
     assert resp.status_code == 200, resp.text
     assert resp.json()["action"] == ACTION_TEXT
     assert captured["raw_text"] == "产品大纲"
     assert captured["norm_id"] == "nid_1"
+    assert captured["gen_payload"]["expected_epoch"] == stamps["expected_epoch"]
+    assert captured["gen_payload"]["expected_revision"] == stamps["expected_revision"]
 
 
 def test_chat_drive_pptx_import(monkeypatch):
@@ -313,3 +369,131 @@ def test_chat_drive_pptx_import_requires_stamp(monkeypatch):
 
 async def _async_return(value):
     return value
+
+
+# ---------------------------------------------------------------------------
+# ACTION_CHAT: attachment content must actually reach the LLM
+# ---------------------------------------------------------------------------
+
+class _SpyLLM:
+    def __init__(self, reply: str = "好的"):
+        self.reply = reply
+        self.calls = []
+
+    async def chat_completion(self, messages, role="default", **kwargs):
+        self.calls.append({"messages": messages, "role": role})
+        return {"choices": [{"message": {"content": self.reply}}]}
+
+
+def _new_session(session_id: str) -> PPTSession:
+    return PPTSession(session_id=session_id, pres=PresentationIR(title="D"))
+
+
+def test_chat_with_attachments_text_uses_reasoning_and_keeps_transcript_clean():
+    session = _new_session("sess_attach_text")
+    spy = _SpyLLM("这是摘要")
+    runtime = AgentRuntime(llm_client=spy)
+    attachments = [
+        {
+            "name": "outline.txt",
+            "content_type": "text/plain",
+            "content": "产品大纲：A、B、C".encode("utf-8"),
+            "kind": KIND_TEXT,
+        }
+    ]
+    context = asyncio.run(build_attachment_context(session, attachments))
+    result = asyncio.run(
+        runtime.chat_with_attachments(session, "总结一下", context)
+    )
+
+    assert result["role"] == "reasoning"
+    assert result["has_images"] is False
+    assert spy.calls[0]["role"] == "reasoning"
+    assert "产品大纲" in json.dumps(spy.calls[0]["messages"], ensure_ascii=False)
+    # Durable transcript stores plain text only - no digest.
+    assert [m["content"] for m in session.memory.messages] == ["总结一下", "这是摘要"]
+
+
+def test_chat_with_attachments_image_uses_vision_role():
+    session = _new_session("sess_attach_image")
+    spy = _SpyLLM("风格很简洁")
+    runtime = AgentRuntime(llm_client=spy)
+    attachments = [
+        {
+            "name": "figure.png",
+            "content_type": "image/png",
+            "content": PNG_BYTES,
+            "kind": KIND_IMAGE,
+        }
+    ]
+    context = asyncio.run(build_attachment_context(session, attachments))
+    assert context.has_images is True
+    result = asyncio.run(
+        runtime.chat_with_attachments(session, "这张图是什么风格", context)
+    )
+
+    assert result["role"] == "vision"
+    assert spy.calls[0]["role"] == "vision"
+    assert "image_url" in json.dumps(spy.calls[0]["messages"], ensure_ascii=False)
+
+
+def test_chat_with_attachments_pdf_digest_reaches_model():
+    session = _new_session("sess_attach_pdf")
+    spy = _SpyLLM("论文讲的是 X")
+    runtime = AgentRuntime(llm_client=spy)
+    paper_ir = {
+        "metadata": {"title": "A Paper"},
+        "abstract": "We study X.",
+        "sections": [{"title": "1 Intro", "paragraphs": ["Hello world"]}],
+        "figures": [],
+        "tables": [],
+    }
+
+    async def fake_analyze(name, content_type, content):
+        return {
+            "paper_ir": paper_ir,
+            "paper_visual_ir": {"pages": []},
+            "page_count": 1,
+            "vision_model": None,
+            "source_filename": name,
+        }
+
+    attachments = [
+        {
+            "name": "p.pdf",
+            "content_type": "application/pdf",
+            "content": b"%PDF-1.4 fake",
+            "kind": KIND_PDF,
+        }
+    ]
+    context = asyncio.run(
+        build_attachment_context(session, attachments, analyze_pdf=fake_analyze)
+    )
+    assert "A Paper" in context.text_digest
+    result = asyncio.run(
+        runtime.chat_with_attachments(session, "这篇讲什么", context)
+    )
+
+    # Text-only PDF digest -> reasoning, and the content is in the request.
+    assert result["role"] == "reasoning"
+    assert "We study X." in json.dumps(spy.calls[0]["messages"], ensure_ascii=False)
+
+
+def test_chat_drive_chat_answers_with_attachment_in_context(monkeypatch):
+    _seed_default_demo()
+    spy = _SpyLLM("根据大纲，内容是 A、B、C")
+    monkeypatch.setattr(store.agent_runtime, "llm", spy)
+    _patch_router(monkeypatch, ACTION_CHAT)
+
+    resp = client.post(
+        "/api/chat/drive",
+        data={"message": "总结这段文字", "session_id": "default"},
+        files=[
+            ("files", ("outline.txt", "产品大纲：A、B、C".encode("utf-8"), "text/plain"))
+        ],
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["action"] == ACTION_CHAT
+    assert body["message"] == "根据大纲，内容是 A、B、C"
+    assert "产品大纲" in json.dumps(spy.calls[0]["messages"], ensure_ascii=False)

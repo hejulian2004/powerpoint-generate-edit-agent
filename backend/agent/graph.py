@@ -93,6 +93,10 @@ class PPTAgentState(TypedDict, total=False):
     interaction_mode: str
     plan_preapproved: bool
     plan_ready: bool
+    # Request-scoped client UI context (active slide / selection). Carried in the
+    # graph state so a paused plan can freeze it for later confirmation.
+    ui_context: Optional[Dict[str, Any]]
+    ui_context_revision: int
 
 
 # =====================================================================
@@ -340,6 +344,8 @@ async def await_plan_confirmation_node(state: PPTAgentState, config: RunnableCon
             document_epoch=state.get("turn_document_epoch") or getattr(session, "document_epoch", None),
             expected_revision=session.document.presentation.version,
             active_slide_id=state.get("active_slide_id"),
+            ui_context=state.get("ui_context"),
+            ui_context_revision=state.get("ui_context_revision"),
         )
 
     if on_event:

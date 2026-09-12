@@ -137,6 +137,35 @@ def test_confirm_plan_executes_frozen_plan(monkeypatch):
     assert any(e.get("type") == "plan_approved" for e in events)
 
 
+def test_confirm_plan_restores_frozen_ui_context(monkeypatch):
+    runtime, captured = _runtime_with_stub_turn(monkeypatch)
+    session = _make_session("sess_plan_uictx")
+    ui_context = {
+        # The client's local active slide / selection, intentionally different
+        # from anything the document itself records.
+        "active_slide_id": "slide_client_local",
+        "selected_element_ids": ["el_x"],
+        "primary_selected_element_id": "el_x",
+        "ui_context_revision": 7,
+    }
+    session.register_pending_plan(
+        plan_id="p_uictx",
+        plan="冻结计划",
+        plan_review={"approved": True},
+        user_query="把这个框放大",
+        document_epoch=session.document.epoch,
+        expected_revision=session.document.presentation.version,
+        ui_context=ui_context,
+        ui_context_revision=7,
+    )
+
+    asyncio.run(runtime.confirm_plan(session, "p_uictx"))
+
+    # Confirmation must replay the context captured when the user asked, not a
+    # fresh client-local selection.
+    assert captured["ui_context"] == ui_context
+
+
 def test_confirm_plan_invalidated_when_document_changed(monkeypatch):
     runtime, _ = _runtime_with_stub_turn(monkeypatch)
     session = _make_session("sess_plan_stale")
@@ -216,11 +245,19 @@ def test_graph_pauses_end_to_end_in_plan_mode():
     async def on_ev(ev):
         events.append(ev)
 
+    client_ui_context = {
+        "active_slide_id": "client_slide_5",
+        "selected_element_ids": ["element_foo"],
+        "primary_selected_element_id": "element_foo",
+        "ui_context_revision": 4,
+    }
     initial = {
         "messages": [],
         "user_query": "做一份商业汇报PPT",
         "intent": "generate_presentation",
         "interaction_mode": "plan",
+        "ui_context": client_ui_context,
+        "ui_context_revision": 4,
     }
     final = asyncio.run(
         app.ainvoke(
@@ -240,5 +277,9 @@ def test_graph_pauses_end_to_end_in_plan_mode():
     assert final.get("plan_ready") is True
     assert len(session.pending_plans) == 1
     assert any(e.get("type") == "plan_ready" for e in events)
+    # The frozen plan carries the requesting client's UI context.
+    record = next(iter(session.pending_plans.values()))
+    assert record["ui_context"] == client_ui_context
+    assert record["ui_context_revision"] == 4
     # The executor never ran: no tool calls were committed.
     assert not final.get("tool_results")

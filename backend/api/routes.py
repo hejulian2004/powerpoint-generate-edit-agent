@@ -15,10 +15,16 @@ from ..state.store import store, create_default_demo_presentation
 from ..ir.svg_renderer import SVGRenderer
 from ..config import settings, AppSettings
 from ..session.session import PPTSession
-from ..agent.mutation_gateway import DOCUMENT_FROZEN, MutationGateway
+from ..agent.mutation_gateway import (
+    DOCUMENT_EPOCH_MISMATCH,
+    DOCUMENT_FROZEN,
+    STALE_MUTATION,
+    MutationGateway,
+)
 from ..protocol.presentation import build_canonical_snapshot, build_presentation_event
 from ..workspace.runtime import get_workspace_manager
 from .websocket import build_preview_update
+from ..server.websocket import execute_direct_batch
 
 logger = logging.getLogger(__name__)
 
@@ -748,9 +754,17 @@ async def api_generate_from_pptspec(payload: Dict[str, Any] = Body(...)):
 
     # Freeze the document identity at generation start. The final persist is a
     # CAS commit against these values, so edits made during generation are never
-    # silently overwritten.
-    base_epoch = session.document_epoch
-    base_revision = session.document.presentation.version
+    # silently overwritten. When the caller supplies the stamp it observed (the
+    # /chat/drive attachment path), that frozen identity is authoritative; the
+    # dedicated endpoint keeps the re-read default for backward compatibility.
+    request_epoch = payload.get("expected_epoch")
+    request_revision = payload.get("expected_revision")
+    base_epoch = request_epoch if request_epoch else session.document_epoch
+    base_revision = (
+        request_revision
+        if request_revision is not None
+        else session.document.presentation.version
+    )
 
     async def on_event(event: Dict[str, Any]):
         event["session_id"] = session_id
@@ -977,8 +991,16 @@ async def api_generate_from_paper(payload: Dict[str, Any] = Body(...)):
     duration_minutes = max(1, duration_minutes)
 
     session = _resolve_session(session_id)
-    base_epoch = session.document_epoch
-    base_revision = session.document.presentation.version
+    # Caller-supplied stamp (from /chat/drive) wins; otherwise fall back to the
+    # identity observed at generation start.
+    request_epoch = payload.get("expected_epoch")
+    request_revision = payload.get("expected_revision")
+    base_epoch = request_epoch if request_epoch else session.document_epoch
+    base_revision = (
+        request_revision
+        if request_revision is not None
+        else session.document.presentation.version
+    )
 
     async def on_event(event: Dict[str, Any]):
         event["session_id"] = session_id
@@ -1085,8 +1107,8 @@ def _as_upload_file(name: str, content_type: Optional[str], content: bytes) -> U
 async def chat_with_attachments(
     message: str = Form(""),
     session_id: str = Form(""),
-    expected_epoch: str = Form(""),
-    expected_revision: int = Form(0),
+    expected_epoch: Optional[str] = Form(None),
+    expected_revision: Optional[int] = Form(None),
     ui_context: str = Form(""),
     files: Optional[List[UploadFile]] = File(None),
 ):
@@ -1132,12 +1154,58 @@ async def chat_with_attachments(
     kinds = [a["kind"] for a in attachments]
     action = await classify_intent(getattr(store.agent_runtime, "llm", None), message, kinds)
 
+    # A single immutable request stamp is frozen BEFORE dispatch and shared by
+    # every mutating action (paper/import/text/image). Preprocessing (PDF vision,
+    # normalization) may take a while; the eventual commit must still CAS against
+    # the revision the user actually observed, never a freshly re-read one.
+    request_epoch = (expected_epoch or "").strip()
+    request_revision = expected_revision
+
+    if action in (ACTION_PAPER, ACTION_IMPORT, ACTION_TEXT, ACTION_IMAGE):
+        if not request_epoch or request_revision is None:
+            raise HTTPException(status_code=409, detail="MISSING_REPLACEMENT_STAMP")
+
     if action == ACTION_CHAT:
+        from ..agent.attachment_context import build_attachment_context
+        from ..agent.uicontext import UIContext
+
+        try:
+            parsed_ui = json.loads(ui_context) if ui_context else None
+        except (TypeError, ValueError):
+            parsed_ui = None
+        ui = UIContext.from_any(parsed_ui)
+
+        async def _analyze_pdf(name: str, content_type: Optional[str], content: bytes):
+            return await analyze_paper(
+                file=_as_upload_file(name, content_type, content),
+                session_id=session.session_id,
+                force=False,
+            )
+
+        attachment_context = await build_attachment_context(
+            session,
+            attachments,
+            ui_context=ui,
+            analyze_pdf=_analyze_pdf,
+            parse_pptx=store.parse_pptx_bytes,
+        )
+
+        async def _on_chat_event(ev: Dict[str, Any]):
+            ev.setdefault("session_id", session.session_id)
+            await store.broadcast(ev, session_id=session.session_id)
+
+        result = await store.agent_runtime.chat_with_attachments(
+            session,
+            message,
+            attachment_context,
+            ui_context=ui,
+            on_event=_on_chat_event,
+        )
         return {
             "success": True,
             "action": ACTION_CHAT,
             "session_id": session.session_id,
-            "message": "",
+            "message": result.get("reply", ""),
         }
 
     def _first(kind: str) -> Optional[Dict[str, Any]]:
@@ -1157,6 +1225,8 @@ async def chat_with_attachments(
                 "session_id": session.session_id,
                 "cache_key": analysis["cache_key"],
                 "user_prompt": message,
+                "expected_epoch": request_epoch,
+                "expected_revision": request_revision,
             }
         )
         return {
@@ -1172,13 +1242,11 @@ async def chat_with_attachments(
         target = _first(KIND_PPTX)
         if target is None:
             raise HTTPException(status_code=400, detail="PPTX_REQUIRED_FOR_IMPORT")
-        if not expected_epoch or expected_revision is None:
-            raise HTTPException(status_code=409, detail="MISSING_REPLACEMENT_STAMP")
         imported = await upload_pptx(
             file=_as_upload_file(target["name"], target["content_type"], target["content"]),
             session_id=session.session_id,
-            expected_epoch=expected_epoch,
-            expected_revision=expected_revision,
+            expected_epoch=request_epoch,
+            expected_revision=request_revision,
         )
         return {"action": ACTION_IMPORT, **imported}
 
@@ -1205,6 +1273,8 @@ async def chat_with_attachments(
             payload={
                 "normalization_id": normalization_id,
                 "session_id": session.session_id,
+                "expected_epoch": request_epoch,
+                "expected_revision": request_revision,
             }
         )
         return {
@@ -1228,7 +1298,8 @@ async def chat_with_attachments(
         active = session.active_slide_id
         if not active and presentation.slides:
             active = presentation.slides[0].id
-        result = await MutationGateway.execute_tool_calls(
+        result = await execute_direct_batch(
+            session,
             [
                 {
                     "name": "add_image",
@@ -1243,17 +1314,27 @@ async def chat_with_attachments(
                     },
                 }
             ],
-            presentation,
-            session.history,
-            session=session,
-            source="user_direct",
-            bypass_confirmation=True,
+            mutation_id=f"attach_img_{uuid.uuid4().hex[:12]}",
             atomic=True,
+            document_epoch=request_epoch,
+            expected_revision=request_revision,
         )
         if not result.success:
+            first = result.first_result() if hasattr(result, "first_result") else None
+            error = getattr(result, "error", None) or (
+                first.get("error") if isinstance(first, dict) else None
+            )
+            if error in (STALE_MUTATION, DOCUMENT_EPOCH_MISMATCH):
+                raise HTTPException(
+                    status_code=409,
+                    detail=(
+                        "STALE_IMAGE_INSERT: 演示文稿在附件处理期间已修改，"
+                        "插入已取消；请重试。"
+                    ),
+                )
             raise HTTPException(
                 status_code=400,
-                detail=f"IMAGE_INSERT_FAILED: {getattr(result, 'error', None) or 'unknown'}",
+                detail=f"IMAGE_INSERT_FAILED: {error or 'unknown'}",
             )
         await store.broadcast(
             build_presentation_event(

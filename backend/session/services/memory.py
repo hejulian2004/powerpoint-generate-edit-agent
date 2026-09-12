@@ -9,6 +9,7 @@ through the session.
 
 from __future__ import annotations
 
+import asyncio
 import uuid
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
@@ -34,6 +35,29 @@ class MemoryService:
         self.compressed_anchor: Optional[Dict[str, Any]] = None
         self.compression_through_index: int = 0
         self.compression_report: Optional[Dict[str, Any]] = None
+        # Serializes every path that reads the transcript to build model context
+        # or writes the transcript / compression state. This is conversation
+        # state, NOT the document lock: it never blocks GUI PPT edits.
+        self._conversation_lock: Optional[asyncio.Lock] = None
+        self._conversation_lock_loop: Optional[Any] = None
+
+    @property
+    def conversation_lock(self) -> asyncio.Lock:
+        """The conversation-state mutex, bound to the caller's running loop.
+
+        A ``MemoryService`` can outlive a single event loop (tests drive each
+        scenario in its own ``asyncio.run``); the lock is therefore rebound when
+        a different loop uses the session. Within one loop the same instance
+        serializes all transcript/compression access.
+        """
+        try:
+            loop: Optional[Any] = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = None
+        if self._conversation_lock is None or self._conversation_lock_loop is not loop:
+            self._conversation_lock = asyncio.Lock()
+            self._conversation_lock_loop = loop
+        return self._conversation_lock
 
     def clear_conversation(self) -> None:
         """Starts a fresh conversation while leaving document/deck state untouched."""
