@@ -19,6 +19,7 @@ class PPTGenerationState(TypedDict, total=False):
 
     session_id: str
     mode: Literal["generate", "edit"]
+    source_type: str  # "pptspec" (default) | "paper"
 
     raw_input: str
     input_format: str
@@ -30,6 +31,25 @@ class PPTGenerationState(TypedDict, total=False):
     deck_spec: Optional[DeckSpec]
     deck_layout: Optional[DeckLayoutSpec]
     presentation_ir: Optional[PresentationIR]
+
+    # Paper -> PPT inputs (S4). When ``source_type == "paper"`` the graph plans and
+    # designs the deck directly from PaperIR + PaperVisualIR.
+    paper_ir: Optional[Any]
+    paper_visual_ir: Optional[Any]
+    presentation_plan: Optional[Any]
+    user_prompt: str
+    duration_minutes: int
+
+    # LLM-native design path inputs (S2). When ``llm_layout_plans`` is present and
+    # ``LLM_NATIVE_LAYOUT_ENABLED`` is on, layout_node compiles free-form plans
+    # instead of the deterministic template engine.
+    llm_layout_plans: List[Any]
+    deck_art_direction: Optional[Any]
+
+    # Provenance recorded on PresentationIR.metadata["generation"].
+    generation_mode: str
+    layout_source: str
+    fallback_reason: Optional[str]
 
     visual_issues: List[VisualIssue]
 

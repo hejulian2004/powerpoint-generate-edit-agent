@@ -41,6 +41,31 @@ class AppSettings(BaseModel):
     # Visual Self-Healing Auto-Fix Loop
     max_visual_iterations: int = int(os.getenv("MAX_VISUAL_ITERATIONS", "3"))
 
+    # ------------------------------------------------------------------
+    # LLM-native multimodal presentation design (paper -> PPT)
+    # ------------------------------------------------------------------
+    # Master switch for the LLM-native free-form layout path. When disabled the
+    # pipeline falls back to the legacy deterministic/template layout engine.
+    llm_native_layout_enabled: bool = os.getenv(
+        "LLM_NATIVE_LAYOUT_ENABLED", "true"
+    ).strip().lower() == "true"
+
+    # Paper page rasterization + multimodal (vision) paper understanding.
+    paper_vision_enabled: bool = os.getenv(
+        "PAPER_VISION_ENABLED", "true"
+    ).strip().lower() == "true"
+
+    # Bounded repair / refinement loops (guards against infinite churn).
+    max_layout_repair_rounds: int = int(os.getenv("MAX_LAYOUT_REPAIR_ROUNDS", "2"))
+    max_aesthetic_refinement_rounds: int = int(
+        os.getenv("MAX_AESTHETIC_REFINEMENT_ROUNDS", "2")
+    )
+    max_deck_revisit_rounds: int = int(os.getenv("MAX_DECK_REVISIT_ROUNDS", "1"))
+
+    # Paper vision analysis batching and canonical page render resolution.
+    paper_vision_batch_size: int = int(os.getenv("PAPER_VISION_BATCH_SIZE", "4"))
+    paper_page_render_dpi: int = int(os.getenv("PAPER_PAGE_RENDER_DPI", "144"))
+
     # Context Window Limit & Auto-Compression Setting
     context_limit: str = os.getenv("CONTEXT_LIMIT", "256k")  # "128k" | "256k" | "512k" | "1m" | "2m"
 

@@ -99,3 +99,30 @@ def generate_deck_layout(
         slides=slide_layouts,
         metadata={"profile": deck_spec.profile},
     )
+
+
+def compile_llm_layout(
+    plan: "object",
+    slide_spec: SlideSpec,
+    canvas: Optional[Canvas] = None,
+) -> LayoutSpec:
+    """Compile a free-form LLM layout plan into a LayoutSpec.
+
+    Thin, lazily-imported entry point so callers can depend on ``backend.layout``
+    without importing ``backend.design`` at module load time (avoids a cycle).
+    """
+    from ..design.layout_compiler import compile_llm_layout as _impl
+
+    return _impl(plan, slide_spec, canvas)
+
+
+def compile_llm_deck_layout(
+    plans: "object",
+    deck_spec: DeckSpec,
+    canvas: Optional[Canvas] = None,
+    on_fallback=None,
+) -> DeckLayoutSpec:
+    """Compile a deck of LLM layout plans; per-slide template fallback if missing."""
+    from ..design.layout_compiler import compile_llm_deck_layout as _impl
+
+    return _impl(plans, deck_spec, canvas, on_fallback)
