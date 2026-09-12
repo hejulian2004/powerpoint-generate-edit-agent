@@ -23,13 +23,13 @@ def build_canonical_snapshot(
     """
     snapshot: Dict[str, Any] = {
         "session_id": session.session_id,
-        "presentation": session.pres.model_dump(),
-        "document_epoch": getattr(session, "document_epoch", None),
-        "version": session.pres.version,
-        "active_slide_id": session.active_slide_id,
-        "can_undo": session.history.can_undo(),
-        "can_redo": session.history.can_redo(),
-        "last_target_id": session.last_target_id,
+        "presentation": session.document.presentation.model_dump(),
+        "document_epoch": session.document.epoch,
+        "version": session.document.presentation.version,
+        "active_slide_id": session.document.active_slide_id,
+        "can_undo": session.history_service.can_undo(),
+        "can_redo": session.history_service.can_redo(),
+        "last_target_id": session.document.last_target_id,
         "last_mutation_id": last_mutation_id,
     }
     if extra:

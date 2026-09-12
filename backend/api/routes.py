@@ -41,7 +41,7 @@ def _resolve_session(session_id: Optional[str] = None) -> PPTSession:
 async def get_presentation(session_id: Optional[str] = Query(None)):
     """Legacy raw IR. Do not use to correct canonical client state."""
     session = _resolve_session(session_id)
-    return session.pres.model_dump()
+    return session.document.presentation.model_dump()
 
 
 @router.get("/presentation/snapshot")
@@ -66,7 +66,7 @@ async def preview_active_slide(
     session = _resolve_session(session_id)
     # `build_preview_update` falls back to the session active slide when the id is
     # unknown; pre-check so an unknown slide is an explicit 404.
-    if not session.pres.get_slide(slide_id):
+    if not session.document.presentation.get_slide(slide_id):
         raise HTTPException(status_code=404, detail="Slide not found")
     preview = build_preview_update(session, slide_id)
     if preview is None:
@@ -77,7 +77,7 @@ async def preview_active_slide(
 @router.get("/slide/{slide_id}/svg")
 async def get_slide_svg(slide_id: str, session_id: Optional[str] = Query(None)):
     session = _resolve_session(session_id)
-    slide = session.pres.get_slide(slide_id)
+    slide = session.document.presentation.get_slide(slide_id)
     if not slide:
         raise HTTPException(status_code=404, detail="Slide not found")
     svg_code = SVGRenderer.render_slide(slide)
@@ -96,7 +96,7 @@ async def _run_history_action(
     resolved_mutation_id = mutation_id or f"mut_{uuid.uuid4().hex[:10]}"
     batch = await MutationGateway.execute_tool_calls(
         [{"name": action, "arguments": {}, "id": f"call_{uuid.uuid4().hex[:6]}"}],
-        session.pres,
+        session.document.presentation,
         session.history,
         session=session,
         bypass_confirmation=True,
@@ -112,12 +112,12 @@ async def _run_history_action(
     await store.broadcast({
         "type": "presentation_updated",
         "session_id": session.session_id,
-        "presentation": session.pres.model_dump(),
+        "presentation": session.document.presentation.model_dump(),
         "can_undo": session.history.can_undo(),
         "can_redo": session.history.can_redo(),
         "active_slide_id": session.active_slide_id,
-        "last_target_id": session.last_target_id,
-        "version": session.pres.version,
+        "last_target_id": session.document.last_target_id,
+        "version": session.document.presentation.version,
         "document_epoch": getattr(session, "document_epoch", None),
         "last_mutation_id": resolved_mutation_id,
     }, session_id=session.session_id)
@@ -246,8 +246,8 @@ async def export_preflight(session_id: Optional[str] = Query(None)):
     session = _resolve_session(session_id)
     return {
         "session_id": session.session_id,
-        "presentation_version": session.pres.version,
-        **store.export_preflight(pres=session.pres),
+        "presentation_version": session.document.presentation.version,
+        **store.export_preflight(pres=session.document.presentation),
     }
 
 
@@ -403,7 +403,7 @@ async def chat_interaction(
     # serializes only the actual mutations so GUI actions stay responsive.
     result = await store.agent_runtime.run_turn(
         user_message=prompt,
-        pres=session.pres,
+        pres=session.document.presentation,
         history=session.history,
         session=session,
         on_event=on_event,
@@ -431,8 +431,8 @@ async def list_pending_confirmations(session_id: Optional[str] = Query(None)):
     session = _resolve_session(session_id)
     return {
         "session_id": session.session_id,
-        "presentation_version": session.pres.version,
-        "pending": list(session.pending_confirmations.values()),
+        "presentation_version": session.document.presentation.version,
+        "pending": list(session.confirmations.pending.values()),
     }
 
 
@@ -470,10 +470,10 @@ async def confirm_pending_action(
     await store.broadcast({
         "type": "presentation_updated",
         "session_id": session.session_id,
-        "presentation": session.pres.model_dump(),
+        "presentation": session.document.presentation.model_dump(),
         "can_undo": session.history.can_undo(),
         "can_redo": session.history.can_redo(),
-        "last_target_id": session.last_target_id,
+        "last_target_id": session.document.last_target_id,
     }, session_id=session.session_id)
 
     return result
@@ -592,7 +592,7 @@ async def api_generate_from_pptspec(payload: Dict[str, Any] = Body(...)):
     # CAS commit against these values, so edits made during generation are never
     # silently overwritten.
     base_epoch = session.document_epoch
-    base_revision = session.pres.version
+    base_revision = session.document.presentation.version
 
     async def on_event(event: Dict[str, Any]):
         event["session_id"] = session_id
@@ -616,7 +616,7 @@ async def api_generate_from_pptspec(payload: Dict[str, Any] = Body(...)):
             config={
                 "configurable": {
                     "on_event": on_event,
-                    "pres": session.pres,
+                    "pres": session.document.presentation,
                     "llm_client": getattr(store.agent_runtime, "llm", None),
                 }
             },

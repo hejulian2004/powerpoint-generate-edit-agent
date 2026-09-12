@@ -36,7 +36,7 @@ def build_preview_update(session: PPTSession, slide_id: Optional[str] = None) ->
     """Generates real-time SVG rendering and quantitative layout health scores for the active slide."""
     slide = None
     if slide_id:
-        slide = session.pres.get_slide(slide_id)
+        slide = session.document.presentation.get_slide(slide_id)
     if not slide:
         slide = session.get_active_slide()
     if not slide:
@@ -52,7 +52,7 @@ def build_preview_update(session: PPTSession, slide_id: Optional[str] = None) ->
             "svg": svg,
             "score": round(health_report.score, 1),
             "quality_score": health_report.quality_score.to_dict(),
-            "version": session.pres.version
+            "version": session.document.presentation.version
         }
     except Exception as e:
         logger.warning(f"Failed to generate preview update: {e}")
@@ -93,7 +93,7 @@ async def execute_direct_batch(
     """Executes a direct (unambiguous user) mutation envelope through the gateway."""
     return await MutationGateway.execute_tool_calls(
         tool_calls,
-        session.pres,
+        session.document.presentation,
         session.history,
         session=session,
         on_event=on_event,
@@ -123,7 +123,7 @@ def _rejection_payload(session: PPTSession, mutation_id: str, batch: Any) -> Dic
         "session_id": session.session_id,
         "mutation_id": mutation_id,
         "error": error,
-        "version": session.pres.version,
+        "version": session.document.presentation.version,
         "document_epoch": getattr(session, "document_epoch", None),
     }
     # CAS-class rejections mean the client's baseline is stale. Ship the
@@ -131,7 +131,7 @@ def _rejection_payload(session: PPTSession, mutation_id: str, batch: Any) -> Dic
     # atomically (no extra round-trip that could itself race). Ordinary schema /
     # business failures stay lightweight.
     if error in (STALE_MUTATION, DOCUMENT_EPOCH_MISMATCH):
-        payload["presentation"] = session.pres.model_dump()
+        payload["presentation"] = session.document.presentation.model_dump()
         payload["active_slide_id"] = session.active_slide_id
         payload["can_undo"] = session.history.can_undo()
         payload["can_redo"] = session.history.can_redo()
@@ -245,7 +245,7 @@ async def websocket_endpoint(websocket: WebSocket):
                         "session_id": session.session_id,
                         "error": "missing_request_stamp",
                         "document_epoch": getattr(session, "document_epoch", None),
-                        "version": session.pres.version,
+                        "version": session.document.presentation.version,
                     })
                     continue
 
@@ -260,7 +260,7 @@ async def websocket_endpoint(websocket: WebSocket):
                 try:
                     result = await store.agent_runtime.run_turn(
                         user_message=user_message,
-                        pres=session.pres,
+                        pres=session.document.presentation,
                         history=session.history,
                         session=session,
                         on_event=on_event,
@@ -312,7 +312,7 @@ async def websocket_endpoint(websocket: WebSocket):
                 await store.broadcast(
                     build_presentation_updated(
                         session,
-                        pending_confirmations_count=len(session.pending_confirmations),
+                        pending_confirmations_count=len(session.confirmations.pending),
                     ),
                     session_id=session.session_id,
                 )
@@ -329,7 +329,7 @@ async def websocket_endpoint(websocket: WebSocket):
             # only return a preview of the requested slide to the requester.
             elif msg_type == "select_slide":
                 slide_id = data.get("slide_id")
-                if slide_id and session.pres.get_slide(slide_id):
+                if slide_id and session.document.presentation.get_slide(slide_id):
                     new_preview = build_preview_update(session, slide_id)
                     if new_preview:
                         await websocket.send_json(new_preview)
@@ -359,7 +359,7 @@ async def websocket_endpoint(websocket: WebSocket):
                     await websocket.send_json(_rejection_payload(session, mutation_id, batch))
                 else:
                     if args.get("element_id"):
-                        session.last_target_id = args.get("element_id")
+                        session.document.last_target_id = args.get("element_id")
                     await _broadcast_state(
                         session,
                         last_mutation_id=mutation_id,
@@ -421,7 +421,7 @@ async def websocket_endpoint(websocket: WebSocket):
                     hint_sid: Optional[str] = None
                     if action == "create_slide":
                         new_sid = res.get("slide_id") or (
-                            session.pres.slides[-1].id if session.pres.slides else None
+                            session.document.presentation.slides[-1].id if session.document.presentation.slides else None
                         )
                         if new_sid:
                             session.set_active_slide(new_sid)
@@ -433,15 +433,15 @@ async def websocket_endpoint(websocket: WebSocket):
                         if dup_sid:
                             hint_sid = dup_sid
                     elif action == "delete_slide":
-                        if not session.get_active_slide() and session.pres.slides:
-                            session.set_active_slide(session.pres.slides[0].id)
+                        if not session.get_active_slide() and session.document.presentation.slides:
+                            session.set_active_slide(session.document.presentation.slides[0].id)
                     elif action == "delete_element":
-                        session.last_target_id = None
+                        session.document.last_target_id = None
                     elif action in ("ungroup_elements", "align_elements"):
-                        session.last_target_id = None
+                        session.document.last_target_id = None
                     elif action == "group_elements":
                         if res.get("group_id"):
-                            session.last_target_id = res.get("group_id")
+                            session.document.last_target_id = res.get("group_id")
                     elif action in (
                         "duplicate_element", "add_shape", "add_text", "add_connector",
                         "optimize_layout", "apply_theme", "clear_slide_elements",
@@ -449,7 +449,7 @@ async def websocket_endpoint(websocket: WebSocket):
                     ):
                         new_id = res.get("element_id") or res.get("new_element_id")
                         if new_id:
-                            session.last_target_id = new_id
+                            session.document.last_target_id = new_id
 
                     await _broadcast_state(
                         session,
@@ -506,7 +506,7 @@ async def websocket_endpoint(websocket: WebSocket):
             # Checkpoint operations
             elif msg_type == "create_checkpoint":
                 desc = data.get("description", "手动快照")
-                async with session.mutation_lock:
+                async with session.document.mutation_lock:
                     health = QualityService.evaluate_slide(session.get_active_slide()) if session.get_active_slide() else None
                     score = health.score if health else None
                     cp = session.create_checkpoint(description=desc, score=score)
