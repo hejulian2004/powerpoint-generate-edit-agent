@@ -49,6 +49,18 @@ def test_bootstrap_hint_is_only_a_hint(workspace):
     assert ghost["session_id"] == sid
 
 
+def test_server_active_wins_over_existing_hint(workspace):
+    """A browser hint must not move an established server workspace pointer."""
+    first = asyncio.run(workspace_bootstrap(hint=None))
+    sid = first["session_id"]
+    other = asyncio.run(workspace.create_session())
+    asyncio.run(workspace.activate(sid))
+
+    res = asyncio.run(workspace_bootstrap(hint=other.session_id))
+    assert res["session_id"] == sid
+    assert workspace.last_active_session_id == sid
+
+
 def test_resolve_session_uses_workspace_last_active(workspace):
     created = asyncio.run(workspace_bootstrap(hint=None))
     assert _resolve_session(None).session_id == created["session_id"]

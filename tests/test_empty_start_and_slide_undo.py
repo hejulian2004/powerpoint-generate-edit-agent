@@ -34,6 +34,8 @@ def test_ws_fresh_session_starts_empty():
     client = TestClient(app)
     sid = "ws_empty_start"
     session_manager.delete_session(sid)
+    # The websocket never implicitly creates a session; seed a blank one.
+    session_manager.create_session(session_id=sid)
 
     with client.websocket_connect(f"/ws?session_id={sid}") as ws:
         loaded = ws.receive_json()

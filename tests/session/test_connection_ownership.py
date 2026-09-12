@@ -49,6 +49,8 @@ def test_second_tab_takes_over_and_old_socket_is_closed():
 
     client = TestClient(app)
     sid = "ws_takeover_test"
+    # The websocket never implicitly creates a session, so seed it first.
+    store.session_manager.create_session(session_id=sid)
     try:
         with client.websocket_connect(f"/ws?session_id={sid}") as first:
             first_msg = first.receive_json()

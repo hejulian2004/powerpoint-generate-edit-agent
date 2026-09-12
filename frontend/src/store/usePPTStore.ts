@@ -526,6 +526,7 @@ const applyElementUpdate = (
 interface PPTState {
   sessionId: string
   isBootstrapping: boolean
+  bootstrapError: string | null
   sessionTakenOver: boolean
   editLockState: EditLockState
   needsResync: boolean
@@ -678,6 +679,7 @@ const canAuthorMutation = (state: {
 export const usePPTStore = create<PPTState>((set, get) => ({
   sessionId: '',
   isBootstrapping: false,
+  bootstrapError: null,
   sessionTakenOver: false,
   editLockState: 'editable',
   needsResync: false,
@@ -753,7 +755,7 @@ export const usePPTStore = create<PPTState>((set, get) => ({
 
   bootstrapWorkspace: async () => {
     if (get().isBootstrapping) return
-    set({ isBootstrapping: true })
+    set({ isBootstrapping: true, bootstrapError: null })
     try {
       const hint = typeof localStorage !== 'undefined'
         ? localStorage.getItem('ppt_session_hint')
@@ -764,22 +766,28 @@ export const usePPTStore = create<PPTState>((set, get) => ({
         throw new Error(`workspace bootstrap failed: ${res.status}`)
       }
       const data = await res.json()
-      if (data.session_id) {
-        if (typeof localStorage !== 'undefined') {
-          localStorage.setItem('ppt_session_hint', data.session_id)
-        }
-        set({ sessionId: data.session_id })
+      if (!data.session_id) {
+        throw new Error('workspace bootstrap returned no session')
       }
+      if (typeof localStorage !== 'undefined') {
+        localStorage.setItem('ppt_session_hint', data.session_id)
+      }
+      set({ sessionId: data.session_id, bootstrapError: null })
       if (data.snapshot) {
         get().adoptCanonicalSnapshot(data.snapshot)
       }
+      get().initWebSocket()
     } catch (e) {
-      // The backend workspace is the sole authority. If bootstrap is unavailable
-      // we still open the socket; the server rejects/closes an invalid session.
+      // The backend workspace is the sole session authority. If bootstrap fails
+      // we stay disconnected: falling back to a local/hinted session id would
+      // bypass that authority and open a socket for a session the server may not
+      // own. Surface the error and let the user retry.
       console.error('workspace bootstrap failed', e)
+      set({
+        bootstrapError: e instanceof Error ? e.message : 'workspace bootstrap failed'
+      })
     } finally {
       set({ isBootstrapping: false })
-      get().initWebSocket()
     }
   },
 
@@ -1413,6 +1421,10 @@ export const usePPTStore = create<PPTState>((set, get) => ({
     const sessionId = get().sessionId
     if (!sessionId) {
       // Workspace not bootstrapped yet; App calls bootstrapWorkspace() first.
+      return
+    }
+    if (get().sessionTakenOver) {
+      // Superseded tab: never fight the tab that took over this session.
       return
     }
     const existingWs = get().ws

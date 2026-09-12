@@ -69,13 +69,23 @@ describe('workspace bootstrap', () => {
     expect(fetchMock).toHaveBeenCalledWith('/api/workspace/bootstrap?hint=sess_prev')
   })
 
-  it('still opens the socket when bootstrap is unavailable', async () => {
+  it('stays disconnected and surfaces an error when bootstrap is unavailable', async () => {
     vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('offline')))
     usePPTStore.setState({ sessionId: 'sess_local' })
 
     await usePPTStore.getState().bootstrapWorkspace()
 
-    expect(FakeWebSocket.instances).toHaveLength(1)
-    expect(FakeWebSocket.latest().url).toContain('session_id=sess_local')
+    expect(FakeWebSocket.instances).toHaveLength(0)
+    expect(usePPTStore.getState().bootstrapError).toBeTruthy()
+  })
+
+  it('does not adopt a session when the backend returns none', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ session_id: null })
+    }))
+    await usePPTStore.getState().bootstrapWorkspace()
+    expect(FakeWebSocket.instances).toHaveLength(0)
+    expect(usePPTStore.getState().bootstrapError).toBeTruthy()
   })
 })

@@ -8,7 +8,7 @@ import { PPTSpecImportModal } from './components/PPTSpecImportModal'
 import { usePPTStore } from './store/usePPTStore'
 
 export const App: React.FC = () => {
-  const { bootstrapWorkspace } = usePPTStore()
+  const { bootstrapWorkspace, bootstrapError } = usePPTStore()
 
   useEffect(() => {
     bootstrapWorkspace()
@@ -72,6 +72,17 @@ export const App: React.FC = () => {
 
   return (
     <div className="flex flex-col w-screen h-screen bg-canvas text-main antialiased overflow-hidden">
+      {bootstrapError && (
+        <div className="flex items-center justify-between gap-3 px-4 py-2 text-xs font-medium bg-rose-50 text-rose-700 border-b border-rose-200 shrink-0">
+          <span>工作区启动失败：{bootstrapError}（未连接到服务器，请刷新重试）</span>
+          <button
+            onClick={() => bootstrapWorkspace()}
+            className="px-2 py-1 rounded border border-rose-300 hover:bg-rose-100 transition-colors"
+          >
+            重试
+          </button>
+        </div>
+      )}
       <Header />
       <div className="flex flex-1 overflow-hidden">
         <Sidebar />
