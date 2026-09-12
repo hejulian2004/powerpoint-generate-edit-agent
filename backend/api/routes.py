@@ -74,10 +74,20 @@ async def workspace_bootstrap(hint: Optional[str] = Query(None)):
         }
 
     session = None
-    if hint:
-        session = store.session_manager.get_session(hint) or await manager.restore_session(hint)
-    if session is None:
-        session = await manager.restore_last_active()
+    # Backend authority (S5): an established server-side active session always
+    # wins. A browser ``hint`` is only a fallback when the workspace has no
+    # pointer yet, and it must never move an already-established server pointer.
+    workspace_active = manager.last_active_session_id
+    if workspace_active:
+        session = (
+            store.session_manager.get_session(workspace_active)
+            or await manager.restore_session(workspace_active)
+        )
+    if session is None and hint:
+        session = (
+            store.session_manager.get_session(hint)
+            or await manager.restore_session(hint)
+        )
     is_new = session is None
     if session is None:
         session = await manager.create_session(create_default_demo_presentation())

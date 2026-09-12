@@ -15,8 +15,12 @@ const renderApp = async () => {
 describe('App keyboard shortcut scoping', () => {
   beforeEach(() => {
     installFakeWebSocket()
-    // App bootstraps the workspace over HTTP first; keep it offline in jsdom.
-    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('offline')))
+    // App bootstraps the workspace over HTTP first; return a session so the
+    // socket opens against the backend-owned session id.
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ session_id: 'sess_test', is_new: false, snapshot: null })
+    }))
     usePPTStore.setState({
       sessionId: 'sess_test',
       ws: null,
