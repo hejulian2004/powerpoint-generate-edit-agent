@@ -65,6 +65,30 @@ class SlidePlan(BaseModel):
         description="Speaker notes or presentation guidance for the presenter",
     )
 
+    # ------------------------------------------------------------------
+    # Multimodal design planning (LLM-native pipeline).
+    # These are optional so the legacy deterministic planner (which never sets
+    # them) keeps producing byte-identical plans.
+    # ------------------------------------------------------------------
+    source_pages: List[int] = Field(
+        default_factory=list,
+        description="Paper page numbers this slide draws on (visual context selection)",
+    )
+    visual_evidence_ids: List[str] = Field(
+        default_factory=list,
+        description="PaperVisualIR region ids (e.g. ['page_5_region_1']) as visual evidence",
+    )
+    design_goal: str = Field(
+        "", description="Design intent for this slide (e.g. 'the architecture figure dominates')"
+    )
+    visual_priority: str = Field(
+        "", description="What should visually dominate this slide ('figure' | 'text' | 'table' | ...)"
+    )
+    factual_evidence_ids: List[str] = Field(
+        default_factory=list,
+        description="Textual evidence handles (PaperIR sections/figures/tables) for fact checking",
+    )
+
 
 class PresentationPlan(BaseModel):
     """Top-level presentation plan generated from PaperIR."""

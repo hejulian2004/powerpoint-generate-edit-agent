@@ -747,3 +747,185 @@ async def api_generate_from_pptspec(payload: Dict[str, Any] = Body(...)):
         "asset_requirements": [r.model_dump() for r in artifact.asset_requirements],
         **build_canonical_snapshot(session),
     }
+
+
+@router.post("/paper/analyze")
+async def analyze_paper(
+    file: UploadFile = File(...),
+    session_id: Optional[str] = Query(None),
+    force: bool = Query(False),
+):
+    """Render + visually analyze an uploaded paper PDF (PaperIR + PaperVisualIR).
+
+    This is the Phase 0-2 observable surface: it never generates a deck and never
+    writes to a session's PresentationIR. Vision is optional: when unavailable the
+    response still returns the rendered pages and the textual PaperIR with
+    ``vision_model=null`` and a degradation warning.
+    """
+    if not file.filename or not file.filename.lower().endswith(".pdf"):
+        raise HTTPException(status_code=400, detail="Only .pdf files are supported")
+    if session_id:
+        _resolve_session(session_id)
+
+    content = await file.read()
+    if not content:
+        raise HTTPException(status_code=400, detail="EMPTY_PDF: uploaded file is empty")
+
+    import tempfile
+    from pathlib import Path as _Path
+
+    from ..paper import extract_paper
+    from ..paper_visual import analyze_paper_visual, load_or_render, save_visual_ir
+    from ..paper_visual.cache import crops_dir
+
+    with tempfile.TemporaryDirectory() as tmp:
+        pdf_path = _Path(tmp) / file.filename
+        pdf_path.write_bytes(content)
+        try:
+            paper_ir = extract_paper(pdf_path)
+        except Exception as exc:
+            raise HTTPException(status_code=422, detail=f"PAPER_PARSE_FAILED: {exc}")
+
+        try:
+            render_result, cache_dir = load_or_render(pdf_path, force=force)
+        except Exception as exc:
+            raise HTTPException(status_code=422, detail=f"PAPER_RENDER_FAILED: {exc}")
+
+        llm = getattr(store.agent_runtime, "llm", None)
+        visual_ir = await analyze_paper_visual(
+            paper_ir,
+            render_result.assets,
+            llm_client=llm,
+            crop_output_dir=str(crops_dir(cache_dir)),
+            source_sha256=render_result.pdf_sha256,
+        )
+        save_visual_ir(visual_ir, cache_dir)
+
+    return {
+        "success": True,
+        "source_filename": paper_ir.source_filename,
+        "pdf_sha256": render_result.pdf_sha256,
+        "cache_key": cache_dir.name,
+        "cache_hit": render_result.cache_hit,
+        "page_count": render_result.page_count,
+        "vision_model": visual_ir.vision_model,
+        "analysis_version": visual_ir.analysis_version,
+        "pages": [asset.model_dump(mode="json") for asset in render_result.assets],
+        "paper_ir": paper_ir.model_dump(mode="json"),
+        "paper_visual_ir": visual_ir.model_dump(mode="json"),
+        "warnings": list(render_result.warnings) + list(visual_ir.warnings),
+    }
+
+
+@router.post("/paper/generate")
+async def api_generate_from_paper(payload: Dict[str, Any] = Body(...)):
+    """Generate a deck from an analyzed paper (PaperIR + optional PaperVisualIR).
+
+    Runs the LLM-native paper -> PPT pipeline (art direction -> free-form per-slide
+    layouts -> aesthetic refinement -> PresentationIR) and persists through the
+    generation graph's CAS ``commit_replacement`` (epoch rotation). The paper must
+    already be analyzed via ``/api/paper/analyze``.
+    """
+    session_id = str(payload.get("session_id") or "").strip()
+    if not session_id:
+        raise HTTPException(status_code=400, detail="session_id is required")
+
+    paper_ir_data = payload.get("paper_ir")
+    if not paper_ir_data:
+        raise HTTPException(
+            status_code=400,
+            detail="paper_ir is required (analyze the PDF via /api/paper/analyze first)",
+        )
+
+    from ..paper.schema import PaperIR
+    from ..paper_visual.schema import PaperVisualIR
+
+    try:
+        paper_ir = PaperIR.model_validate(paper_ir_data)
+    except Exception as exc:
+        raise HTTPException(status_code=422, detail=f"INVALID_PAPER_IR: {exc}")
+
+    paper_visual_ir = None
+    if payload.get("paper_visual_ir"):
+        try:
+            paper_visual_ir = PaperVisualIR.model_validate(payload["paper_visual_ir"])
+        except Exception as exc:
+            raise HTTPException(status_code=422, detail=f"INVALID_PAPER_VISUAL_IR: {exc}")
+
+    user_prompt = str(payload.get("user_prompt") or "")
+    try:
+        duration_minutes = int(payload.get("duration_minutes") or 15)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=422, detail="duration_minutes must be an integer")
+    duration_minutes = max(1, duration_minutes)
+
+    session = _resolve_session(session_id)
+    base_epoch = session.document_epoch
+    base_revision = session.document.presentation.version
+
+    async def on_event(event: Dict[str, Any]):
+        event["session_id"] = session_id
+        await store.broadcast(event, session_id=session_id)
+
+    initial_state = {
+        "session_id": session_id,
+        "source_type": "paper",
+        "mode": "generate",
+        "paper_ir": paper_ir,
+        "paper_visual_ir": paper_visual_ir,
+        "user_prompt": user_prompt,
+        "duration_minutes": duration_minutes,
+        "max_repair_iterations": 2,
+        "base_document_epoch": base_epoch,
+        "base_revision": base_revision,
+    }
+
+    try:
+        gen_result = await generation_graph.ainvoke(
+            initial_state,
+            config={
+                "configurable": {
+                    "on_event": on_event,
+                    "llm_client": getattr(store.agent_runtime, "llm", None),
+                }
+            },
+        )
+    except Exception as e:
+        logger.exception("Paper generation pipeline error")
+        raise HTTPException(status_code=500, detail=f"Paper generation error: {e}")
+
+    if gen_result.get("status") == "stale_generation":
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "STALE_GENERATION: the document was edited while generation was "
+                "running; the generated result was discarded instead of overwriting "
+                "your changes."
+            ),
+        )
+
+    if gen_result.get("error") or not gen_result.get("presentation_ir"):
+        raise HTTPException(
+            status_code=500,
+            detail=f"Paper generation failed: {gen_result.get('error') or 'Unknown error'}",
+        )
+
+    await store.broadcast(
+        build_presentation_event(
+            session,
+            "presentation_loaded",
+            extra={"checkpoints_count": len(session.checkpoints)},
+        ),
+        session_id=session_id,
+    )
+
+    presentation_ir = gen_result["presentation_ir"]
+    return {
+        "success": True,
+        "session_id": session_id,
+        "source_filename": paper_ir.source_filename,
+        "page_count": paper_ir.metadata.page_count,
+        "slide_count": len(presentation_ir.slides),
+        "generation": presentation_ir.metadata.get("generation", {}),
+        **build_canonical_snapshot(session),
+    }

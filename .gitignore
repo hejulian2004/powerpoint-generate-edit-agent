@@ -29,5 +29,11 @@ artifacts/
 *.pptx
 *.pdf
 
+# Committed test fixture PDFs (paper_visual benchmark) are intentionally tracked.
+!tests/fixtures/**/*.pdf
+
 # Workspace persistence (Phase 3): SQLite DB + WAL/SHM sidecars
 data/
+
+# Generated paper visual page cache (content-addressed render artifacts)
+output/paper_cache/
