@@ -612,6 +612,7 @@ const applyElementUpdate = (
 
 interface PPTState {
   sessionId: string
+  isBootstrapping: boolean
   presentation: PresentationIR | null
   confirmedPresentation: PresentationIR | null
   activeSlideId: string | null
@@ -735,6 +736,7 @@ interface PPTState {
 
   // API / WS
   ws: WebSocket | null
+  bootstrapWorkspace: () => Promise<void>
   initWebSocket: () => void
   sendChatMessage: (text: string) => Promise<void>
   triggerUndo: () => void
@@ -747,7 +749,8 @@ interface PPTState {
 }
 
 export const usePPTStore = create<PPTState>((set, get) => ({
-  sessionId: 'sess_default',
+  sessionId: '',
+  isBootstrapping: false,
   presentation: null,
   confirmedPresentation: null,
   activeSlideId: null,
@@ -811,8 +814,45 @@ export const usePPTStore = create<PPTState>((set, get) => ({
   setContextUsage: (usage) => set({ contextUsage: usage }),
   ws: null,
 
-  setSessionId: (id: string) => set({ sessionId: id }),
+  setSessionId: (id: string) => {
+    if (typeof localStorage !== 'undefined' && id) {
+      localStorage.setItem('ppt_session_hint', id)
+    }
+    set({ sessionId: id })
+  },
   setMutationStatus: (status) => set({ mutationStatus: status }),
+
+  bootstrapWorkspace: async () => {
+    if (get().isBootstrapping) return
+    set({ isBootstrapping: true })
+    try {
+      const hint = typeof localStorage !== 'undefined'
+        ? localStorage.getItem('ppt_session_hint')
+        : null
+      const query = hint ? `?hint=${encodeURIComponent(hint)}` : ''
+      const res = await fetch(`/api/workspace/bootstrap${query}`)
+      if (!res.ok) {
+        throw new Error(`workspace bootstrap failed: ${res.status}`)
+      }
+      const data = await res.json()
+      if (data.session_id) {
+        if (typeof localStorage !== 'undefined') {
+          localStorage.setItem('ppt_session_hint', data.session_id)
+        }
+        set({ sessionId: data.session_id })
+      }
+      if (data.snapshot) {
+        get().adoptCanonicalSnapshot(data.snapshot)
+      }
+    } catch (e) {
+      // The backend workspace is the sole authority. If bootstrap is unavailable
+      // we still open the socket; the server rejects/closes an invalid session.
+      console.error('workspace bootstrap failed', e)
+    } finally {
+      set({ isBootstrapping: false })
+      get().initWebSocket()
+    }
+  },
 
   setPresentation: (pres) => set({
     presentation: pres,
@@ -1437,6 +1477,11 @@ export const usePPTStore = create<PPTState>((set, get) => ({
   },
 
   initWebSocket: () => {
+    const sessionId = get().sessionId
+    if (!sessionId) {
+      // Workspace not bootstrapped yet; App calls bootstrapWorkspace() first.
+      return
+    }
     const existingWs = get().ws
     if (existingWs) {
       existingWs.close()
@@ -1444,7 +1489,7 @@ export const usePPTStore = create<PPTState>((set, get) => ({
 
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
     const host = window.location.host
-    const wsUrl = `${protocol}//${host}/ws?session_id=${get().sessionId}`
+    const wsUrl = `${protocol}//${host}/ws?session_id=${sessionId}`
 
     const ws = new WebSocket(wsUrl)
 

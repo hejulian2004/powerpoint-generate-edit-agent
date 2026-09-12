@@ -5,15 +5,20 @@ import { usePPTStore } from './store/usePPTStore'
 import { FakeWebSocket, installFakeWebSocket } from './test/wsMock'
 import { makePresentation, makeShape, makeSlide } from './test/factories'
 
-const renderApp = () => {
+const renderApp = async () => {
   render(<App />)
-  FakeWebSocket.latest().onopen?.({})
+  await vi.waitFor(() => {
+    FakeWebSocket.latest().onopen?.({})
+  })
 }
 
 describe('App keyboard shortcut scoping', () => {
   beforeEach(() => {
     installFakeWebSocket()
+    // App bootstraps the workspace over HTTP first; keep it offline in jsdom.
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('offline')))
     usePPTStore.setState({
+      sessionId: 'sess_test',
       ws: null,
       wsConnected: false,
       pendingMutations: [],
@@ -24,8 +29,8 @@ describe('App keyboard shortcut scoping', () => {
     })
   })
 
-  it('leaves undo to the browser while an editable field has focus', () => {
-    renderApp()
+  it('leaves undo to the browser while an editable field has focus', async () => {
+    await renderApp()
     const undoSpy = vi.spyOn(usePPTStore.getState(), 'triggerUndo')
 
     const input = document.createElement('input')
@@ -38,8 +43,8 @@ describe('App keyboard shortcut scoping', () => {
     document.body.removeChild(input)
   })
 
-  it('routes canvas undo when focus is outside editable fields', () => {
-    renderApp()
+  it('routes canvas undo when focus is outside editable fields', async () => {
+    await renderApp()
     const undoSpy = vi.spyOn(usePPTStore.getState(), 'triggerUndo')
 
     fireEvent.keyDown(window, { key: 'z', ctrlKey: true })
@@ -47,8 +52,8 @@ describe('App keyboard shortcut scoping', () => {
     expect(undoSpy).toHaveBeenCalledTimes(1)
   })
 
-  it('deletes the selection only outside editable fields', () => {
-    renderApp()
+  it('deletes the selection only outside editable fields', async () => {
+    await renderApp()
     const deleteSpy = vi.spyOn(usePPTStore.getState(), 'deleteSelectedElements')
 
     const input = document.createElement('input')

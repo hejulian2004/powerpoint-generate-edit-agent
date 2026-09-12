@@ -10,12 +10,13 @@ from typing import Dict, Any, Optional
 from fastapi import APIRouter, UploadFile, File, Response, HTTPException, Body, Query
 from fastapi.responses import StreamingResponse
 
-from ..state.store import store
+from ..state.store import store, create_default_demo_presentation
 from ..ir.svg_renderer import SVGRenderer
 from ..config import settings, AppSettings
 from ..session.session import PPTSession
 from ..agent.mutation_gateway import MutationGateway
 from ..protocol.presentation import build_canonical_snapshot, build_presentation_event
+from ..workspace.runtime import get_workspace_manager
 from .websocket import build_preview_update
 
 logger = logging.getLogger(__name__)
@@ -23,18 +24,77 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api")
 
 
+def _active_workspace_session_id() -> Optional[str]:
+    manager = get_workspace_manager()
+    if manager is None:
+        return None
+    return manager.last_active_session_id
+
+
 def _resolve_session(session_id: Optional[str] = None) -> PPTSession:
     """Resolve session for REST operations.
 
-    If session_id is explicitly specified, it must exist; otherwise HTTP 404 is raised.
-    If session_id is omitted, falls back to store.active_session for legacy compatibility.
+    An explicit ``session_id`` must exist (else 404). When omitted, the request is
+    bound to the workspace's ``last_active_session_id`` (S4/S5). There is no hidden
+    "default" session in production: ``APP_ENV=test`` retains the legacy default
+    purely so the pre-workspace test suite can bootstrap without a live workspace.
     """
     if session_id:
         sess = store.session_manager.get_session(session_id)
         if sess is None:
             raise HTTPException(status_code=404, detail="SESSION_NOT_FOUND: Session not found")
         return sess
-    return store.active_session
+    active = _active_workspace_session_id()
+    if active:
+        sess = store.session_manager.get_session(active)
+        if sess is not None:
+            return sess
+    if settings.app_env == "test":
+        return store.active_session
+    raise HTTPException(status_code=400, detail="SESSION_ID_REQUIRED: session_id is required")
+
+
+@router.get("/workspace/bootstrap")
+async def workspace_bootstrap(hint: Optional[str] = Query(None)):
+    """Sole cold-start authority: returns the session the workspace should open.
+
+    The workspace's ``last_active_session_id`` wins; a browser ``hint`` is only an
+    optimization. A brand-new workspace gets exactly one empty/demo session. The
+    response carries a canonical snapshot so the frontend never has to assemble
+    cold-start state itself.
+    """
+    manager = get_workspace_manager()
+    if manager is None:
+        session = store.active_session
+        return {
+            "session_id": session.session_id,
+            "is_new": False,
+            "snapshot": build_canonical_snapshot(session),
+            "sessions": [session.to_dict()],
+        }
+
+    session = None
+    if hint:
+        session = store.session_manager.get_session(hint) or await manager.restore_session(hint)
+    if session is None:
+        session = await manager.restore_last_active()
+    is_new = session is None
+    if session is None:
+        session = await manager.create_session(create_default_demo_presentation())
+    else:
+        await manager.activate(session.session_id)
+
+    sessions = [
+        store.session_manager.get_session(sid).to_dict()
+        for sid in await manager.list_session_ids()
+        if store.session_manager.get_session(sid) is not None
+    ]
+    return {
+        "session_id": session.session_id,
+        "is_new": is_new,
+        "snapshot": build_canonical_snapshot(session),
+        "sessions": sessions,
+    }
 
 
 @router.get("/presentation")
@@ -585,8 +645,18 @@ async def api_generate_from_pptspec(payload: Dict[str, Any] = Body(...)):
             detail=f"Truthfulness validation failed: {'; '.join(val_res.errors)}"
         )
 
-    # Session binding
-    session = store.session_manager.get_or_create(session_id)
+    # Session binding: the workspace is the sole cold-start authority, so a
+    # generation target must already exist. (Legacy tests without a workspace
+    # manager may still auto-create under APP_ENV=test.)
+    session = store.session_manager.get_session(session_id)
+    if session is None:
+        if settings.app_env == "test":
+            session = store.session_manager.get_or_create(session_id)
+        else:
+            raise HTTPException(
+                status_code=404,
+                detail="SESSION_NOT_FOUND: Generation target session does not exist",
+            )
 
     # Freeze the document identity at generation start. The final persist is a
     # CAS commit against these values, so edits made during generation are never
