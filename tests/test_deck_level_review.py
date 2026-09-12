@@ -10,6 +10,7 @@ import asyncio
 from backend.agent.graph import PPTAgentState, build_ppt_agent_graph
 from backend.ir.models import PresentationIR
 from backend.ir.patch import HistoryManager
+from backend.session.session import PPTSession
 
 
 class DeckLLM:
@@ -44,6 +45,9 @@ def test_generation_reviews_every_changed_slide():
         pres = PresentationIR(title="Untitled")
         history = HistoryManager(pres)
         llm = DeckLLM()
+        # A whole-document replacement requires a session (it rotates the document
+        # identity), so generation must run session-backed.
+        session = PPTSession(session_id="sess_deck_review", pres=pres)
 
         initial_state: PPTAgentState = {
             "messages": [],
@@ -54,6 +58,7 @@ def test_generation_reviews_every_changed_slide():
             "configurable": {
                 "pres": pres,
                 "history": history,
+                "session": session,
                 "llm_client": llm,
             }
         })

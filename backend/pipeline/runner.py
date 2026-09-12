@@ -12,13 +12,14 @@ import asyncio
 import json
 import logging
 import sys
+import uuid
 from pathlib import Path
 from typing import Dict, Any, List, Optional, Union, Callable
 
 from ..ir.models import PresentationIR, SlideIR
-from ..ir.patch import HistoryManager
 from ..agent.runtime import AgentRuntime
 from ..agent.remediation_runner import RemediationRunner
+from ..session.session import PPTSession
 from .result import PipelineResult
 from .importer import PPTImporter
 from .evaluator import PipelineEvaluator
@@ -49,8 +50,6 @@ class PPTEndToEndPipeline:
         out_p = Path(output_path)
         out_p.parent.mkdir(parents=True, exist_ok=True)
 
-        history = HistoryManager()
-
         # 1. Parse or initialize PresentationIR
         pres, in_path_str, import_err = self.importer.load_presentation(input_path, target_slide_num)
         if import_err:
@@ -68,6 +67,12 @@ class PPTEndToEndPipeline:
                 presentation_title="",
                 error=import_err
             )
+
+        # Whole-document generation/replacement requires a session identity to
+        # rotate the document epoch and validate the plan CAS. This batch run owns
+        # a short-lived session over the parsed document.
+        session = PPTSession(session_id=f"pipeline_{uuid.uuid4().hex[:12]}", pres=pres)
+        history = session.history
 
         # Create baseline state snapshot for failure rollback protection
         initial_snapshot = pres.create_snapshot(history=history)
@@ -88,6 +93,7 @@ class PPTEndToEndPipeline:
                 user_message=user_instruction,
                 pres=pres,
                 history=history,
+                session=session,
                 on_event=on_event,
                 max_iterations=max_iterations
             )

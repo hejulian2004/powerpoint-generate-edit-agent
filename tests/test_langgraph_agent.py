@@ -8,6 +8,7 @@ from backend.agent.tools import tools
 from backend.agent.runtime import AgentRuntime
 from backend.agent.graph import build_ppt_agent_graph, PPTAgentState
 from backend.agent.llm import LLMClient
+from backend.session.session import PPTSession
 
 
 def test_generate_presentation_tool():
@@ -254,6 +255,8 @@ def test_langgraph_agent_full_turn_generation():
         pres = PresentationIR(title="Test Deck")
         pres.slides.append(SlideIR(id="init", slide_num=1))
         history = HistoryManager()
+        # Whole-document generation is a replacement, which requires a session.
+        session = PPTSession(session_id="sess_full_turn_gen", pres=pres)
 
         runtime = AgentRuntime()
         events = []
@@ -265,6 +268,7 @@ def test_langgraph_agent_full_turn_generation():
             user_message="请为我生成一份关于企业数字化转型的完整PPT演示文稿",
             pres=pres,
             history=history,
+            session=session,
             on_event=on_event
         )
 

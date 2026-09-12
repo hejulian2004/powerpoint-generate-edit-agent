@@ -6,6 +6,7 @@ from typing import List, Dict, Any
 from backend.agent.graph import build_ppt_agent_graph, PPTAgentState
 from backend.ir.models import PresentationIR
 from backend.ir.patch import HistoryManager
+from backend.session.session import PPTSession
 
 
 class MockAgentLLM:
@@ -75,6 +76,7 @@ def test_zero_to_one_generation_triggers_both_critic_subagents():
             "configurable": {
                 "pres": pres,
                 "history": history,
+                "session": PPTSession(session_id="sess_zero_to_one", pres=pres),
                 "llm_client": mock_llm,
                 "on_event": capture_event
             }

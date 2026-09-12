@@ -23,6 +23,11 @@ DEFERENCE_TOKENS = (
     "它",
 )
 
+# Rejection code emitted when a request's UI context names targets that no longer
+# exist in the live document. Such a request must fail closed with zero tool
+# execution rather than silently retargeting to a different element.
+UI_CONTEXT_TARGET_INVALID = "ui_context_target_invalid"
+
 
 @dataclass
 class UIContext:
@@ -70,6 +75,41 @@ class UIContext:
 
     def is_deictic(self, text: str) -> bool:
         return any(token in (text or "") for token in DEFERENCE_TOKENS)
+
+    def referenced_element_ids(self) -> List[str]:
+        """Every element id this context names, de-duplicated and ordered."""
+        seen: List[str] = []
+        for eid in (
+            list(self.selected_element_ids)
+            + list(self.selection_scope)
+            + [self.primary_selected_element_id, self.editing_element_id]
+        ):
+            if eid and eid not in seen:
+                seen.append(eid)
+        return seen
+
+    def invalid_targets(self, pres: Any) -> List[str]:
+        """Returns the slide/element ids this context names that no longer exist.
+
+        An empty result means the context is safe to bind against ``pres``. This is
+        a fail-closed check: a non-empty result must abort the turn with no tool
+        execution, never be silently dropped or retargeted.
+        """
+        if pres is None:
+            return []
+        invalid: List[str] = []
+        if self.active_slide_id and pres.get_slide(self.active_slide_id) is None:
+            invalid.append(f"slide:{self.active_slide_id}")
+        element_ids = self.referenced_element_ids()
+        if element_ids:
+            live = {el.id for slide in pres.slides for el in slide.elements}
+            invalid.extend(
+                f"element:{eid}" for eid in element_ids if eid not in live
+            )
+        return invalid
+
+    def is_valid_for(self, pres: Any) -> bool:
+        return not self.invalid_targets(pres)
 
     def to_dict(self) -> Dict[str, Any]:
         return {

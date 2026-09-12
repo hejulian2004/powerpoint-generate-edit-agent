@@ -125,6 +125,9 @@ def _generation_call(number_text: str) -> dict:
         "name": "generate_presentation",
         "arguments": {
             "topic": "Q3 汇报",
+            # Session-less additive generation: a whole-deck replacement requires a
+            # session (document identity rotation), which this grounding test omits.
+            "replace": False,
             "slides": [{"title": number_text, "layout": "card_grid"}],
         },
         "id": "call_ground",

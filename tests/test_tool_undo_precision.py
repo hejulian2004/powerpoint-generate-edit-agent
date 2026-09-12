@@ -134,7 +134,13 @@ def test_composite_tool_undo_redo_roundtrip(name, args):
 def test_generate_presentation_undo_redo_roundtrip():
     _assert_undo_redo_roundtrip(
         "generate_presentation",
-        {"topic": "Deck", "slides": [{"title": "S1", "layout": "card_grid"}]},
+        {
+            "topic": "Deck",
+            # Session-less callers cannot replace the document (no session identity
+            # to rotate), so request additive generation.
+            "replace": False,
+            "slides": [{"title": "S1", "layout": "card_grid"}],
+        },
     )
 
 

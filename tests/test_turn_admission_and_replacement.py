@@ -16,6 +16,7 @@ from backend.agent.mutation_gateway import (
     MutationGateway,
 )
 from backend.agent.runtime import AgentRuntime
+from backend.agent.uicontext import UI_CONTEXT_TARGET_INVALID
 from backend.ir.models import PresentationIR, SlideIR, TextContentIR, TextElementIR
 from backend.ir.patch import HistoryManager
 from backend.session.session import PPTSession
@@ -151,6 +152,27 @@ def test_malformed_replacement_envelope_is_rejected_with_zero_writes():
     asyncio.run(_run())
 
 
+def test_session_less_replacement_fails_closed():
+    """A replacement op without a session has no identity to rotate: zero writes."""
+    async def _run():
+        pres = _pres_with_title()
+        history = HistoryManager(pres)
+        before_pres = pres.model_dump()
+
+        batch = await MutationGateway.execute_tool_calls(
+            [_generate_call()],
+            pres,
+            history,
+            session=None,
+            bypass_confirmation=True,
+        )
+
+        assert batch.error == INVALID_REPLACEMENT_ENVELOPE
+        assert pres.model_dump() == before_pres
+
+    asyncio.run(_run())
+
+
 # =====================================================================
 # F8 - required CAS stamps
 # =====================================================================
@@ -228,6 +250,27 @@ def test_run_turn_rejects_stale_revision_without_appending_transcript():
         assert result["turn_rejected"] is True
         assert result["error"] == "request_stale"
         assert session.messages == []
+
+    asyncio.run(_run())
+
+
+def test_run_turn_rejects_stale_ui_context_without_tool_execution():
+    async def _run():
+        pres = _pres_with_title()
+        session = PPTSession(session_id="sess_turn_uic", pres=pres)
+        runtime = AgentRuntime()
+        runtime.graph = _stub_graph_that_must_not_run()
+
+        result = await runtime.run_turn(
+            "把这个改成红色", pres, session.history, session=session,
+            ui_context={"selected_element_ids": ["elem_gone"], "active_slide_id": "slide_1"},
+        )
+
+        assert result["turn_rejected"] is True
+        assert result["error"] == UI_CONTEXT_TARGET_INVALID
+        assert result["tools_executed"] == []
+        assert session.messages == []
+        assert type(runtime.graph).called is False
 
     asyncio.run(_run())
 
