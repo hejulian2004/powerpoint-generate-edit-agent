@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from typing import List, Optional
 
-from ..slidespec.schema import DeckSpec, SlideSpec
+from ..slidespec.schema import DeckSpec, FigureBlock, SlideSpec, TableBlock
 from .constraints import (
     check_canvas_bounds,
     check_figure_aspect_ratio,
@@ -19,8 +19,33 @@ from .constraints import (
     check_text_overflow,
 )
 from .schema import Canvas, DeckLayoutSpec, ElementType, LayoutConstraint, LayoutSpec
-from .templates import get_template_for_intent
+from .templates import (
+    BenchmarkComparisonTemplate,
+    PipelineArchitectureTemplate,
+    get_template_for_intent,
+)
+from .templates.base import BaseLayoutTemplate
 from .validator import validate_layout
+
+
+_VISUAL_TEMPLATES = (PipelineArchitectureTemplate, BenchmarkComparisonTemplate)
+
+
+def _select_template(slide_spec: SlideSpec, template: BaseLayoutTemplate) -> BaseLayoutTemplate:
+    """Never route a slide carrying visual source assets to a text-only template.
+
+    The Title / Takeaway / TwoColumn templates do not render FigureBlock/TableBlock,
+    so dispatching a visual slide to them would silently drop its assets. Promote such
+    a slide to a visual-capable template so every figure/table is emitted (as a
+    resolved asset or an explicit placeholder).
+    """
+    if isinstance(template, _VISUAL_TEMPLATES):
+        return template
+    if any(isinstance(b, FigureBlock) for b in slide_spec.blocks):
+        return PipelineArchitectureTemplate()
+    if any(isinstance(b, TableBlock) for b in slide_spec.blocks):
+        return BenchmarkComparisonTemplate()
+    return template
 
 
 def generate_layout(
@@ -33,7 +58,7 @@ def generate_layout(
     active_canvas = canvas or Canvas()
 
     # 1. Dispatch layout template
-    template = get_template_for_intent(slide_spec.visual_intent)
+    template = _select_template(slide_spec, get_template_for_intent(slide_spec.visual_intent))
     layout_spec = template.layout(slide_spec, active_canvas)
 
     # 2. Evaluate and record geometric constraints

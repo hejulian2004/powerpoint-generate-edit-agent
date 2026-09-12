@@ -249,6 +249,8 @@ def compile_layout_element_to_ir(
                 source_evidence_ids=source_evidence_ids,
                 metadata={
                     "is_table_placeholder": True,
+                    "asset_status": "placeholder",
+                    "source_table_id": payload.get("source_table_id") or "",
                     "label": label,
                     "caption": caption,
                     "page": page,
@@ -339,7 +341,12 @@ def compile_layout_element_to_ir(
             z_index=element.z_index,
             source_ref=source_ref,
             source_evidence_ids=source_evidence_ids,
-            metadata={"columns": cols, "rows_count": len(rows)},
+            metadata={
+                "asset_status": "resolved",
+                "source_table_id": payload.get("source_table_id") or "",
+                "columns": cols,
+                "rows_count": len(rows),
+            },
             style=ElementStyleIR(
                 border=BorderStyle(color="#CBD5E1", width=1.0),
                 radius=4.0,

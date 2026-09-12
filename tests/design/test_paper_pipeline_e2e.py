@@ -162,6 +162,112 @@ def test_paper_truthfulness_persistent_violation_fails(paper_ir_fixture, design_
     session_manager.delete_session(session_id)
 
 
+def _multi_asset_paper_ir():
+    from backend.paper.schema import (
+        PaperFigure,
+        PaperIR,
+        PaperMetadata,
+        PaperSection,
+        PaperTable,
+    )
+
+    return PaperIR(
+        source_filename="paper.pdf",
+        metadata=PaperMetadata(
+            title="A Research Title", authors=["A. Author"], page_count=2
+        ),
+        abstract="We present a concise method for research.",
+        sections=[
+            PaperSection(
+                number="1",
+                title="Introduction",
+                page=1,
+                paragraphs=["Prior work has limitations."],
+            ),
+            PaperSection(
+                number="2",
+                title="Method",
+                page=2,
+                paragraphs=["Our method combines stages."],
+            ),
+        ],
+        figures=[
+            PaperFigure(
+                id="figure1",
+                xref_label="Figure 1",
+                caption="Pipeline overview",
+                page=2,
+            ),
+            PaperFigure(
+                id="figure2",
+                xref_label="Figure 2",
+                caption="Component detail",
+                page=2,
+            ),
+        ],
+        tables=[
+            PaperTable(
+                id="table1",
+                xref_label="Table 1",
+                caption="Results",
+                page=2,
+            ),
+        ],
+    )
+
+
+def _multi_asset_fallback_builder():
+    """Art Director plans 2 figures + 1 table; layout LLM returns invalid plans."""
+    from tests.design import conftest as design_conftest
+
+    def _builder(messages, role="reasoning"):
+        system = str(messages[0].get("content", "")) if messages else ""
+        if "art_direction" in system:
+            payload = design_conftest.art_direction_payload()
+            payload["slides"][1]["slide_type"] = "METHOD_DETAIL"
+            payload["slides"][1]["source_figures"] = ["figure1", "figure2"]
+            payload["slides"][1]["source_tables"] = ["table1"]
+            payload["slides"][1]["key_messages"] = ["Two figures and a table"]
+            return json.dumps(payload)
+        return json.dumps(
+            design_conftest.invalid_layout_payload(
+                design_conftest._slide_id_from_messages(messages)
+            )
+        )
+
+    return _builder
+
+
+def test_paper_multi_visual_assets_fallback_commits_without_loss(design_client_cls):
+    """Layout LLM fails -> template fallback -> final gate -> commit, no asset loss."""
+    session_id = "test_paper_multi_asset_fallback"
+    client = design_client_cls(_multi_asset_fallback_builder())
+
+    result = _run_paper_graph(session_id, _multi_asset_paper_ir(), client)
+
+    assert result["status"] == "completed", result.get("error")
+    assert result["deck_layout"].metadata.get("layout_source") in (
+        "fallback_template",
+        "mixed",
+    )
+    pres_ir = result["presentation_ir"]
+    figure_ids = {
+        el.metadata.get("source_figure_id")
+        for slide in pres_ir.slides
+        for el in slide.elements
+        if getattr(el, "metadata", {}).get("source_figure_id")
+    }
+    table_ids = {
+        el.metadata.get("source_table_id")
+        for slide in pres_ir.slides
+        for el in slide.elements
+        if getattr(el, "metadata", {}).get("source_table_id")
+    }
+    assert {"figure1", "figure2"} <= figure_ids
+    assert "table1" in table_ids
+    session_manager.delete_session(session_id)
+
+
 def test_paper_plan_forwards_contact_sheet_dir(monkeypatch, paper_ir_fixture):
     from backend.agent.graphs import generation as generation_module
     from backend.design import art_director
