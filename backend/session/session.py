@@ -74,6 +74,10 @@ class PPTSession:
         self.memory = MemoryService()
         self.confirmations = ConfirmationService()
 
+        # The Agent edit window must exist before the DocumentService so it can be
+        # injected as the replacement authorization collaborator.
+        self.agent_execution = AgentExecutionService()
+
         # DocumentService needs the history/checkpoint/confirmation collaborators
         # so a replacement can reset all of them atomically.
         self.document = DocumentService(
@@ -82,9 +86,9 @@ class PPTSession:
             history=self.history_service,
             checkpoints=self.checkpoint_service,
             confirmations=self.confirmations,
+            agent_execution=self.agent_execution,
         )
 
-        self.agent_execution = AgentExecutionService()
         self.connection = ConnectionService()
         self.iterations: List[Dict[str, Any]] = []
         self.created_at = datetime.now(timezone.utc)

@@ -297,3 +297,155 @@ def test_lease_released_on_cancellation():
         assert session.agent_execution.is_frozen is False
 
     asyncio.run(_run())
+
+
+# =====================================================================
+# Replacement APIs are a session-level write barrier (S7/S8)
+# =====================================================================
+
+
+def _replacement_pres(title: str = "Replacement") -> PresentationIR:
+    pres = PresentationIR(title=title)
+    slide = SlideIR(id="slide_new", slide_num=1)
+    slide.add_element(TextElementIR(
+        id="elem_new", x=1.0, y=1.0, width=10.0, height=10.0,
+        text_content=TextContentIR.from_plain_text("New"),
+    ))
+    pres.slides.append(slide)
+    pres.active_slide_id = slide.id
+    return pres
+
+
+def test_replacement_blocked_while_agent_owns_document():
+    async def _run():
+        session = SessionFactory.create(_pres(), session_id="freeze_replace")
+        session.agent_execution.begin_turn("turn_own")
+        old_epoch = session.document_epoch
+        before = session.pres.model_dump()
+
+        result = await session.commit_replacement(
+            _replacement_pres(),
+            expected_epoch=old_epoch,
+            expected_revision=session.pres.version,
+            source="rest",
+        )
+
+        assert result.committed is False
+        assert result.error == DOCUMENT_FROZEN
+        assert session.document_epoch == old_epoch
+        assert session.pres.model_dump() == before
+
+    asyncio.run(_run())
+
+
+def test_checkpoint_restore_blocked_while_agent_owns_document():
+    async def _run():
+        session = SessionFactory.create(_pres(), session_id="freeze_restore")
+        checkpoint = session.create_checkpoint(description="before")
+        session.agent_execution.begin_turn("turn_own")
+        old_epoch = session.document_epoch
+        before = session.pres.model_dump()
+
+        result = await session.commit_checkpoint_restore(
+            checkpoint.id,
+            expected_epoch=old_epoch,
+            expected_revision=session.pres.version,
+            source="rest",
+        )
+
+        assert result.committed is False
+        assert result.error == DOCUMENT_FROZEN
+        assert session.document_epoch == old_epoch
+        assert session.pres.model_dump() == before
+
+    asyncio.run(_run())
+
+
+def test_replacement_without_lease_still_commits():
+    async def _run():
+        session = SessionFactory.create(_pres(), session_id="no_lease_replace")
+        old_epoch = session.document_epoch
+
+        result = await session.commit_replacement(
+            _replacement_pres(),
+            expected_epoch=old_epoch,
+            expected_revision=session.pres.version,
+            source="rest",
+        )
+
+        assert result.committed is True
+        assert session.document_epoch != old_epoch
+
+    asyncio.run(_run())
+
+
+def test_agent_owned_replacement_allowed_while_leased():
+    async def _run():
+        session = SessionFactory.create(_pres(), session_id="freeze_owner_replace")
+        session.agent_execution.begin_turn("turn_own", kind="agent")
+        old_epoch = session.document_epoch
+
+        result = await session.commit_replacement(
+            _replacement_pres(),
+            expected_epoch=old_epoch,
+            expected_revision=session.pres.version,
+            source="agent",
+            agent_turn_id="turn_own",
+        )
+
+        assert result.committed is True
+        assert session.document_epoch != old_epoch
+
+    asyncio.run(_run())
+
+
+def test_replacement_queued_behind_agent_admission_is_rejected_before_cas():
+    """The lease check runs BEFORE CAS, so a replacement that would otherwise
+    pass CAS is still rejected once the Agent installs the lease under the lock.
+
+    This is the TOCTOU the freeze exists to close: the replacement captured
+    valid stamps, waited on `mutation_lock`, and must not write after the lease
+    is installed.
+    """
+    async def _run():
+        session = SessionFactory.create(_pres(), session_id="freeze_race_replace")
+        old_epoch = session.document_epoch
+        old_revision = session.pres.version
+        before = session.pres.model_dump()
+
+        entered = asyncio.Event()
+        release = asyncio.Event()
+
+        async def agent_admission():
+            async with session.document.mutation_lock:
+                entered.set()
+                await release.wait()
+                session.agent_execution.begin_turn(
+                    "turn_race",
+                    document_epoch=old_epoch,
+                    base_revision=old_revision,
+                )
+
+        admission = asyncio.create_task(agent_admission())
+        await entered.wait()
+
+        # Replacement captured the OLD (currently valid) stamps, then queues.
+        replacement = asyncio.create_task(session.commit_replacement(
+            _replacement_pres(),
+            expected_epoch=old_epoch,
+            expected_revision=old_revision,
+            source="rest",
+        ))
+        await asyncio.sleep(0)
+
+        # Agent wins the lock, installs the lease, and releases.
+        release.set()
+        await admission
+        result = await replacement
+
+        assert result.committed is False
+        assert result.error == DOCUMENT_FROZEN
+        assert session.document_epoch == old_epoch
+        assert session.pres.model_dump() == before
+
+    asyncio.run(_run())

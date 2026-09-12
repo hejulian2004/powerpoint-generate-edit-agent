@@ -37,6 +37,7 @@ from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence
 from .risk_policy import ConfirmationGate, RiskEnricher
 from .tools import tools
 from ..ir.models import PresentationIR
+from ..session.services.agent_execution import DOCUMENT_FROZEN
 from ..session.services.connection import ConnectionTakenOver, STALE_CONNECTION
 
 logger = logging.getLogger(__name__)
@@ -61,10 +62,6 @@ MISSING_MUTATION_STAMP = "missing_mutation_stamp"
 # A client reused a mutation_id for a different logical operation. Retry (same
 # payload, possibly a stale expected_revision) is allowed; payload drift is not.
 MUTATION_ID_PAYLOAD_MISMATCH = "mutation_id_payload_mismatch"
-# A mutation arrived while an Agent turn held the session's exclusive edit window
-# and did not come from that turn's own agent-owned source.
-DOCUMENT_FROZEN = "document_frozen"
-AGENT_OWNED_SOURCES = frozenset({"agent", "remediation"})
 
 
 def _tool_name(call: Dict[str, Any]) -> str:

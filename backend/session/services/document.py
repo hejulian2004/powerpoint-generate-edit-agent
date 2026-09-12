@@ -21,6 +21,7 @@ from dataclasses import dataclass
 from typing import Any, Dict, Optional
 
 from ...ir.models import PresentationIR, SlideIR
+from .agent_execution import DOCUMENT_FROZEN
 
 # Bounded idempotency window for caller-supplied mutation ids. This is a short
 # retry/dedup buffer, not a mutation history, so it stays small. It is
@@ -81,6 +82,7 @@ class DocumentService:
         history: Any,
         checkpoints: Any,
         confirmations: Any,
+        agent_execution: Any = None,
     ) -> None:
         self.session_id = session_id
         self.presentation: PresentationIR = presentation
@@ -95,6 +97,10 @@ class DocumentService:
         self._history = history
         self._checkpoints = checkpoints
         self._confirmations = confirmations
+        # Session-scoped Agent edit window. Whole-document replacement is checked
+        # against this under `mutation_lock` so an Agent freeze is a true
+        # session-level write barrier, not just a gateway one.
+        self._agent_execution = agent_execution
 
     # ------------------------------------------------------------------
     # Active slide (a document cursor, not shared navigation authority)
@@ -260,6 +266,34 @@ class DocumentService:
             self._checkpoints.clear()
         self._checkpoints.create(self.presentation, description=checkpoint_description)
 
+    def _replacement_authorization_error(
+        self,
+        source: str,
+        agent_turn_id: Optional[str],
+    ) -> Optional[str]:
+        """Returns DOCUMENT_FROZEN when a non-owner may not replace the document.
+
+        Callers MUST hold ``mutation_lock`` when invoking this. The check runs
+        BEFORE the CAS and before any IR/epoch/history mutation so a frozen
+        replacement has exactly zero side effects.
+        """
+        execution = self._agent_execution
+        if execution is None:
+            return None
+        if execution.allows(source, agent_turn_id):
+            return None
+        return DOCUMENT_FROZEN
+
+    def _frozen_replacement_result(self) -> ReplacementResult:
+        return ReplacementResult(
+            committed=False,
+            error=DOCUMENT_FROZEN,
+            old_epoch=self.epoch,
+            old_revision=self.presentation.version,
+            document_epoch=self.epoch,
+            version=self.presentation.version,
+        )
+
     def _replacement_cas_error(
         self,
         expected_epoch: Optional[str],
@@ -296,16 +330,25 @@ class DocumentService:
         clear_history: bool = True,
         clear_checkpoints: bool = True,
         checkpoint_description: Optional[str] = None,
+        source: str = "system",
+        agent_turn_id: Optional[str] = None,
     ) -> ReplacementResult:
         """CAS-guarded whole-document replacement (import / generation / load).
 
         Owns the mutation lock and both CAS checks so callers cannot forget to
         guard a wholesale overwrite. Both stamps are REQUIRED; passing `None`
         fails closed rather than silently performing an unconditional overwrite.
+
+        While a session has an active Agent turn, only that turn's own
+        ``agent``/``remediation`` source (with a matching ``agent_turn_id``) may
+        replace the document; every REST/frontend/system replacement is rejected
+        with ``DOCUMENT_FROZEN`` before any CAS or write.
         """
         async with self.mutation_lock:
             old_epoch = self.epoch
             old_revision = self.presentation.version
+            if self._replacement_authorization_error(source, agent_turn_id):
+                return self._frozen_replacement_result()
             if expected_epoch is None or expected_revision is None:
                 return ReplacementResult(
                     committed=False,
@@ -383,16 +426,21 @@ class DocumentService:
         expected_epoch: Optional[str],
         expected_revision: Optional[int],
         clear_history: bool = True,
+        source: str = "system",
+        agent_turn_id: Optional[str] = None,
     ) -> ReplacementResult:
         """CAS-guarded checkpoint restore. Owns the mutation lock.
 
         A restore is a whole-document rollback: it must reject when the live
         document moved past the caller's view, instead of blindly overwriting a
         newer revision. Both stamps are REQUIRED and fail closed when missing.
+        A non-owner restore is rejected ``DOCUMENT_FROZEN`` before any CAS/write.
         """
         async with self.mutation_lock:
             old_epoch = self.epoch
             old_revision = self.presentation.version
+            if self._replacement_authorization_error(source, agent_turn_id):
+                return self._frozen_replacement_result()
             if expected_epoch is None or expected_revision is None:
                 return ReplacementResult(
                     committed=False,
