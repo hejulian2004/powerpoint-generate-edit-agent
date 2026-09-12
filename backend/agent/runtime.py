@@ -12,8 +12,19 @@ from .graph import build_ppt_agent_graph, PPTAgentState
 from ..ir.models import PresentationIR, SlideIR
 from ..ir.patch import HistoryManager
 from ..config import settings
+from ..session.services.agent_execution import (
+    AGENT_TURN_IN_PROGRESS,
+    AgentTurnInProgress,
+)
 
 logger = logging.getLogger(__name__)
+
+# Terminal rejection messages for a turn that fails admission.
+_ADMISSION_MESSAGES = {
+    "request_epoch_mismatch": "演示文稿已被替换，本次指令未执行，已同步到最新版本，请重试。",
+    "request_stale": "演示文稿已在您发送后更新，本次指令未执行，已同步到最新版本，请重试。",
+    AGENT_TURN_IN_PROGRESS: "演示文稿正被另一个 Agent 任务编辑，请稍后重试。",
+}
 
 
 async def _emit(on_event: Optional[Callable], event: Dict[str, Any]) -> None:
@@ -157,36 +168,53 @@ class AgentRuntime:
             else {}
         )
 
-        # 0. Request-admission CAS: reject a request that is already stale when it
-        #    reaches the server BEFORE touching the transcript, the LLM, or tools.
-        #    The raw transcript is owned by this method, so a rejected request must
-        #    not append a user turn (it would pollute the conversation with an
-        #    instruction that never ran).
+        # 0. Atomic admission: validate the request CAS AND install the exclusive
+        #    Agent turn lease inside ONE `document.mutation_lock` critical section.
+        #    There is then no window for a GUI mutation to commit between a passing
+        #    CAS and the freeze being installed. The lock protects admission only;
+        #    it is released before the transcript is appended and the LLM runs.
+        #    Any admission failure appends no transcript, mutates no memory, emits
+        #    no `document_frozen`, and never invokes the graph.
         live_epoch = session.document.epoch if session is not None else None
         live_revision = pres.version if pres is not None else None
-        if session is not None and request_document_epoch is not None and request_document_epoch != live_epoch:
-            return await self._reject_turn(
-                on_event,
-                code="request_epoch_mismatch",
-                message="演示文稿已被替换，本次指令未执行，已同步到最新版本，请重试。",
-                version=live_revision,
-                document_epoch=live_epoch,
-            )
-        if session is not None and request_base_revision is not None and request_base_revision != live_revision:
-            return await self._reject_turn(
-                on_event,
-                code="request_stale",
-                message="演示文稿已在您发送后更新，本次指令未执行，已同步到最新版本，请重试。",
-                version=live_revision,
-                document_epoch=live_epoch,
-            )
+        turn_id = f"turn_{uuid.uuid4().hex[:10]}"
+        admitted = False
+        if session is not None:
+            admission_error: Optional[str] = None
+            async with session.document.mutation_lock:
+                live_epoch = session.document.epoch
+                live_revision = pres.version
+                if request_document_epoch is not None and request_document_epoch != live_epoch:
+                    admission_error = "request_epoch_mismatch"
+                elif request_base_revision is not None and request_base_revision != live_revision:
+                    admission_error = "request_stale"
+                else:
+                    try:
+                        session.agent_execution.begin_turn(
+                            turn_id,
+                            document_epoch=live_epoch,
+                            base_revision=live_revision,
+                            kind="agent",
+                        )
+                        admitted = True
+                    except AgentTurnInProgress:
+                        admission_error = AGENT_TURN_IN_PROGRESS
+            if admission_error is not None:
+                return await self._reject_turn(
+                    on_event,
+                    code=admission_error,
+                    message=_ADMISSION_MESSAGES.get(admission_error, "本次指令未执行。"),
+                    version=live_revision,
+                    document_epoch=live_epoch,
+                )
 
         turn_epoch = request_document_epoch if request_document_epoch is not None else live_epoch
         turn_revision = request_base_revision if request_base_revision is not None else live_revision
 
         # 1. Evaluate context tokens & execute auto-compression at >= 90% threshold.
         #    AgentRuntime is the single owner of the conversation transcript: the
-        #    user turn is appended exactly once here (transports must not do it).
+        #    user turn is appended exactly once here (transports must not do it),
+        #    and only AFTER a successful admission.
         ctx_limit_key = getattr(settings, "context_limit", "256k").lower()
         max_tokens_budget = CONTEXT_LIMIT_PRESETS.get(ctx_limit_key, 256 * 1024)
 
@@ -221,21 +249,9 @@ class AgentRuntime:
             except Exception as e:
                 logger.debug(f"Failed to emit context_usage: {e}")
 
-        # 1b. Acquire the session's exclusive Agent edit window (S7/S8). While the
-        #     turn runs, MutationGateway rejects every non-owned mutation at the
-        #     backend boundary, so a stale frontend cannot edit behind the Agent.
-        turn_id = f"turn_{uuid.uuid4().hex[:10]}"
-        if session is not None:
-            try:
-                session.agent_execution.begin_turn(turn_id, kind="agent")
-            except Exception:
-                return await self._reject_turn(
-                    on_event,
-                    code="document_frozen",
-                    message="演示文稿正被另一个 Agent 任务编辑，请稍后重试。",
-                    version=live_revision,
-                    document_epoch=live_epoch,
-                )
+        # 1b. Announce the freeze. The lease was already installed atomically above
+        #     (inside `document.mutation_lock`), so this is purely observational.
+        if session is not None and admitted:
             await _emit(on_event, {
                 "type": "document_frozen",
                 "session_id": session.session_id,
@@ -329,7 +345,9 @@ class AgentRuntime:
                 "error": str(e)
             }
         finally:
-            if session is not None:
+            # Release the lease on the happy path, on exception, and on
+            # cancellation (a `finally` always runs for CancelledError).
+            if session is not None and admitted:
                 session.agent_execution.end_turn(turn_id)
 
     # ------------------------------------------------------------------
