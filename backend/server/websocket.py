@@ -334,6 +334,12 @@ async def websocket_endpoint(websocket: WebSocket):
                         "document_epoch": getattr(session, "document_epoch", None),
                         "version": session.document.presentation.version,
                     })
+                    # This pre-admission rejection never enters `run_turn()`, so it
+                    # must push the canonical document state itself. Otherwise the
+                    # client stays in `agent_lock_pending` forever (the rejection
+                    # is request-specific and deliberately never unlocks), with no
+                    # subsequent snapshot to restore it.
+                    await _broadcast_state(session)
                     continue
 
                 # The mutation lock is NOT held across the LLM turn: the gateway
