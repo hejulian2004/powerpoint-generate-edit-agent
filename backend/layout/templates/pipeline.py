@@ -18,7 +18,12 @@ from ..schema import (
     Rect,
     TextStyle,
 )
-from .base import BaseLayoutTemplate, compute_layout_zones, create_header_elements
+from .base import (
+    BaseLayoutTemplate,
+    compute_layout_zones,
+    create_header_elements,
+    stack_visual_assets,
+)
 
 
 class PipelineArchitectureTemplate(BaseLayoutTemplate):
@@ -27,7 +32,6 @@ class PipelineArchitectureTemplate(BaseLayoutTemplate):
     def layout(self, slide: SlideSpec, canvas: Canvas) -> LayoutSpec:
         elements: List[LayoutElement] = []
         zones = compute_layout_zones(canvas)
-        omitted_blocks: List[str] = []
 
         # 1. Header Elements
         elements.extend(create_header_elements(slide, canvas=canvas))
@@ -91,128 +95,24 @@ class PipelineArchitectureTemplate(BaseLayoutTemplate):
                     )
                     curr_y += item_h + gap
 
-            # Right column: Primary visual asset (Figure prioritized over Table)
-            if figures:
-                fig = figures[0]
-                # Track any omitted additional figures or tables
-                for f in figures[1:]:
-                    omitted_blocks.append(f.source_figure_id)
-                for tb in tables:
-                    omitted_blocks.append(tb.source_table_id)
-
-                has_caption = bool(fig.caption or fig.xref_label)
-                cap_h = 52.0 if has_caption else 0.0
-                fig_h = zones.body_height - cap_h - (8.0 if has_caption else 0.0)
-                fig_geo = Rect(x=right_x, y=zones.body_y, width=right_w, height=fig_h)
-
-                elements.append(
-                    LayoutElement(
-                        element_id=f"slide_{slide.index}_figure_1",
-                        source_block_id=fig.block_id or fig.source_figure_id,
-                        source_evidence_ids=list(getattr(fig, "source_evidence_ids", [])),
-                        element_type=ElementType.FIGURE,
-                        role=BlockRole.CALLOUT,
-                        geometry=fig_geo,
-                        style=ElementStyle(
-                            background_color="#F1F5F9",
-                            border_color="#CBD5E1",
-                            border_width=1.0,
-                            corner_radius=8.0,
-                        ),
-                        content={
-                            "source_figure_id": fig.source_figure_id,
-                            "caption": fig.caption,
-                            "xref_label": fig.xref_label,
-                            "placeholder": getattr(fig, "placeholder", True),
-                            "source_page": getattr(fig, "source_page", None),
-                        },
-                        z_index=1,
-                    )
+            # Right column: All visual assets. Every figure/table is stacked so
+            # none is silently omitted (compiled to an asset or explicit placeholder).
+            visual_assets = [
+                b for b in slide.blocks if isinstance(b, (FigureBlock, TableBlock))
+            ]
+            elements.extend(
+                stack_visual_assets(
+                    slide,
+                    visual_assets,
+                    Rect(
+                        x=right_x,
+                        y=zones.body_y,
+                        width=right_w,
+                        height=zones.body_height,
+                    ),
+                    canvas=canvas,
                 )
-
-                if has_caption:
-                    caption_text = f"{fig.xref_label}: {fig.caption}".strip(" :")
-                    elements.append(
-                        LayoutElement(
-                            element_id=f"slide_{slide.index}_fig_caption_1",
-                            source_block_id=f"{fig.block_id or fig.source_figure_id}_caption",
-                            source_evidence_ids=list(getattr(fig, "source_evidence_ids", [])),
-                            element_type=ElementType.TEXT,
-                            role=BlockRole.CAPTION,
-                            geometry=Rect(x=right_x, y=zones.body_y + fig_h + 8.0, width=right_w, height=cap_h),
-                            style=ElementStyle(
-                                text=TextStyle(
-                                    font_size=13.0,
-                                    font_weight="normal",
-                                    alignment="center",
-                                    color="#64748B",
-                                    italic=True,
-                                )
-                            ),
-                            content=caption_text,
-                            z_index=1,
-                        )
-                    )
-
-            elif tables:
-                tbl = tables[0]
-                for tb in tables[1:]:
-                    omitted_blocks.append(tb.source_table_id)
-
-                has_caption = bool(tbl.caption or tbl.xref_label)
-                cap_h = 52.0 if has_caption else 0.0
-                tbl_h = zones.body_height - cap_h - (8.0 if has_caption else 0.0)
-
-                elements.append(
-                    LayoutElement(
-                        element_id=f"slide_{slide.index}_table_1",
-                        source_block_id=tbl.block_id or tbl.source_table_id,
-                        source_evidence_ids=list(getattr(tbl, "source_evidence_ids", [])),
-                        element_type=ElementType.TABLE,
-                        role=BlockRole.CALLOUT,
-                        geometry=Rect(x=right_x, y=zones.body_y, width=right_w, height=tbl_h),
-                        style=ElementStyle(
-                            background_color="#FFFFFF",
-                            border_color="#E2E8F0",
-                            border_width=1.0,
-                        ),
-                        content={
-                            "source_table_id": tbl.source_table_id,
-                            "caption": tbl.caption,
-                            "xref_label": tbl.xref_label,
-                            "highlight_cells": tbl.highlight_cells,
-                            "columns": getattr(tbl, "columns", []),
-                            "rows": getattr(tbl, "rows", []),
-                            "placeholder": getattr(tbl, "placeholder", False),
-                            "source_page": getattr(tbl, "source_page", None),
-                        },
-                        z_index=1,
-                    )
-                )
-
-                if has_caption:
-                    caption_text = f"{tbl.xref_label}: {tbl.caption}".strip(" :")
-                    elements.append(
-                        LayoutElement(
-                            element_id=f"slide_{slide.index}_tbl_caption_1",
-                            source_block_id=f"{tbl.block_id or tbl.source_table_id}_caption",
-                            source_evidence_ids=list(getattr(tbl, "source_evidence_ids", [])),
-                            element_type=ElementType.TEXT,
-                            role=BlockRole.CAPTION,
-                            geometry=Rect(x=right_x, y=zones.body_y + tbl_h + 8.0, width=right_w, height=cap_h),
-                            style=ElementStyle(
-                                text=TextStyle(
-                                    font_size=13.0,
-                                    font_weight="normal",
-                                    alignment="center",
-                                    color="#64748B",
-                                    italic=True,
-                                )
-                            ),
-                            content=caption_text,
-                            z_index=1,
-                        )
-                    )
+            )
 
         else:
             # Fallback when no visual assets: Full-width stacked stages
@@ -262,8 +162,6 @@ class PipelineArchitectureTemplate(BaseLayoutTemplate):
                 curr_y += item_h + gap
 
         metadata: Dict[str, Any] = {"template": "PipelineArchitectureTemplate"}
-        if omitted_blocks:
-            metadata["omitted_blocks"] = omitted_blocks
 
         return LayoutSpec(
             slide_id=f"slide_{slide.index}",
