@@ -224,4 +224,38 @@ describe('agent edit freeze', () => {
     expect(s.mutationStatus).toBe('resyncing')
     expect(s.editLockState).toBe('agent_locked')
   })
+
+  it('recovers from a missing_request_stamp rejection via the canonical snapshot', async () => {
+    const ws = connect()
+    await usePPTStore.getState().sendChatMessage('first')
+    expect(usePPTStore.getState().editLockState).toBe('agent_lock_pending')
+    expect(usePPTStore.getState().isAgentThinking).toBe(true)
+
+    ws.emit('turn_rejected', {
+      session_id: 'sess_freeze',
+      error: 'missing_request_stamp',
+      message: '本次指令缺少文档版本信息，未执行，请同步当前版本后重试。'
+    })
+    const rejected = usePPTStore.getState()
+    expect(rejected.isAgentThinking).toBe(false)
+    expect(rejected.thinkingStatus).toBe('')
+    // The frontend must NOT self-unlock: the canonical edit_lock is authoritative.
+    expect(rejected.editLockState).toBe('agent_lock_pending')
+
+    ws.emit('presentation_updated', {
+      session_id: 'sess_freeze',
+      presentation: makePresentation([makeSlide([makeShape('s1', 0, 0)])]),
+      document_epoch: 'epoch_1',
+      version: 2,
+      edit_lock: { locked: false, kind: null, turn_id: null }
+    })
+    expect(usePPTStore.getState().editLockState).toBe('editable')
+    expect(usePPTStore.getState().needsResync).toBe(false)
+
+    // The next chat passes the barrier and actually reaches the wire.
+    await usePPTStore.getState().sendChatMessage('second')
+    const chats = ws.sentMessages().filter((m) => m.type === 'chat')
+    expect(chats).toHaveLength(2)
+    expect(chats[1]?.message).toBe('second')
+  })
 })

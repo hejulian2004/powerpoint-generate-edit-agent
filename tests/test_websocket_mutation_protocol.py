@@ -282,3 +282,39 @@ def test_replayed_empty_undo_stays_noop_even_after_new_history():
         assert second["last_mutation_id"] == "mut_noop_1"
         assert session.history.can_undo() is True
         assert session.history.undo_stack[-1].description == "later edit"
+
+
+def test_unstamped_chat_rejects_and_pushes_canonical_state():
+    """A pre-admission `missing_request_stamp` rejection must still restore the
+    client through the canonical snapshot.
+
+    The rejection is request-specific and deliberately never unlocks, so without
+    the follow-up broadcast the client would stay in `agent_lock_pending` with no
+    snapshot to clear it. We do not assert a strict frame order: read until the
+    canonical state arrives so transport-level events can be added freely.
+    """
+    client = TestClient(app)
+    session = _seed_demo_session("ws_proto_missing_stamp")
+    with client.websocket_connect("/ws?session_id=ws_proto_missing_stamp") as ws:
+        ws.receive_json()  # presentation_loaded
+        ws.receive_json()  # preview_update
+
+        # A chat turn with no document stamps.
+        ws.send_json({"type": "chat", "message": "hello"})
+
+        rejected = None
+        canonical = None
+        for _ in range(10):
+            ev = ws.receive_json()
+            if ev["type"] == "turn_rejected" and ev.get("error") == "missing_request_stamp":
+                rejected = ev
+            elif ev["type"] == "presentation_updated":
+                canonical = ev
+                break
+
+        assert rejected is not None
+        assert rejected["message"]
+        # The canonical snapshot follows so the client can leave agent_lock_pending.
+        assert canonical is not None
+        assert canonical["edit_lock"]["locked"] is False
+        assert canonical["version"] == session.document.presentation.version

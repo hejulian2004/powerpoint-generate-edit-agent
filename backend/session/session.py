@@ -256,14 +256,16 @@ class PPTSession:
 
     async def commit_replacement(self, *args: Any, **kwargs: Any) -> ReplacementResult:
         result = await self.document.commit_replacement(*args, **kwargs)
-        self.updated_at = datetime.now(timezone.utc)
-        self.schedule_persist()
+        if result.committed:
+            self.updated_at = datetime.now(timezone.utc)
+            self.schedule_persist()
         return result
 
     async def commit_checkpoint_restore(self, *args: Any, **kwargs: Any) -> ReplacementResult:
         result = await self.document.commit_checkpoint_restore(*args, **kwargs)
-        self.updated_at = datetime.now(timezone.utc)
-        self.schedule_persist()
+        if result.committed:
+            self.updated_at = datetime.now(timezone.utc)
+            self.schedule_persist()
         return result
 
     async def snapshot_for_export(self) -> ExportSnapshot:

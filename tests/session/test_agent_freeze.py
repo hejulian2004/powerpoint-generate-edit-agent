@@ -449,3 +449,70 @@ def test_replacement_queued_behind_agent_admission_is_rejected_before_cas():
         assert session.pres.model_dump() == before
 
     asyncio.run(_run())
+
+
+def test_blocked_replacement_has_zero_state_side_effects(monkeypatch):
+    """A frozen replacement must be observationally inert: no timestamp bump, no
+    persistence schedule, and no document identity/IR change."""
+    async def _run():
+        session = SessionFactory.create(_pres(), session_id="freeze_replace_sidefx")
+        session.agent_execution.begin_turn("turn_own")
+        before_epoch = session.document_epoch
+        before_revision = session.pres.version
+        before_ir = session.pres.model_dump()
+        before_updated = session.updated_at
+
+        persists = []
+        monkeypatch.setattr(session, "schedule_persist", lambda: persists.append(1))
+
+        result = await session.commit_replacement(
+            _replacement_pres(),
+            expected_epoch=before_epoch,
+            expected_revision=before_revision,
+            source="rest",
+        )
+
+        assert result.committed is False
+        assert result.error == DOCUMENT_FROZEN
+        assert session.updated_at == before_updated
+        assert persists == []
+        assert session.document_epoch == before_epoch
+        assert session.pres.version == before_revision
+        assert session.pres.model_dump() == before_ir
+
+    asyncio.run(_run())
+
+
+def test_blocked_checkpoint_restore_has_zero_state_side_effects(monkeypatch):
+    """A frozen checkpoint restore must not bump the timestamp, schedule
+    persistence, rotate the document identity, or alter the checkpoint set."""
+    async def _run():
+        session = SessionFactory.create(_pres(), session_id="freeze_restore_sidefx")
+        session.create_checkpoint(description="before")
+        session.agent_execution.begin_turn("turn_own")
+        before_epoch = session.document_epoch
+        before_revision = session.pres.version
+        before_ir = session.pres.model_dump()
+        before_updated = session.updated_at
+        before_checkpoint_ids = [cp.id for cp in session.checkpoints]
+
+        persists = []
+        monkeypatch.setattr(session, "schedule_persist", lambda: persists.append(1))
+
+        result = await session.commit_checkpoint_restore(
+            before_checkpoint_ids[0],
+            expected_epoch=before_epoch,
+            expected_revision=before_revision,
+            source="rest",
+        )
+
+        assert result.committed is False
+        assert result.error == DOCUMENT_FROZEN
+        assert session.updated_at == before_updated
+        assert persists == []
+        assert session.document_epoch == before_epoch
+        assert session.pres.version == before_revision
+        assert session.pres.model_dump() == before_ir
+        assert [cp.id for cp in session.checkpoints] == before_checkpoint_ids
+
+    asyncio.run(_run())
