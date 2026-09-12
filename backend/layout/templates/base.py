@@ -8,9 +8,9 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import List, Optional
+from typing import Any, List, Optional
 
-from ...slidespec.schema import BlockRole, SlideSpec
+from ...slidespec.schema import BlockRole, FigureBlock, SlideSpec, TableBlock
 from ..schema import (
     Canvas,
     ElementStyle,
@@ -175,6 +175,133 @@ def create_header_elements(
                 z_index=1,
             )
         )
+
+    return elements
+
+
+def stack_visual_assets(
+    slide: SlideSpec,
+    assets: List[Any],
+    region: Rect,
+    canvas: Optional[Canvas] = None,
+) -> List[LayoutElement]:
+    """Render every Figure/Table block inside ``region`` as a stacked slot.
+
+    Every visual source asset maps to a FIGURE/TABLE element (later compiled to a
+    resolved asset or an explicit placeholder), so deterministic fallback templates
+    can never silently omit a FigureBlock/TableBlock. A single asset keeps the exact
+    legacy geometry/id contract; multiple assets are split into equal vertical slots.
+    """
+    elements: List[LayoutElement] = []
+    assets = list(assets)
+    if not assets:
+        return elements
+
+    gap = 8.0
+    n = len(assets)
+    slot_h = (region.height - (n - 1) * gap) / n
+
+    for idx, block in enumerate(assets):
+        slot_y = region.y + idx * (slot_h + gap)
+        is_figure = isinstance(block, FigureBlock)
+        ref = block.block_id or (
+            block.source_figure_id if is_figure else block.source_table_id
+        )
+        has_caption = bool(
+            getattr(block, "caption", None) or getattr(block, "xref_label", None)
+        )
+        cap_h = 52.0 if has_caption else 0.0
+        if n > 1 and (slot_h - cap_h - gap) < 48.0:
+            cap_h = 0.0
+        asset_h = max(8.0, slot_h - cap_h - (gap if cap_h else 0.0))
+        asset_rect = Rect(x=region.x, y=slot_y, width=region.width, height=asset_h)
+
+        if is_figure:
+            elements.append(
+                LayoutElement(
+                    element_id=f"slide_{slide.index}_figure_{idx + 1}",
+                    source_block_id=ref,
+                    source_evidence_ids=list(getattr(block, "source_evidence_ids", [])),
+                    element_type=ElementType.FIGURE,
+                    role=BlockRole.CALLOUT,
+                    geometry=asset_rect,
+                    style=ElementStyle(
+                        background_color="#F1F5F9",
+                        border_color="#CBD5E1",
+                        border_width=1.0,
+                        corner_radius=8.0,
+                    ),
+                    content={
+                        "source_figure_id": block.source_figure_id,
+                        "caption": block.caption,
+                        "xref_label": block.xref_label,
+                        "placeholder": getattr(block, "placeholder", True),
+                        "source_page": getattr(block, "source_page", None),
+                    },
+                    z_index=1,
+                )
+            )
+            cap_id = f"slide_{slide.index}_fig_caption_{idx + 1}"
+        else:
+            elements.append(
+                LayoutElement(
+                    element_id=f"slide_{slide.index}_table_{idx + 1}",
+                    source_block_id=ref,
+                    source_evidence_ids=list(getattr(block, "source_evidence_ids", [])),
+                    element_type=ElementType.TABLE,
+                    role=BlockRole.CALLOUT,
+                    geometry=asset_rect,
+                    style=ElementStyle(
+                        background_color="#FFFFFF",
+                        border_color="#E2E8F0",
+                        border_width=1.0,
+                    ),
+                    content={
+                        "source_table_id": block.source_table_id,
+                        "caption": block.caption,
+                        "xref_label": block.xref_label,
+                        "highlight_cells": getattr(block, "highlight_cells", []),
+                        "columns": getattr(block, "columns", []),
+                        "rows": getattr(block, "rows", []),
+                        "placeholder": getattr(block, "placeholder", False),
+                        "source_page": getattr(block, "source_page", None),
+                    },
+                    z_index=1,
+                )
+            )
+            cap_id = f"slide_{slide.index}_tbl_caption_{idx + 1}"
+
+        if cap_h > 0:
+            caption_text = (
+                f"{getattr(block, 'xref_label', None) or ''}: "
+                f"{getattr(block, 'caption', None) or ''}"
+            ).strip(" :")
+            elements.append(
+                LayoutElement(
+                    element_id=cap_id,
+                    source_block_id=f"{ref}_caption",
+                    source_evidence_ids=list(getattr(block, "source_evidence_ids", [])),
+                    element_type=ElementType.TEXT,
+                    role=BlockRole.CAPTION,
+                    geometry=Rect(
+                        x=region.x,
+                        y=slot_y + asset_h + gap,
+                        width=region.width,
+                        height=cap_h,
+                    ),
+                    style=ElementStyle(
+                        text=TextStyle(
+                            font_size=13.0,
+                            font_weight="normal",
+                            alignment="center",
+                            color="#64748B",
+                            italic=True,
+                        )
+                    ),
+                    content=caption_text,
+                    z_index=1,
+                )
+            )
 
     return elements
 

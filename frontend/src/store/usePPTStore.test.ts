@@ -1320,7 +1320,7 @@ describe('generation stage lifecycle', () => {
     expect(state.mutationStatus).toBe('idle')
   })
 
-  it.each(['validation_failed', 'grounding_failed', 'stale_generation', 'failed', 'error'])(
+  it.each(['validation_failed', 'final_validation_failed', 'grounding_failed', 'stale_generation', 'failed', 'error'])(
     'clears thinking and reports failure on %s',
     (status) => {
       const ws = connect()

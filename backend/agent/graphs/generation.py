@@ -963,10 +963,10 @@ async def final_generation_validation_node(
 
     Runs after every layout-changing stage (visual repair, deck revisit). It NEVER
     recompiles: it validates the already-compiled ``presentation_ir`` together with
-    the ``deck_layout`` it was derived from and the ``deck_spec`` plan. Figures are
-    recognized via explicit ``metadata['asset_status']`` ('resolved' | 'placeholder')
-    so no text sniffing is required. Any failure is fail-closed: the graph ends
-    without ever reaching ``commit_replacement``.
+    the ``deck_layout`` it was derived from and the ``deck_spec`` plan. Figures and
+    tables are recognized via explicit ``metadata['asset_status']`` ('resolved' |
+    'placeholder') so no text sniffing is required. Any failure is fail-closed: the
+    graph ends without ever reaching ``commit_replacement``.
     """
     configurable = config.get("configurable", {})
     on_event = configurable.get("on_event")
@@ -979,17 +979,17 @@ async def final_generation_validation_node(
     errors: List[str] = []
     if deck_layout is None:
         errors.append("FINAL_VALIDATION: deck_layout is missing")
+    if deck_spec is None:
+        errors.append("FINAL_VALIDATION: deck_spec is missing")
     if pres_ir is None:
         errors.append("FINAL_VALIDATION: presentation_ir is missing")
 
     if not errors:
         from ...design.color_validator import validate_deck_colors
         from ...design.layout_compiler import hard_validate_layout
-        from ...ir.models import ImageElementIR
+        from ...ir.models import ImageElementIR, TableElementIR
 
-        slide_specs = (
-            {s.index: s for s in deck_spec.slides} if deck_spec is not None else {}
-        )
+        slide_specs = {s.index: s for s in deck_spec.slides}
 
         if len(pres_ir.slides) != len(deck_layout.slides):
             errors.append(
@@ -1001,11 +1001,10 @@ async def final_generation_validation_node(
         # Canonical block coverage is an LLM-native contract: the free-form layout
         # model must bind every required content block. The deterministic template
         # engine never promised 1:1 block binding, so it is validated structurally
-        # only (otherwise a legitimate legacy deck would be blocked).
-        llm_layouts: Dict[str, bool] = {}
+        # only (otherwise a legitimate legacy deck would be blocked). Visual source
+        # assets are the exception and are covered unconditionally in step 3.
         for layout in deck_layout.slides:
             is_llm = (getattr(layout, "metadata", {}) or {}).get("layout_source") == "llm"
-            llm_layouts[layout.slide_id] = is_llm
             slide_spec = slide_specs.get(layout.slide_index) if is_llm else None
             report = hard_validate_layout(layout, slide_spec)
             for message in report.errors:
@@ -1017,45 +1016,92 @@ async def final_generation_validation_node(
             for issue in color_report.errors:
                 errors.append(f"FINAL_COLOR[{issue.slide_id}]: {issue.description}")
 
-        # 3. Figure asset coverage on the actual IR, via explicit asset_status.
-        layouts_by_index = {l.slide_index: l for l in deck_layout.slides}
+        # 3. Unconditional visual source-asset coverage (figures + tables) on the
+        # actual IR, via explicit asset_status. Applies to every layout: a fallback
+        # template must still map each FigureBlock/TableBlock to a resolved asset or
+        # an explicit placeholder so visual source content is never silently dropped.
         for slide_ir in pres_ir.slides:
             if not slide_ir.elements:
                 errors.append(f"FINAL_IR[{slide_ir.id}]: slide has no elements")
+                continue
             elements_by_ref = {
                 getattr(el, "source_ref", None): el for el in slide_ir.elements
             }
-            layout = layouts_by_index.get(slide_ir.slide_num)
-            spec = slide_specs.get(slide_ir.slide_num) if layout else None
-            if spec is None or not llm_layouts.get(slide_ir.id):
+            spec = slide_specs.get(slide_ir.slide_num)
+            if spec is None:
                 continue
             for block in spec.blocks:
-                if getattr(block, "kind", "") != "figure" or not getattr(block, "block_id", ""):
+                block_id = getattr(block, "block_id", "")
+                if not block_id:
                     continue
-                element = elements_by_ref.get(block.block_id)
-                if element is None:
-                    errors.append(
-                        f"FINAL_IR[{slide_ir.id}]: figure block '{block.block_id}' is not compiled"
-                    )
-                    continue
-                meta = getattr(element, "metadata", {}) or {}
-                status = meta.get("asset_status")
-                if isinstance(element, ImageElementIR):
-                    if status != "resolved" or not getattr(element, "src", None):
+                kind = getattr(block, "kind", "")
+
+                if kind == "figure":
+                    element = elements_by_ref.get(block_id)
+                    if element is None:
                         errors.append(
-                            f"FINAL_IR[{slide_ir.id}]: figure '{block.block_id}' is not resolved"
+                            f"FINAL_IR[{slide_ir.id}]: figure block '{block_id}' is not compiled"
                         )
-                elif status == "placeholder":
-                    if not meta.get("source_figure_id"):
+                        continue
+                    meta = getattr(element, "metadata", {}) or {}
+                    expected = getattr(block, "source_figure_id", "") or ""
+                    if isinstance(element, ImageElementIR):
+                        if meta.get("asset_status") != "resolved" or not getattr(element, "src", None):
+                            errors.append(
+                                f"FINAL_IR[{slide_ir.id}]: figure '{block_id}' is not resolved"
+                            )
+                        elif (meta.get("source_figure_id") or "") != expected:
+                            errors.append(
+                                f"FINAL_IR[{slide_ir.id}]: figure '{block_id}' "
+                                "source_figure_id mismatch"
+                            )
+                    elif meta.get("asset_status") == "placeholder":
+                        if (meta.get("source_figure_id") or "") != expected:
+                            errors.append(
+                                f"FINAL_IR[{slide_ir.id}]: figure placeholder '{block_id}' "
+                                "source_figure_id mismatch"
+                            )
+                    else:
                         errors.append(
-                            f"FINAL_IR[{slide_ir.id}]: placeholder '{block.block_id}' has no "
-                            "source_figure_id"
+                            f"FINAL_IR[{slide_ir.id}]: figure '{block_id}' has no explicit "
+                            "asset_status"
                         )
-                else:
-                    errors.append(
-                        f"FINAL_IR[{slide_ir.id}]: figure '{block.block_id}' has no explicit "
-                        "asset_status"
-                    )
+
+                elif kind == "table":
+                    element = elements_by_ref.get(block_id)
+                    if element is None:
+                        errors.append(
+                            f"FINAL_IR[{slide_ir.id}]: table block '{block_id}' is not compiled"
+                        )
+                        continue
+                    meta = getattr(element, "metadata", {}) or {}
+                    expected = getattr(block, "source_table_id", "") or ""
+                    if isinstance(element, TableElementIR):
+                        if meta.get("asset_status") != "resolved":
+                            errors.append(
+                                f"FINAL_IR[{slide_ir.id}]: table '{block_id}' is not resolved"
+                            )
+                        elif (meta.get("source_table_id") or "") != expected:
+                            errors.append(
+                                f"FINAL_IR[{slide_ir.id}]: table '{block_id}' "
+                                "source_table_id mismatch"
+                            )
+                    elif meta.get("asset_status") == "placeholder":
+                        if not meta.get("is_table_placeholder"):
+                            errors.append(
+                                f"FINAL_IR[{slide_ir.id}]: table placeholder '{block_id}' "
+                                "lacks is_table_placeholder"
+                            )
+                        if (meta.get("source_table_id") or "") != expected:
+                            errors.append(
+                                f"FINAL_IR[{slide_ir.id}]: table placeholder '{block_id}' "
+                                "source_table_id mismatch"
+                            )
+                    else:
+                        errors.append(
+                            f"FINAL_IR[{slide_ir.id}]: table '{block_id}' has no explicit "
+                            "asset_status"
+                        )
 
     if errors:
         message = "FINAL_GENERATION_VALIDATION_FAILED: " + "; ".join(errors[:8])

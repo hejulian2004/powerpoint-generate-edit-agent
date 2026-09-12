@@ -338,7 +338,7 @@ def test_title_hero_badge_wrapping_many_badges():
         assert b.geometry.right <= 1280.0
 
 
-def test_secondary_visual_assets_omitted_blocks_recorded():
+def test_secondary_visual_assets_are_not_silently_omitted():
     slide = SlideSpec(
         index=5,
         slide_type=SlideType.METHOD_DETAIL,
@@ -353,9 +353,51 @@ def test_secondary_visual_assets_omitted_blocks_recorded():
     )
 
     layout = generate_layout(slide, validate=True, strict=True)
-    omitted = layout.metadata.get("omitted_blocks", [])
-    assert "fig_secondary" in omitted
-    assert "tbl_extra" in omitted
+    assert "omitted_blocks" not in layout.metadata
+    figure_refs = {
+        el.source_block_id for el in layout.get_elements_by_type(ElementType.FIGURE)
+    }
+    table_refs = {
+        el.source_block_id for el in layout.get_elements_by_type(ElementType.TABLE)
+    }
+    assert figure_refs == {"fig_primary", "fig_secondary"}
+    assert table_refs == {"tbl_extra"}
+
+
+def test_text_intent_slide_with_visual_assets_is_promoted_not_dropped():
+    slide = SlideSpec(
+        index=7,
+        slide_type=SlideType.BACKGROUND,
+        visual_intent=VisualIntent.KEY_TAKEAWAY_LIST,
+        title="Figure on a text intent",
+        blocks=[
+            TextBlock(content="Key point"),
+            FigureBlock(source_figure_id="fig_orphan", caption="Orphan fig"),
+        ],
+    )
+    layout = generate_layout(slide, validate=True)
+    figure_refs = {
+        el.source_block_id for el in layout.get_elements_by_type(ElementType.FIGURE)
+    }
+    assert figure_refs == {"fig_orphan"}
+
+
+def test_text_intent_slide_with_table_is_promoted_not_dropped():
+    slide = SlideSpec(
+        index=8,
+        slide_type=SlideType.BACKGROUND,
+        visual_intent=VisualIntent.TWO_COLUMN_CONTRAST,
+        title="Table on a text intent",
+        blocks=[
+            TextBlock(content="Key point"),
+            TableBlock(source_table_id="tbl_orphan", caption="Orphan table"),
+        ],
+    )
+    layout = generate_layout(slide, validate=True)
+    table_refs = {
+        el.source_block_id for el in layout.get_elements_by_type(ElementType.TABLE)
+    }
+    assert table_refs == {"tbl_orphan"}
 
 
 def test_validation_metadata_recorded_on_strict_false():

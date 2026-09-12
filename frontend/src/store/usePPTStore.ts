@@ -32,6 +32,7 @@ import {
 export const TERMINAL_GENERATION_STATUSES = new Set([
   'completed',
   'validation_failed',
+  'final_validation_failed',
   'grounding_failed',
   'stale_generation',
   'failed',
