@@ -113,6 +113,7 @@ class AgentRuntime:
                 await on_event({
                     "type": "turn_rejected",
                     "error": code,
+                    "message": message,
                     "version": version,
                     "document_epoch": document_epoch,
                 })

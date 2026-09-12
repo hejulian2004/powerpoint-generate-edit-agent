@@ -1903,6 +1903,37 @@ export const usePPTStore = create<PPTState>((set, get) => ({
             content: `⚠️ 执行出错: ${data.error}`,
             timestamp: Date.now()
           })
+        } else if (type === 'turn_rejected') {
+          // Terminal for THIS request only (the transport scopes it to the
+          // originating socket). Clear the thinking lifecycle and surface the
+          // localized reason. `editLockState` is deliberately untouched: the
+          // canonical snapshot's `edit_lock` is authoritative, and a rejection
+          // may be AGENT_TURN_IN_PROGRESS (another turn legitimately holds it).
+          const code = String(data.error || '')
+          const fallback: Record<string, string> = {
+            request_epoch_mismatch: '演示文稿已被替换，本次指令未执行，已同步到最新版本，请重试。',
+            request_stale: '演示文稿已在您发送后更新，本次指令未执行，已同步到最新版本，请重试。',
+            agent_turn_in_progress: '演示文稿正被另一个 Agent 任务编辑，请稍后重试。',
+            stale_connection: '会话已在其他窗口接管，本次指令未执行。',
+            ui_context_target_invalid: '所选元素在当前版本中已不存在，本次指令未执行，请重新选择后重试。',
+            missing_request_stamp: '本次指令缺少文档版本信息，未执行，请同步当前版本后重试。'
+          }
+          // A CAS-class rejection means this client's baseline is stale. Block
+          // local writes until the terminal canonical snapshot resyncs us.
+          const stale = code === 'request_stale' || code === 'request_epoch_mismatch'
+          set((state) => ({
+            isAgentThinking: false,
+            thinkingStatus: '',
+            visualRemediation: null,
+            needsResync: stale ? true : state.needsResync,
+            mutationStatus: stale ? 'resyncing' : state.mutationStatus
+          }))
+          get().addMessage({
+            id: `reject_${Date.now()}`,
+            role: 'assistant',
+            content: `⚠️ ${data.message || fallback[code] || '本次指令未执行。'}`,
+            timestamp: Date.now()
+          })
         }
       } catch (e) {
         console.error('Error handling WebSocket message:', e)

@@ -19,6 +19,10 @@ from backend.agent.runtime import AgentRuntime
 from backend.agent.uicontext import UI_CONTEXT_TARGET_INVALID
 from backend.ir.models import PresentationIR, SlideIR, TextContentIR, TextElementIR
 from backend.ir.patch import HistoryManager
+from backend.session.services.connection import (
+    STALE_CONNECTION,
+    TransportOwnership,
+)
 from backend.session.session import PPTSession
 
 
@@ -250,6 +254,75 @@ def test_run_turn_rejects_stale_revision_without_appending_transcript():
         assert result["turn_rejected"] is True
         assert result["error"] == "request_stale"
         assert session.messages == []
+
+    asyncio.run(_run())
+
+
+def test_rejected_turn_event_carries_localized_message():
+    """The terminal `turn_rejected` carries the same human message the caller
+    returns, so a transport can render it without re-deriving wording."""
+    async def _run():
+        events = []
+        pres = _pres_with_title()
+        session = PPTSession(session_id="sess_turn_msg", pres=pres)
+        runtime = AgentRuntime()
+        runtime.graph = _stub_graph_that_must_not_run()
+
+        async def on_event(ev):
+            events.append(ev)
+
+        result = await runtime.run_turn(
+            "修改标题", pres, session.history, session=session,
+            on_event=on_event,
+            request_document_epoch="stale_epoch",
+            request_base_revision=pres.version,
+        )
+
+        assert result["turn_rejected"] is True
+        rejected = [e for e in events if e.get("type") == "turn_rejected"]
+        assert len(rejected) == 1
+        assert rejected[0]["error"] == "request_epoch_mismatch"
+        assert rejected[0]["message"] == result["reply"]
+        assert rejected[0]["message"]
+
+    asyncio.run(_run())
+
+
+def test_superseded_turn_rejects_only_its_origin():
+    """An old socket's queued turn must reject STALE_CONNECTION after takeover
+    without touching the transcript or running the graph."""
+    async def _run():
+        events = []
+        pres = _pres_with_title()
+        session = PPTSession(session_id="sess_turn_takeover", pres=pres)
+        runtime = AgentRuntime()
+        runtime.graph = _stub_graph_that_must_not_run()
+
+        old_ws = object()
+        _, gen_old = session.connection.attach(old_ws)
+        transport = TransportOwnership(old_ws, gen_old)
+        # A newer tab attaches before the old turn's admission runs.
+        session.connection.attach(object())
+
+        async def on_event(ev):
+            events.append(ev)
+
+        result = await runtime.run_turn(
+            "修改标题", pres, session.history, session=session,
+            on_event=on_event, transport=transport,
+            request_document_epoch=session.document_epoch,
+            request_base_revision=pres.version,
+        )
+
+        assert result["turn_rejected"] is True
+        assert result["error"] == STALE_CONNECTION
+        rejected = [e for e in events if e.get("type") == "turn_rejected"]
+        assert len(rejected) == 1
+        assert rejected[0]["error"] == STALE_CONNECTION
+        assert rejected[0]["message"] == result["reply"]
+        assert session.messages == []
+        assert type(runtime.graph).called is False
+        assert session.agent_execution.is_frozen is False
 
     asyncio.run(_run())
 

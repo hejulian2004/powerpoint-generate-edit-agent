@@ -94,15 +94,30 @@ class UIContext:
         An empty result means the context is safe to bind against ``pres``. This is
         a fail-closed check: a non-empty result must abort the turn with no tool
         execution, never be silently dropped or retargeted.
+
+        Element membership is checked recursively (groups included) and, when the
+        request names an active slide, scoped to that slide: a selection that
+        straddles two slides cannot be bound and is rejected rather than
+        retargeted to whatever element happens to share the id elsewhere.
         """
         if pres is None:
             return []
         invalid: List[str] = []
-        if self.active_slide_id and pres.get_slide(self.active_slide_id) is None:
-            invalid.append(f"slide:{self.active_slide_id}")
+        active_slide = None
+        if self.active_slide_id:
+            active_slide = pres.get_slide(self.active_slide_id)
+            if active_slide is None:
+                invalid.append(f"slide:{self.active_slide_id}")
         element_ids = self.referenced_element_ids()
         if element_ids:
-            live = {el.id for slide in pres.slides for el in slide.elements}
+            if active_slide is not None:
+                live = {el.id for el in active_slide.all_elements(recursive=True)}
+            else:
+                live = {
+                    el.id
+                    for slide in pres.slides
+                    for el in slide.all_elements(recursive=True)
+                }
             invalid.extend(
                 f"element:{eid}" for eid in element_ids if eid not in live
             )

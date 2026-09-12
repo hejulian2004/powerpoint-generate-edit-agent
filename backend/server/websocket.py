@@ -173,6 +173,24 @@ async def _broadcast_state(
         await store.broadcast(new_preview, session_id=session.session_id)
 
 
+async def _chat_event_router(websocket: WebSocket, session: PPTSession, ev: dict) -> None:
+    """Routes a chat-turn event to the right transport scope.
+
+    Ordinary admitted-turn events describe a mutation/conversation that every
+    window attached to the session should see, so they broadcast. A
+    ``turn_rejected`` event is terminal for ONE request: only the originating
+    socket may surface it, otherwise another window (which may be the legitimate
+    writer) would render a spurious error/thinking state for a request it never
+    issued.
+    """
+    if "session_id" not in ev:
+        ev["session_id"] = session.session_id
+    if ev.get("type") == "turn_rejected":
+        await websocket.send_json(ev)
+        return
+    await store.broadcast(ev, session_id=session.session_id)
+
+
 async def _handle_history_action(
     websocket: WebSocket,
     session: PPTSession,
@@ -312,6 +330,7 @@ async def websocket_endpoint(websocket: WebSocket):
                         "type": "turn_rejected",
                         "session_id": session.session_id,
                         "error": "missing_request_stamp",
+                        "message": "本次指令缺少文档版本信息，未执行，请同步当前版本后重试。",
                         "document_epoch": getattr(session, "document_epoch", None),
                         "version": session.document.presentation.version,
                     })
@@ -321,9 +340,7 @@ async def websocket_endpoint(websocket: WebSocket):
                 # serializes only the actual mutations, so GUI edits stay responsive.
                 # Event streaming callback
                 async def on_event(ev: dict):
-                    if "session_id" not in ev:
-                        ev["session_id"] = session.session_id
-                    await store.broadcast(ev, session_id=session.session_id)
+                    await _chat_event_router(websocket, session, ev)
 
                 try:
                     result = await store.agent_runtime.run_turn(

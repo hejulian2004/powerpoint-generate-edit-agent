@@ -188,4 +188,40 @@ describe('agent edit freeze', () => {
       usePPTStore.getState().awaitDirectSyncBarrier({ timeoutMs: 60000 })
     ).rejects.toMatchObject({ code: 'LOCAL_CHANGES_NOT_SYNCED' })
   })
+
+  it('clears thinking on turn_rejected without force-unlocking the edit lock', () => {
+    const ws = connect()
+    usePPTStore.setState({
+      editLockState: 'agent_locked',
+      isAgentThinking: true,
+      thinkingStatus: '规划中'
+    })
+    ws.emit('turn_rejected', {
+      session_id: 'sess_freeze',
+      error: 'agent_turn_in_progress',
+      message: '演示文稿正被另一个 Agent 任务编辑，请稍后重试。'
+    })
+    const s = usePPTStore.getState()
+    expect(s.isAgentThinking).toBe(false)
+    expect(s.thinkingStatus).toBe('')
+    // The snapshot's edit_lock is authoritative; a rejection never unlocks.
+    expect(s.editLockState).toBe('agent_locked')
+    expect(s.messages.at(-1)?.content).toContain('另一个 Agent')
+  })
+
+  it('requests a resync on a stale turn rejection without unlocking', () => {
+    const ws = connect()
+    usePPTStore.setState({ editLockState: 'agent_locked' })
+    ws.emit('turn_rejected', {
+      session_id: 'sess_freeze',
+      error: 'request_stale',
+      message: '演示文稿已在您发送后更新，本次指令未执行，已同步到最新版本，请重试。',
+      version: 5,
+      document_epoch: 'epoch_1'
+    })
+    const s = usePPTStore.getState()
+    expect(s.needsResync).toBe(true)
+    expect(s.mutationStatus).toBe('resyncing')
+    expect(s.editLockState).toBe('agent_locked')
+  })
 })
