@@ -81,6 +81,44 @@ def test_api_models_list(monkeypatch):
     assert data["base_url"] == "https://txy.hejulian.org:8317/v1"
 
 
+def test_api_models_accepts_alternate_shapes(monkeypatch):
+    """Providers returning {'models': [...]} or a top-level array are normalized."""
+    import httpx
+
+    cases = [
+        ({"models": [{"id": "m1"}, {"name": "m2"}, "m3"]}, ["m1", "m2", "m3"]),
+        ([{"id": "a1"}, "a2"], ["a1", "a2"]),
+    ]
+
+    for payload, expected in cases:
+
+        class FakeResp:
+            def raise_for_status(self):
+                pass
+
+            def json(self):
+                return payload
+
+        class FakeClient:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *args):
+                return False
+
+            async def get(self, url, headers=None):
+                return FakeResp()
+
+        monkeypatch.setattr(httpx, "AsyncClient", FakeClient)
+
+        resp = client.post("/api/models", json={"base_url": "https://x.example/v1"})
+        assert resp.status_code == 200
+        assert resp.json()["models"] == expected
+
+
 def test_api_models_empty_base_url_falls_back_to_settings(monkeypatch):
     """Empty base_url falls back to the configured default, not a 400."""
     import httpx
