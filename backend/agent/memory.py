@@ -37,6 +37,27 @@ class AgentMemory:
     def update_preference(self, key: str, value: Any):
         self.preferences[key] = value
 
+    def to_dict(self) -> Dict[str, Any]:
+        """Serializes durable agent memory for session persistence."""
+        return {
+            "preferences": dict(self.preferences),
+            "design_rules": list(self.design_rules),
+            "recent_activities": list(self.recent_activities),
+        }
+
+    @classmethod
+    def from_dict(cls, data: Optional[Dict[str, Any]]) -> "AgentMemory":
+        mem = cls()
+        if not data:
+            return mem
+        if isinstance(data.get("preferences"), dict):
+            mem.preferences = dict(data["preferences"])
+        if isinstance(data.get("design_rules"), list):
+            mem.design_rules = list(data["design_rules"])
+        if isinstance(data.get("recent_activities"), list):
+            mem.recent_activities = list(data["recent_activities"])
+        return mem
+
     def build_system_context(self) -> str:
         rules_text = "\n".join(f"- {r}" for r in self.design_rules)
         prefs_text = ", ".join(f"{k}: {v}" for k, v in self.preferences.items())
