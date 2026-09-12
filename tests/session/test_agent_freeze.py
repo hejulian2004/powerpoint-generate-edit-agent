@@ -297,4 +297,3 @@ def test_lease_released_on_cancellation():
         assert session.agent_execution.is_frozen is False
 
     asyncio.run(_run())
-
