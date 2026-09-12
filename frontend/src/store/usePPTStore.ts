@@ -9,6 +9,7 @@ import type {
   ChatMessage,
   VisualRemediationEvent,
   VisualQualityScore,
+  GenerationStageEvent,
   PPTEditorState,
   PatchRecord,
   MutationStatus,
@@ -543,6 +544,7 @@ interface PPTState {
   isAgentThinking: boolean
   thinkingStatus: string
   visualRemediation: VisualRemediationEvent | null
+  generationStage: GenerationStageEvent | null
   canUndo: boolean
   canRedo: boolean
   settingsOpen: boolean
@@ -703,6 +705,7 @@ export const usePPTStore = create<PPTState>((set, get) => ({
   isAgentThinking: false,
   thinkingStatus: '',
   visualRemediation: null,
+  generationStage: null,
   canUndo: false,
   canRedo: false,
   settingsOpen: false,
@@ -1884,8 +1887,28 @@ export const usePPTStore = create<PPTState>((set, get) => ({
           })
         } else if (type === 'vision_loop') {
           set({ isAgentThinking: true, thinkingStatus: data.text || '视觉多模态校验中...' })
+        } else if (type === 'generation_stage' || type === 'generation_progress') {
+          const stage = data as GenerationStageEvent
+          const phaseLabels: Record<string, string> = {
+            paper_visual_analysis: '论文视觉解析',
+            paper_plan: '论文方案规划',
+            preview: '预览渲染',
+            reviewing: '几何自检',
+            repairing: '布局自愈',
+            deck_review: 'Deck 级视觉复审',
+            deck_revisit: '视觉复审返工',
+            rendering: '编译图元'
+          }
+          const key = String(stage.phase || stage.status || '')
+          const label = phaseLabels[key]
+          const progress = stage.total && stage.current ? ` (${stage.current}/${stage.total})` : ''
+          set({
+            isAgentThinking: true,
+            generationStage: stage,
+            thinkingStatus: stage.text || (label ? `${label}${progress}...` : '生成进行中...')
+          })
         } else if (type === 'agent_finished') {
-          set({ isAgentThinking: false, thinkingStatus: '', visualRemediation: null })
+          set({ isAgentThinking: false, thinkingStatus: '', visualRemediation: null, generationStage: null })
           get().addMessage({
             id: `msg_${Date.now()}`,
             role: 'assistant',
@@ -1896,7 +1919,7 @@ export const usePPTStore = create<PPTState>((set, get) => ({
             visualReview: data.visual_review
           })
         } else if (type === 'agent_error') {
-          set({ isAgentThinking: false, thinkingStatus: '', visualRemediation: null, mutationStatus: 'failed' })
+          set({ isAgentThinking: false, thinkingStatus: '', visualRemediation: null, generationStage: null, mutationStatus: 'failed' })
           get().addMessage({
             id: `err_${Date.now()}`,
             role: 'assistant',
