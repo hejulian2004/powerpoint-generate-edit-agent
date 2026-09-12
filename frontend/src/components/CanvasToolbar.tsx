@@ -24,8 +24,14 @@ export const CanvasToolbar: React.FC = () => {
     getSelectedElement,
     groupSelectedElements,
     ungroupSelectedElement,
-    alignSelectedElements
+    alignSelectedElements,
+    editLockState,
+    sessionTakenOver,
+    needsResync
   } = usePPTStore()
+
+  const canAuthor = editLockState === 'editable' && !sessionTakenOver && !needsResync
+  const authoringDisabled = !canAuthor
 
   const isMulti = selectedElementIds.length > 1
   const selectedElement = getSelectedElement()
@@ -48,6 +54,7 @@ export const CanvasToolbar: React.FC = () => {
         draggable
         onDragStart={(e) => handleDragStart(e, 'text')}
         onClick={() => addTextQuick()}
+        disabled={authoringDisabled}
         title="拖拽至画布或点击添加文本"
         className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg hover:bg-elevated text-secondary hover:text-main text-xs font-medium transition-all cursor-grab active:cursor-grabbing"
       >
@@ -60,6 +67,7 @@ export const CanvasToolbar: React.FC = () => {
         draggable
         onDragStart={(e) => handleDragStart(e, 'roundRect')}
         onClick={() => addShapeQuick('roundRect')}
+        disabled={authoringDisabled}
         title="拖拽至画布或点击添加圆角卡片"
         className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg hover:bg-elevated text-secondary hover:text-main text-xs font-medium transition-all cursor-grab active:cursor-grabbing"
       >
@@ -72,6 +80,7 @@ export const CanvasToolbar: React.FC = () => {
         draggable
         onDragStart={(e) => handleDragStart(e, 'rectangle')}
         onClick={() => addShapeQuick('rectangle')}
+        disabled={authoringDisabled}
         title="拖拽或点击添加矩形"
         className="p-1.5 rounded-lg hover:bg-elevated text-muted hover:text-main transition-colors cursor-grab active:cursor-grabbing"
       >
@@ -83,6 +92,7 @@ export const CanvasToolbar: React.FC = () => {
         draggable
         onDragStart={(e) => handleDragStart(e, 'ellipse')}
         onClick={() => addShapeQuick('ellipse')}
+        disabled={authoringDisabled}
         title="拖拽或点击添加圆形 / 椭圆"
         className="p-1.5 rounded-lg hover:bg-elevated text-muted hover:text-main transition-colors cursor-grab active:cursor-grabbing"
       >
@@ -94,6 +104,7 @@ export const CanvasToolbar: React.FC = () => {
         draggable
         onDragStart={(e) => handleDragStart(e, 'triangle')}
         onClick={() => addShapeQuick('triangle')}
+        disabled={authoringDisabled}
         title="拖拽或点击添加三角形"
         className="p-1.5 rounded-lg hover:bg-elevated text-muted hover:text-main transition-colors cursor-grab active:cursor-grabbing"
       >
@@ -105,6 +116,7 @@ export const CanvasToolbar: React.FC = () => {
         draggable
         onDragStart={(e) => handleDragStart(e, 'diamond')}
         onClick={() => addShapeQuick('diamond')}
+        disabled={authoringDisabled}
         title="拖拽或点击添加菱形决策节点"
         className="p-1.5 rounded-lg hover:bg-elevated text-muted hover:text-main transition-colors cursor-grab active:cursor-grabbing"
       >
@@ -114,6 +126,7 @@ export const CanvasToolbar: React.FC = () => {
       {/* 7. Connector Line */}
       <button
         onClick={addConnectorQuick}
+        disabled={authoringDisabled}
         title="添加流程连接线与箭头"
         className="p-1.5 rounded-lg hover:bg-elevated text-muted hover:text-main transition-colors"
       >
@@ -125,6 +138,7 @@ export const CanvasToolbar: React.FC = () => {
       {/* 8. Smart Alignment */}
       <button
         onClick={optimizeLayoutDirect}
+        disabled={authoringDisabled}
         title="智能规整当前页元素排版与对齐"
         className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg hover:bg-elevated text-secondary hover:text-main text-xs font-medium transition-all"
       >
@@ -138,6 +152,7 @@ export const CanvasToolbar: React.FC = () => {
           <div className="w-[1px] h-4 bg-line mx-1" />
           <button
             onClick={() => alignSelectedElements('left')}
+            disabled={authoringDisabled}
             title="左对齐选中图元"
             className="p-1.5 rounded-lg hover:bg-elevated text-muted hover:text-main transition-colors"
           >
@@ -145,6 +160,7 @@ export const CanvasToolbar: React.FC = () => {
           </button>
           <button
             onClick={() => alignSelectedElements('right')}
+            disabled={authoringDisabled}
             title="右对齐选中图元"
             className="p-1.5 rounded-lg hover:bg-elevated text-muted hover:text-main transition-colors"
           >
@@ -152,6 +168,7 @@ export const CanvasToolbar: React.FC = () => {
           </button>
           <button
             onClick={() => alignSelectedElements('distribute_h')}
+            disabled={authoringDisabled}
             title="水平等距分布"
             className="p-1.5 rounded-lg hover:bg-elevated text-muted hover:text-main transition-colors"
           >
@@ -159,6 +176,7 @@ export const CanvasToolbar: React.FC = () => {
           </button>
           <button
             onClick={() => groupSelectedElements()}
+            disabled={authoringDisabled}
             title={`组合选中的 ${selectedElementIds.length} 个图元 (Ctrl+G)`}
             className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-inverted hover:bg-inverted-hover text-inverted-text text-xs font-medium transition-all shadow-xs"
           >
@@ -174,6 +192,7 @@ export const CanvasToolbar: React.FC = () => {
           <div className="w-[1px] h-4 bg-line mx-1" />
           <button
             onClick={() => ungroupSelectedElement()}
+            disabled={authoringDisabled}
             title="解散当前组合 (Ctrl+Shift+G)"
             className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-amber-50 hover:bg-amber-100 text-amber-700 border border-amber-200 text-xs font-medium transition-all"
           >

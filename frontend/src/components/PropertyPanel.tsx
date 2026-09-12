@@ -277,8 +277,13 @@ export const PropertyPanel: React.FC = () => {
     ungroupSelectedElement,
     alignSelectedElements,
     updateElementDirect,
-    setEditingElementId
+    setEditingElementId,
+    editLockState,
+    sessionTakenOver,
+    needsResync
   } = usePPTStore()
+
+  const canAuthor = editLockState === 'editable' && !sessionTakenOver && !needsResync
 
   const slide = getActiveSlide()
   const elem = getSelectedElement()
@@ -500,6 +505,7 @@ export const PropertyPanel: React.FC = () => {
   const currentOpacity = Math.round((elem.style?.opacity ?? 1.0) * 100)
 
   const handleUpdate = (updates: Record<string, any>) => {
+    if (!canAuthor) return
     updateElementDirect(elem.id, updates)
   }
 

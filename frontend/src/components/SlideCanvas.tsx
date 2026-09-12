@@ -113,8 +113,13 @@ export const SlideCanvas: React.FC = () => {
     updateElementsDirect,
     editingElementId,
     setEditingElementId,
-    enterGroup
+    enterGroup,
+    editLockState,
+    sessionTakenOver,
+    needsResync
   } = usePPTStore()
+
+  const canAuthor = editLockState === 'editable' && !sessionTakenOver && !needsResync
 
   const slide = getActiveSlide()
   const canvasRef = useRef<HTMLDivElement>(null)
@@ -209,6 +214,7 @@ export const SlideCanvas: React.FC = () => {
   }, [slide, clearSelection, setEditingElementId])
 
   const handleDeleteSelected = () => {
+    if (!canAuthor) return
     deleteSelectedElement()
     setEditingElementId(null)
   }
@@ -223,14 +229,15 @@ export const SlideCanvas: React.FC = () => {
       return
     }
     if (path.element.type === 'text' || path.element.type === 'shape') {
+      if (!canAuthor) return
       setEditingElementId(elemId)
     }
-  }, [slide, enterGroup, setEditingElementId])
+  }, [slide, enterGroup, setEditingElementId, canAuthor])
 
   const handleCommitInlineEdit = useCallback((elemId: string, text: string) => {
-    updateElementDirect(elemId, { text })
+    if (canAuthor) updateElementDirect(elemId, { text })
     setEditingElementId(null)
-  }, [updateElementDirect, setEditingElementId])
+  }, [updateElementDirect, setEditingElementId, canAuthor])
 
   const handleCancelInlineEdit = useCallback(() => {
     setEditingElementId(null)
@@ -238,7 +245,7 @@ export const SlideCanvas: React.FC = () => {
 
   // 1. Mouse down on any element -> move the whole active selection.
   const handleElementMouseDown = useCallback((elemId: string, e: React.MouseEvent) => {
-    if (!slide) return
+    if (!slide || !canAuthor) return
     const state = usePPTStore.getState()
     const selectedIds = state.selectedElementIds.includes(elemId)
       ? state.selectedElementIds
@@ -268,11 +275,11 @@ export const SlideCanvas: React.FC = () => {
       items: movingElements.map((el) => ({ id: el.id, initial: cloneElement(el) })),
       snapCandidates
     })
-  }, [slide, applyDrafts])
+  }, [slide, applyDrafts, canAuthor])
 
   // 2. Mouse down on 8-direction resize handle
   const handleResizeHandleMouseDown = useCallback((handle: ResizeHandle, e: React.MouseEvent) => {
-    if (!slide) return
+    if (!slide || !canAuthor) return
     const selected = usePPTStore.getState().getSelectedElement()
     if (!selected || selected.locked) return
 
@@ -293,7 +300,7 @@ export const SlideCanvas: React.FC = () => {
       handle,
       snapCandidates
     })
-  }, [slide, applyDrafts])
+  }, [slide, applyDrafts, canAuthor])
 
   // 3. Global Window MouseMove & MouseUp during active Drag or Resize
   useEffect(() => {
