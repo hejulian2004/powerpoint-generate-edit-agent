@@ -104,6 +104,84 @@ class ContextUsageReport:
 class ContextCompressor:
     """Manages dialogue history compression and token budget guardrails."""
 
+    MANUAL_ANCHOR_ID = "compressed_history_anchor"
+
+    @classmethod
+    def build_anchor(
+        cls,
+        messages: List[Dict[str, Any]],
+        max_tokens: int = 256 * 1024,
+        context_key: str = "256k",
+        keep_recent: int = 4,
+    ) -> Tuple[Optional[Dict[str, Any]], int, ContextUsageReport]:
+        """Force-condense older messages into a reusable, persistable anchor.
+
+        Unlike :meth:`evaluate_and_compress` this ignores the 90% threshold and is
+        intended for the user-triggered "compress context" command. It returns the
+        synthetic anchor message, the number of raw messages it covers (so the
+        caller can later assemble ``[anchor] + messages[covered:]``), and a usage
+        report. The raw transcript is never modified by this method.
+        """
+        initial_tokens = estimate_messages_tokens(messages)
+        usage_pct = (initial_tokens / max(max_tokens, 1)) * 100.0
+
+        if len(messages) <= keep_recent:
+            report = ContextUsageReport(
+                current_tokens=initial_tokens,
+                max_tokens=max_tokens,
+                usage_percent=usage_pct,
+                is_compressed=False,
+                context_limit_key=context_key,
+            )
+            return None, 0, report
+
+        head = messages[:-keep_recent]
+        tail = messages[-keep_recent:]
+
+        summary_points: List[str] = []
+        for m in head:
+            role_label = "用户" if m.get("role") == "user" else "架构师"
+            content = str(m.get("content", ""))
+            truncated = content[:80] + ("..." if len(content) > 80 else "")
+            summary_points.append(f"• [{role_label} 轮次]: {truncated}")
+
+        condensed_text = (
+            "【历史上下文手动压缩摘要（用户主动触发）】:\n"
+            + "\n".join(summary_points[:20])
+            + f"\n（共手动归档压缩 {len(head)} 条历史对话轮次，保留核心设计结论）"
+        )
+        anchor = {
+            "role": "system",
+            "content": condensed_text,
+            "id": cls.MANUAL_ANCHOR_ID,
+        }
+
+        assembled = [anchor] + tail
+        compressed_tokens = estimate_messages_tokens(assembled)
+        saved = max(0, initial_tokens - compressed_tokens)
+        report = ContextUsageReport(
+            current_tokens=compressed_tokens,
+            max_tokens=max_tokens,
+            usage_percent=(compressed_tokens / max(max_tokens, 1)) * 100.0,
+            is_compressed=True,
+            compression_ratio=compressed_tokens / max(initial_tokens, 1),
+            tokens_saved=saved,
+            context_limit_key=context_key,
+        )
+        return anchor, len(messages) - keep_recent, report
+
+    @classmethod
+    def assemble_model_messages(
+        cls,
+        messages: List[Dict[str, Any]],
+        anchor: Optional[Dict[str, Any]],
+        through_index: int,
+    ) -> List[Dict[str, Any]]:
+        """Builds the model-facing list from a persisted manual anchor + live tail."""
+        if anchor and through_index >= 0 and through_index <= len(messages):
+            return [anchor] + messages[through_index:]
+        return messages
+
     @classmethod
     def evaluate_and_compress(
         cls,

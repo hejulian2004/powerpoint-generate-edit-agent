@@ -1,13 +1,14 @@
 """REST API routes for PPT-Agent-Studio."""
 
 from __future__ import annotations
+import base64
 import io
 import json
 import logging
 import urllib.parse
 import uuid
-from typing import Dict, Any, Optional
-from fastapi import APIRouter, UploadFile, File, Response, HTTPException, Body, Query
+from typing import Dict, Any, List, Optional
+from fastapi import APIRouter, UploadFile, File, Form, Response, HTTPException, Body, Query
 from fastapi.responses import StreamingResponse
 
 from ..state.store import store, create_default_demo_presentation
@@ -69,6 +70,7 @@ async def workspace_bootstrap(hint: Optional[str] = Query(None)):
         return {
             "session_id": session.session_id,
             "is_new": False,
+            "interaction_mode": session.interaction_mode,
             "snapshot": build_canonical_snapshot(session),
             "sessions": [session.to_dict()],
         }
@@ -102,6 +104,7 @@ async def workspace_bootstrap(hint: Optional[str] = Query(None)):
     return {
         "session_id": session.session_id,
         "is_new": is_new,
+        "interaction_mode": session.interaction_mode,
         "snapshot": build_canonical_snapshot(session),
         "sessions": sessions,
     }
@@ -576,6 +579,54 @@ async def confirm_pending_action(
     return result
 
 
+@router.get("/plan/pending")
+async def list_pending_plans(session_id: Optional[str] = Query(None)):
+    """Lists plans awaiting explicit user approval (plan interaction mode)."""
+    session = _resolve_session(session_id)
+    return {
+        "session_id": session.session_id,
+        "presentation_version": session.document.presentation.version,
+        "interaction_mode": session.interaction_mode,
+        "pending": list(session.plan_confirmations.pending.values()),
+    }
+
+
+@router.post("/plan/confirm")
+async def confirm_pending_plan(
+    payload: Dict[str, Any] = Body(...),
+    session_id: Optional[str] = Query(None),
+):
+    """Executes (or cancels) a frozen plan after explicit user confirmation."""
+    plan_id = payload.get("plan_id")
+    if not plan_id:
+        raise HTTPException(status_code=400, detail="plan_id is required")
+
+    sid = session_id or payload.get("session_id")
+    session = _resolve_session(sid)
+    decision = (payload.get("decision") or "confirm").lower()
+
+    async def on_event(event):
+        event["session_id"] = session.session_id
+        await store.broadcast(event, session_id=session.session_id)
+
+    if decision == "cancel":
+        result = await store.agent_runtime.cancel_plan(session, plan_id, on_event=on_event)
+    elif decision in ("confirm", "approve"):
+        result = await store.agent_runtime.confirm_plan(session, plan_id, on_event=on_event)
+    else:
+        raise HTTPException(status_code=400, detail="decision must be 'confirm' or 'cancel'")
+
+    await store.broadcast(
+        build_presentation_event(
+            session,
+            "presentation_updated",
+            extra={"pending_plans_count": len(session.plan_confirmations.pending)},
+        ),
+        session_id=session.session_id,
+    )
+    return result
+
+
 # =====================================================================
 # PPTSpec & LangGraph Generation API Endpoints (PR13)
 # =====================================================================
@@ -1002,3 +1053,221 @@ async def api_generate_from_paper(payload: Dict[str, Any] = Body(...)):
         "generation": presentation_ir.metadata.get("generation", {}),
         **build_canonical_snapshot(session),
     }
+
+
+_IMAGE_MIME_BY_EXT = {
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".gif": "image/gif",
+    ".webp": "image/webp",
+    ".bmp": "image/bmp",
+    ".svg": "image/svg+xml",
+    ".heic": "image/heic",
+}
+
+
+def _mime_for_image(filename: str, content_type: Optional[str]) -> str:
+    if content_type and content_type.startswith("image/"):
+        return content_type
+    import os as _os
+
+    return _IMAGE_MIME_BY_EXT.get(_os.path.splitext(filename or "")[1].lower(), "image/png")
+
+
+def _as_upload_file(name: str, content_type: Optional[str], content: bytes) -> UploadFile:
+    from starlette.datastructures import UploadFile as StarletteUploadFile
+
+    return StarletteUploadFile(file=io.BytesIO(content), filename=name)
+
+
+@router.post("/chat/drive")
+async def chat_with_attachments(
+    message: str = Form(""),
+    session_id: str = Form(""),
+    expected_epoch: str = Form(""),
+    expected_revision: int = Form(0),
+    ui_context: str = Form(""),
+    files: Optional[List[UploadFile]] = File(None),
+):
+    """Unified entry point for chat messages that carry attachments.
+
+    The user's natural-language message selects how each attachment is used
+    (paper -> deck, pptx -> import, image -> insert, text -> source material).
+    Only the dispatch happens here; every action reuses the same tested pipeline
+    as its dedicated REST endpoint.
+    """
+    from ..agent.attachment_router import (
+        ACTION_CHAT,
+        ACTION_IMAGE,
+        ACTION_IMPORT,
+        ACTION_PAPER,
+        ACTION_TEXT,
+        KIND_IMAGE,
+        KIND_PDF,
+        KIND_PPTX,
+        KIND_TEXT,
+        classify_intent,
+        detect_kind,
+    )
+
+    session = _resolve_session(session_id or None)
+
+    attachments: List[Dict[str, Any]] = []
+    for upload in files or []:
+        if upload is None or not upload.filename:
+            continue
+        content = await upload.read()
+        if not content:
+            continue
+        attachments.append(
+            {
+                "name": upload.filename,
+                "content_type": upload.content_type,
+                "content": content,
+                "kind": detect_kind(upload.filename, upload.content_type),
+            }
+        )
+
+    kinds = [a["kind"] for a in attachments]
+    action = await classify_intent(getattr(store.agent_runtime, "llm", None), message, kinds)
+
+    if action == ACTION_CHAT:
+        return {
+            "success": True,
+            "action": ACTION_CHAT,
+            "session_id": session.session_id,
+            "message": "",
+        }
+
+    def _first(kind: str) -> Optional[Dict[str, Any]]:
+        return next((a for a in attachments if a["kind"] == kind), None)
+
+    if action == ACTION_PAPER:
+        target = _first(KIND_PDF)
+        if target is None:
+            raise HTTPException(status_code=400, detail="PDF_REQUIRED_FOR_PAPER")
+        analysis = await analyze_paper(
+            file=_as_upload_file(target["name"], target["content_type"], target["content"]),
+            session_id=session.session_id,
+            force=False,
+        )
+        generated = await api_generate_from_paper(
+            payload={
+                "session_id": session.session_id,
+                "cache_key": analysis["cache_key"],
+                "user_prompt": message,
+            }
+        )
+        return {
+            "success": True,
+            "action": ACTION_PAPER,
+            "session_id": session.session_id,
+            "source_filename": analysis.get("source_filename"),
+            "page_count": analysis.get("page_count"),
+            **generated,
+        }
+
+    if action == ACTION_IMPORT:
+        target = _first(KIND_PPTX)
+        if target is None:
+            raise HTTPException(status_code=400, detail="PPTX_REQUIRED_FOR_IMPORT")
+        if not expected_epoch or expected_revision is None:
+            raise HTTPException(status_code=409, detail="MISSING_REPLACEMENT_STAMP")
+        imported = await upload_pptx(
+            file=_as_upload_file(target["name"], target["content_type"], target["content"]),
+            session_id=session.session_id,
+            expected_epoch=expected_epoch,
+            expected_revision=expected_revision,
+        )
+        return {"action": ACTION_IMPORT, **imported}
+
+    if action == ACTION_TEXT:
+        target = _first(KIND_TEXT)
+        if target is None:
+            raise HTTPException(status_code=400, detail="TEXT_REQUIRED_FOR_GENERATION")
+        try:
+            raw_text = target["content"].decode("utf-8")
+        except UnicodeDecodeError:
+            raw_text = target["content"].decode("utf-8", errors="replace")
+        if not raw_text.strip():
+            raise HTTPException(status_code=400, detail="EMPTY_TEXT_ATTACHMENT")
+        normalized = await api_normalize_pptspec(
+            payload={"content": raw_text, "session_id": session.session_id}
+        )
+        normalization_id = normalized.get("normalization_id")
+        if not normalized.get("valid") or not normalization_id:
+            errors = "; ".join(normalized.get("errors") or []) or "normalization produced no artifact"
+            raise HTTPException(
+                status_code=422, detail=f"TEXT_NORMALIZATION_FAILED: {errors}"
+            )
+        generated = await api_generate_from_pptspec(
+            payload={
+                "normalization_id": normalization_id,
+                "session_id": session.session_id,
+            }
+        )
+        return {
+            "success": True,
+            "action": ACTION_TEXT,
+            "session_id": session.session_id,
+            "summary": normalized.get("summary"),
+            "warnings": normalized.get("warnings") or [],
+            **generated,
+        }
+
+    if action == ACTION_IMAGE:
+        target = _first(KIND_IMAGE)
+        if target is None:
+            raise HTTPException(status_code=400, detail="IMAGE_REQUIRED_FOR_INSERT")
+        mime = _mime_for_image(target["name"], target["content_type"])
+        data_uri = (
+            f"data:{mime};base64," + base64.b64encode(target["content"]).decode("ascii")
+        )
+        presentation = session.document.presentation
+        active = session.active_slide_id
+        if not active and presentation.slides:
+            active = presentation.slides[0].id
+        result = await MutationGateway.execute_tool_calls(
+            [
+                {
+                    "name": "add_image",
+                    "arguments": {
+                        "slide_id": active or "",
+                        "src": data_uri,
+                        "alt_text": target["name"],
+                        "x": 340.0,
+                        "y": 160.0,
+                        "width": 600.0,
+                        "height": 400.0,
+                    },
+                }
+            ],
+            presentation,
+            session.history,
+            session=session,
+            source="user_direct",
+            bypass_confirmation=True,
+            atomic=True,
+        )
+        if not result.success:
+            raise HTTPException(
+                status_code=400,
+                detail=f"IMAGE_INSERT_FAILED: {getattr(result, 'error', None) or 'unknown'}",
+            )
+        await store.broadcast(
+            build_presentation_event(
+                session,
+                "presentation_loaded",
+                extra={"checkpoints_count": len(session.checkpoints)},
+            ),
+            session_id=session.session_id,
+        )
+        return {
+            "success": True,
+            "action": ACTION_IMAGE,
+            "session_id": session.session_id,
+            **build_canonical_snapshot(session),
+        }
+
+    raise HTTPException(status_code=400, detail=f"UNSUPPORTED_ACTION: {action}")

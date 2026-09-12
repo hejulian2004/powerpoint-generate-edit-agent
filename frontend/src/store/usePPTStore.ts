@@ -536,6 +536,27 @@ const applyElementUpdate = (
   return updated
 }
 
+export type InteractionMode = 'auto' | 'plan'
+
+export interface PendingPlan {
+  planId: string
+  plan: string
+  planReview?: { approved?: boolean; score?: number; recommendations?: string; summary?: string }
+  intent?: string
+  documentEpoch?: string | null
+  expectedRevision?: number
+  createdAt: number
+}
+
+export interface PendingConfirmation {
+  callId: string
+  tool: string
+  arguments: Record<string, any>
+  confidence?: number | null
+  message?: string
+  createdAt: number
+}
+
 interface PPTState {
   sessionId: string
   isBootstrapping: boolean
@@ -593,6 +614,19 @@ interface PPTState {
   clientSequence: number
   contextUsage: ContextUsageData | null
   setContextUsage: (usage: ContextUsageData | null) => void
+
+  // Slash-command driven session state.
+  interactionMode: InteractionMode
+  setInteractionMode: (mode: InteractionMode) => void
+  pendingPlan: PendingPlan | null
+  confirmPlan: () => void
+  cancelPlan: () => void
+  pendingConfirmation: PendingConfirmation | null
+  confirmConfirmation: () => void
+  cancelConfirmation: () => void
+  resetConversation: () => void
+  requestContextCompression: () => void
+  requestVisualReview: (target?: string) => void
 
   // Actions
   setSessionId: (id: string) => void
@@ -665,7 +699,8 @@ interface PPTState {
   ws: WebSocket | null
   bootstrapWorkspace: () => Promise<void>
   initWebSocket: () => void
-  sendChatMessage: (text: string) => Promise<void>
+  sendChatMessage: (text: string, options?: { skipLocalEcho?: boolean }) => Promise<void>
+  sendChatWithAttachments: (text: string, files: File[]) => Promise<void>
   triggerUndo: () => void
   triggerRedo: () => void
   updateElementDirect: (elemId: string, updates: Record<string, any>) => void
@@ -689,6 +724,18 @@ const canAuthorMutation = (state: {
   state.editLockState === 'editable' &&
   !state.sessionTakenOver &&
   !state.needsResync
+
+// Human-readable confirmation for each attachment dispatch action returned by
+// POST /api/chat/drive.
+const ATTACHMENT_RESULT_MESSAGES: Record<string, string> = {
+  paper_generate: '已根据论文生成演示文稿。',
+  pptx_import: '已导入 PPTX 文件并替换当前演示文稿。',
+  image_insert: '已将图片插入当前幻灯片。',
+  text_generate: '已根据文档内容生成演示文稿。'
+}
+
+const attachmentResultMessage = (action?: string): string =>
+  (action && ATTACHMENT_RESULT_MESSAGES[action]) || '附件已处理完成。'
 
 export const usePPTStore = create<PPTState>((set, get) => ({
   sessionId: '',
@@ -758,6 +805,89 @@ export const usePPTStore = create<PPTState>((set, get) => ({
     threshold_reached: false
   },
   setContextUsage: (usage) => set({ contextUsage: usage }),
+
+  interactionMode: 'auto',
+  pendingPlan: null,
+  pendingConfirmation: null,
+
+  setInteractionMode: (mode) => {
+    const current = get()
+    if (current.ws && current.ws.readyState === WebSocket.OPEN) {
+      current.ws.send(JSON.stringify({ type: 'set_plan_mode', mode }))
+    }
+    set({ interactionMode: mode })
+  },
+
+  confirmPlan: () => {
+    const current = get()
+    const plan = current.pendingPlan
+    if (!plan) return
+    if (current.ws && current.ws.readyState === WebSocket.OPEN) {
+      current.ws.send(JSON.stringify({ type: 'confirm_plan', plan_id: plan.planId }))
+    }
+    set({ pendingPlan: null, isAgentThinking: true, thinkingStatus: '正在执行已确认的计划...' })
+  },
+
+  cancelPlan: () => {
+    const current = get()
+    const plan = current.pendingPlan
+    if (!plan) return
+    if (current.ws && current.ws.readyState === WebSocket.OPEN) {
+      current.ws.send(JSON.stringify({ type: 'cancel_plan', plan_id: plan.planId }))
+    }
+    set({ pendingPlan: null })
+  },
+
+  confirmConfirmation: () => {
+    const current = get()
+    const pending = current.pendingConfirmation
+    if (!pending) return
+    if (current.ws && current.ws.readyState === WebSocket.OPEN) {
+      current.ws.send(JSON.stringify({ type: 'confirm_tool_call', call_id: pending.callId }))
+    }
+    set({ pendingConfirmation: null })
+  },
+
+  cancelConfirmation: () => {
+    const current = get()
+    const pending = current.pendingConfirmation
+    if (!pending) return
+    if (current.ws && current.ws.readyState === WebSocket.OPEN) {
+      current.ws.send(JSON.stringify({ type: 'cancel_tool_call', call_id: pending.callId }))
+    }
+    set({ pendingConfirmation: null })
+  },
+
+  resetConversation: () => {
+    const current = get()
+    if (current.ws && current.ws.readyState === WebSocket.OPEN) {
+      current.ws.send(JSON.stringify({ type: 'new_conversation' }))
+    }
+    set({
+      messages: [],
+      contextUsage: null,
+      generationStage: null,
+      pendingPlan: null,
+      pendingConfirmation: null
+    })
+  },
+
+  requestContextCompression: () => {
+    const current = get()
+    if (current.ws && current.ws.readyState === WebSocket.OPEN) {
+      current.ws.send(JSON.stringify({ type: 'compress_context' }))
+      set({ isAgentThinking: true, thinkingStatus: '正在压缩历史上下文...' })
+    }
+  },
+
+  requestVisualReview: (target) => {
+    const current = get()
+    if (current.ws && current.ws.readyState === WebSocket.OPEN) {
+      current.ws.send(JSON.stringify({ type: 'vision_review', target: target ?? '' }))
+      set({ isAgentThinking: true, thinkingStatus: '正在启动视觉审查...' })
+    }
+  },
+
   ws: null,
 
   setSessionId: (id: string) => {
@@ -787,7 +917,11 @@ export const usePPTStore = create<PPTState>((set, get) => ({
       if (typeof localStorage !== 'undefined') {
         localStorage.setItem('ppt_session_hint', data.session_id)
       }
-      set({ sessionId: data.session_id, bootstrapError: null })
+      set({
+        sessionId: data.session_id,
+        bootstrapError: null,
+        interactionMode: data.interaction_mode === 'plan' ? 'plan' : 'auto'
+      })
       if (data.snapshot) {
         get().adoptCanonicalSnapshot(data.snapshot)
       }
@@ -1940,6 +2074,99 @@ export const usePPTStore = create<PPTState>((set, get) => ({
             generationStage: stage,
             thinkingStatus: stage.text || (label ? `${label}${progress}...` : '生成进行中...')
           })
+        } else if (type === 'conversation_reset') {
+          set({
+            messages: [],
+            contextUsage: null,
+            generationStage: null,
+            visualRemediation: null,
+            pendingPlan: null,
+            pendingConfirmation: null,
+            isAgentThinking: false,
+            thinkingStatus: ''
+          })
+        } else if (type === 'context_compressed') {
+          set({ isAgentThinking: false, thinkingStatus: '' })
+          get().addMessage({
+            id: `compress_${Date.now()}`,
+            role: 'assistant',
+            content: data.applied
+              ? `已压缩历史上下文，归档 ${data.covered_messages ?? 0} 条对话轮次，节省约 ${data.usage?.tokens_saved ?? 0} tokens。`
+              : '当前对话较短，无需压缩。',
+            timestamp: Date.now()
+          })
+        } else if (type === 'plan_mode_changed') {
+          set({ interactionMode: data.mode === 'plan' ? 'plan' : 'auto' })
+        } else if (type === 'plan_ready') {
+          set({
+            isAgentThinking: false,
+            thinkingStatus: '',
+            pendingPlan: {
+              planId: data.plan_id,
+              plan: data.plan || '',
+              planReview: data.plan_review || undefined,
+              intent: data.intent,
+              documentEpoch: data.document_epoch ?? null,
+              expectedRevision: data.expected_revision,
+              createdAt: Date.now()
+            }
+          })
+        } else if (type === 'plan_approved') {
+          set({ isAgentThinking: true, thinkingStatus: '计划已确认，正在执行...' })
+        } else if (type === 'plan_resolved') {
+          set({ pendingPlan: null })
+        } else if (type === 'plan_invalidated' || type === 'plan_failed' || type === 'plan_cancelled') {
+          set({ pendingPlan: null, isAgentThinking: false, thinkingStatus: '' })
+          get().addMessage({
+            id: `plan_${Date.now()}`,
+            role: 'assistant',
+            content: `⚠️ ${data.message || '计划未能继续执行。'}`,
+            timestamp: Date.now()
+          })
+        } else if (type === 'vision_review_result') {
+          set({ isAgentThinking: false, thinkingStatus: '' })
+          if (data.success === false) {
+            get().addMessage({
+              id: `vision_${Date.now()}`,
+              role: 'assistant',
+              content: `⚠️ ${data.message || '视觉审查未完成。'}`,
+              timestamp: Date.now()
+            })
+          } else {
+            const overall = data.overall || {}
+            get().addMessage({
+              id: `vision_${Date.now()}`,
+              role: 'assistant',
+              content: `视觉审查完成，共审查 ${data.targets?.length ?? 0} 页，平均得分 ${overall.score ?? '-'}。`,
+              timestamp: Date.now(),
+              visionCritique: overall.critique_summary,
+              visualReview: {
+                score: overall.score ?? 0,
+                defects_count: overall.defects_count,
+                needs_auto_correction: overall.needs_auto_correction,
+                critique_summary: overall.critique_summary
+              }
+            })
+          }
+        } else if (type === 'confirmation_required') {
+          set({
+            pendingConfirmation: {
+              callId: data.call_id,
+              tool: data.tool,
+              arguments: data.arguments || {},
+              confidence: data.resolution_confidence ?? data.confidence,
+              message: data.message,
+              createdAt: Date.now()
+            }
+          })
+        } else if (
+          type === 'confirmation_resolved' ||
+          type === 'confirmation_cancelled' ||
+          type === 'confirmation_failed' ||
+          type === 'confirmation_invalidated' ||
+          type === 'confirmation_approved'
+        ) {
+          set({ pendingConfirmation: null })
         } else if (type === 'agent_finished') {
           set({ isAgentThinking: false, thinkingStatus: '', visualRemediation: null, generationStage: null })
           get().addMessage({
@@ -1997,7 +2224,7 @@ export const usePPTStore = create<PPTState>((set, get) => ({
     }
   },
 
-  sendChatMessage: async (text) => {
+  sendChatMessage: async (text, options) => {
     const { addMessage } = get()
     if (!text.trim()) return
 
@@ -2047,12 +2274,14 @@ export const usePPTStore = create<PPTState>((set, get) => ({
       editing_element_id: current.editingElementId
     }
 
-    addMessage({
-      id: `user_${Date.now()}`,
-      role: 'user',
-      content: text,
-      timestamp: Date.now()
-    })
+    if (!options?.skipLocalEcho) {
+      addMessage({
+        id: `user_${Date.now()}`,
+        role: 'user',
+        content: text,
+        timestamp: Date.now()
+      })
+    }
 
     set({
       isAgentThinking: true,
@@ -2069,8 +2298,118 @@ export const usePPTStore = create<PPTState>((set, get) => ({
       session_id: current.sessionId,
       document_epoch: current.documentEpoch,
       base_revision: current.confirmedRevision,
-      ui_context: uiContext
+      ui_context: uiContext,
+      mode: current.interactionMode
     }))
+  },
+
+  sendChatWithAttachments: async (text, files) => {
+    const { addMessage } = get()
+    if (!text.trim() && files.length === 0) return
+
+    // Attachments replace the document (paper/text/pptx) or mutate the active
+    // slide (image), so every committed local edit must be visible first.
+    try {
+      await get().awaitDirectSyncBarrier({ timeoutMs: 10000 })
+    } catch {
+      addMessage({
+        id: `barrier_${Date.now()}`,
+        role: 'assistant',
+        content: '本地修改尚未同步完成，已取消本次发送。请等待同步完成或重试。',
+        timestamp: Date.now()
+      })
+      return
+    }
+
+    const current = get()
+    if (current.sessionTakenOver) {
+      addMessage({
+        id: `takenover_${Date.now()}`,
+        role: 'assistant',
+        content: '会话已被接管，已取消本次发送。请刷新页面后重试。',
+        timestamp: Date.now()
+      })
+      return
+    }
+
+    const uiContext: UIContextWire = {
+      client_id: current.clientId,
+      ui_context_revision: current.uiContextRevision,
+      active_slide_id: current.activeSlideId,
+      selected_element_ids: current.selectedElementIds,
+      primary_selected_element_id: current.selectedElementId,
+      selection_scope: current.selectionScope,
+      editing_element_id: current.editingElementId
+    }
+
+    addMessage({
+      id: `user_${Date.now()}`,
+      role: 'user',
+      content: text.trim() || `（已附加 ${files.length} 个文件）`,
+      timestamp: Date.now()
+    })
+
+    set({
+      isAgentThinking: true,
+      thinkingStatus: '正在识别附件与处理意图...',
+      activeRightTab: 'copilot'
+    })
+
+    const formData = new FormData()
+    formData.append('message', text)
+    formData.append('session_id', current.sessionId)
+    formData.append('expected_epoch', current.documentEpoch ?? '')
+    formData.append('expected_revision', String(current.confirmedRevision))
+    formData.append('ui_context', JSON.stringify(uiContext))
+    for (const file of files) formData.append('files', file, file.name)
+
+    try {
+      const res = await fetch('/api/chat/drive', { method: 'POST', body: formData })
+      const data = await res.json().catch(() => null)
+      if (!res.ok) {
+        const detail = data?.detail || data?.error || `HTTP ${res.status}`
+        throw new Error(typeof detail === 'string' ? detail : JSON.stringify(detail))
+      }
+      // No attachment pipeline applies: continue as a normal chat turn so the
+      // agent can still answer about the file / request.
+      if (data?.action === 'chat') {
+        set({ isAgentThinking: false, thinkingStatus: '' })
+        if (text.trim()) {
+          await get().sendChatMessage(text, { skipLocalEcho: true })
+        } else {
+          addMessage({
+            id: `assistant_${Date.now()}`,
+            role: 'assistant',
+            content: '已收到附件，请告诉我你想如何处理它。',
+            timestamp: Date.now()
+          })
+        }
+        return
+      }
+      if (data?.presentation) {
+        get().adoptCanonicalSnapshot(data)
+      }
+      addMessage({
+        id: `assistant_${Date.now()}`,
+        role: 'assistant',
+        content: attachmentResultMessage(data?.action),
+        timestamp: Date.now()
+      })
+      set({
+        isAgentThinking: false,
+        thinkingStatus: '',
+        visualRemediation: null,
+        generationStage: null
+      })
+    } catch (err) {
+      addMessage({
+        id: `assistant_${Date.now()}`,
+        role: 'assistant',
+        content: `附件处理失败：${err instanceof Error ? err.message : String(err)}`,
+        timestamp: Date.now()
+      })
+      set({ isAgentThinking: false, thinkingStatus: '' })
+    }
   },
 
   triggerUndo: () => {

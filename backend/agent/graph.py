@@ -86,6 +86,13 @@ class PPTAgentState(TypedDict, total=False):
     # Session Agent-turn lease id, threaded end-to-end so the MutationGateway can
     # verify this turn owns the document freeze (S7/S8).
     agent_turn_id: Optional[str]
+    # Interaction mode ("auto" | "plan"). In "plan" mode an approved plan pauses
+    # for explicit user confirmation before the executor runs. `plan_preapproved`
+    # marks the resumed turn that must skip planner/plan-critic and execute the
+    # frozen plan directly.
+    interaction_mode: str
+    plan_preapproved: bool
+    plan_ready: bool
 
 
 # =====================================================================
@@ -305,6 +312,51 @@ async def plan_critic_node(state: PPTAgentState, config: RunnableConfig) -> Dict
         "plan_review": plan_review_dict,
         "plan_iteration": plan_iteration,
         "subagent_memories": subagent_mems
+    }
+
+
+async def await_plan_confirmation_node(state: PPTAgentState, config: RunnableConfig) -> Dict[str, Any]:
+    """Freezes an approved plan and pauses the turn for explicit user confirmation.
+
+    Registered on the session (ephemeral, like low-confidence confirmations) and
+    bound to the document identity it was drafted against. The user confirms via
+    `confirm_plan`, which resumes execution with the frozen plan.
+    """
+    configurable = config.get("configurable", {})
+    on_event: Optional[Callable] = configurable.get("on_event")
+    session = configurable.get("session")
+    plan = state.get("plan", "") or ""
+    plan_review = state.get("plan_review")
+    intent = state.get("intent", "chat")
+    plan_id = f"plan_{uuid.uuid4().hex[:10]}"
+
+    record = None
+    if session is not None and hasattr(session, "register_pending_plan"):
+        record = session.register_pending_plan(
+            plan_id=plan_id,
+            plan=plan,
+            plan_review=plan_review,
+            user_query=state.get("user_query", ""),
+            document_epoch=state.get("turn_document_epoch") or getattr(session, "document_epoch", None),
+            expected_revision=session.document.presentation.version,
+            active_slide_id=state.get("active_slide_id"),
+        )
+
+    if on_event:
+        await _safe_emit(on_event, {
+            "type": "plan_ready",
+            "plan_id": plan_id,
+            "plan": plan,
+            "plan_review": plan_review,
+            "intent": intent,
+            "document_epoch": record.get("document_epoch") if record else None,
+            "expected_revision": record.get("expected_revision") if record else None,
+            "session_id": getattr(session, "session_id", None),
+        })
+
+    return {
+        "plan_ready": True,
+        "final_summary": "计划已生成，请确认后继续执行。",
     }
 
 
@@ -1386,6 +1438,9 @@ def should_route_planner(state: PPTAgentState) -> str:
         return "summary_node"
     if state.get("intent") == "chat":
         return "summary_node"
+    # A resumed plan-confirmation turn executes the frozen plan directly.
+    if state.get("plan_preapproved"):
+        return "executor_node"
     return "planner_node"
 
 
@@ -1393,6 +1448,8 @@ def should_route_plan_critic(state: PPTAgentState) -> str:
     """Decides whether to proceed to executor or loop back to planner to refine outline."""
     intent = state.get("intent", "chat")
     if intent not in ["generate_presentation", "generate_slide", "optimize_layout"]:
+        if _needs_plan_confirmation(state):
+            return "await_plan_confirmation_node"
         return "executor_node"
 
     plan_review = state.get("plan_review")
@@ -1401,7 +1458,20 @@ def should_route_plan_critic(state: PPTAgentState) -> str:
     # If PlanCriticSubagent did not approve and within max 2 iterations, loop back to planner
     if plan_review and not plan_review.get("approved", True) and plan_it < 2:
         return "planner_node"
+    if _needs_plan_confirmation(state):
+        return "await_plan_confirmation_node"
     return "executor_node"
+
+
+def _needs_plan_confirmation(state: PPTAgentState) -> bool:
+    """True when a plan-mode turn must pause for explicit user approval."""
+    if state.get("plan_preapproved"):
+        return False
+    if state.get("interaction_mode") != "plan":
+        return False
+    if state.get("intent") == "chat":
+        return False
+    return bool(state.get("plan"))
 
 
 def should_route_mutation(state: PPTAgentState) -> str:
@@ -1461,6 +1531,7 @@ def build_ppt_agent_graph() -> StateGraph:
     workflow.add_node("router_node", router_node)
     workflow.add_node("planner_node", planner_node)
     workflow.add_node("plan_critic_node", plan_critic_node)
+    workflow.add_node("await_plan_confirmation_node", await_plan_confirmation_node)
     workflow.add_node("executor_node", executor_node)
     workflow.add_node("mutation_node", mutation_node)
     workflow.add_node("content_critic_node", content_critic_node)
@@ -1472,13 +1543,16 @@ def build_ppt_agent_graph() -> StateGraph:
     workflow.add_edge(START, "router_node")
     workflow.add_conditional_edges("router_node", should_route_planner, {
         "planner_node": "planner_node",
+        "executor_node": "executor_node",
         "summary_node": "summary_node"
     })
     workflow.add_edge("planner_node", "plan_critic_node")
     workflow.add_conditional_edges("plan_critic_node", should_route_plan_critic, {
         "planner_node": "planner_node",
-        "executor_node": "executor_node"
+        "executor_node": "executor_node",
+        "await_plan_confirmation_node": "await_plan_confirmation_node"
     })
+    workflow.add_edge("await_plan_confirmation_node", "summary_node")
     workflow.add_edge("executor_node", "mutation_node")
     workflow.add_conditional_edges("mutation_node", should_route_mutation, {
         "executor_node": "executor_node",

@@ -41,6 +41,7 @@ from .services.confirmation import ConfirmationService
 from .services.connection import ConnectionService
 from .services.history import HistoryService
 from .services.memory import MemoryService
+from .services.plan_confirmation import PlanConfirmationService
 
 __all__ = [
     "CHECKPOINT_NOT_FOUND",
@@ -73,6 +74,11 @@ class PPTSession:
         self.checkpoint_service = CheckpointService(session_id=session_id)
         self.memory = MemoryService()
         self.confirmations = ConfirmationService()
+        self.plan_confirmations = PlanConfirmationService()
+        # Session-level interaction mode: "auto" (plan and execute in one turn) or
+        # "plan" (pause after the plan critic approves for explicit user approval).
+        # Ephemeral like confirmations; never persisted (contract P2).
+        self.interaction_mode: str = "auto"
 
         # The Agent edit window must exist before the DocumentService so it can be
         # injected as the replacement authorization collaborator.
@@ -237,15 +243,62 @@ class PPTSession:
             self.updated_at = datetime.now(timezone.utc)
 
     # ------------------------------------------------------------------
+    # Pending plan lifecycle (delegates to PlanConfirmationService)
+    # ------------------------------------------------------------------
+
+    @property
+    def pending_plans(self) -> Dict[str, Dict[str, Any]]:
+        return self.plan_confirmations.pending
+
+    def register_pending_plan(
+        self,
+        plan_id: str,
+        plan: str,
+        plan_review: Optional[Dict[str, Any]] = None,
+        user_query: str = "",
+        document_epoch: Optional[str] = None,
+        expected_revision: Optional[int] = None,
+        active_slide_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        if document_epoch is None:
+            document_epoch = self.document.epoch
+        record = self.plan_confirmations.register(
+            plan_id=plan_id,
+            plan=plan,
+            plan_review=plan_review,
+            user_query=user_query,
+            document_epoch=document_epoch,
+            expected_revision=expected_revision,
+            active_slide_id=active_slide_id,
+        )
+        self.updated_at = datetime.now(timezone.utc)
+        return record
+
+    def get_pending_plan(self, plan_id: str) -> Optional[Dict[str, Any]]:
+        return self.plan_confirmations.get(plan_id)
+
+    def consume_pending_plan(self, plan_id: str) -> Optional[Dict[str, Any]]:
+        record = self.plan_confirmations.consume(plan_id)
+        if record is not None:
+            self.updated_at = datetime.now(timezone.utc)
+        return record
+
+    def clear_pending_plans(self) -> None:
+        if self.plan_confirmations.clear():
+            self.updated_at = datetime.now(timezone.utc)
+
+    # ------------------------------------------------------------------
     # Document lifecycle (delegates to DocumentService)
     # ------------------------------------------------------------------
 
     def _unsafe_install_for_bootstrap(self, *args: Any, **kwargs: Any) -> None:
         self.document._unsafe_install_for_bootstrap(*args, **kwargs)
+        self.plan_confirmations.clear()
         self.updated_at = datetime.now(timezone.utc)
 
     def _finalize_inplace_replacement_locked(self, *args: Any, **kwargs: Any) -> None:
         self.document._finalize_inplace_replacement_locked(*args, **kwargs)
+        self.plan_confirmations.clear()
         self.updated_at = datetime.now(timezone.utc)
 
     def _restore_checkpoint_unchecked(self, *args: Any, **kwargs: Any) -> bool:
@@ -257,6 +310,7 @@ class PPTSession:
     async def commit_replacement(self, *args: Any, **kwargs: Any) -> ReplacementResult:
         result = await self.document.commit_replacement(*args, **kwargs)
         if result.committed:
+            self.plan_confirmations.clear()
             self.updated_at = datetime.now(timezone.utc)
             self.schedule_persist()
         return result
@@ -264,6 +318,7 @@ class PPTSession:
     async def commit_checkpoint_restore(self, *args: Any, **kwargs: Any) -> ReplacementResult:
         result = await self.document.commit_checkpoint_restore(*args, **kwargs)
         if result.committed:
+            self.plan_confirmations.clear()
             self.updated_at = datetime.now(timezone.utc)
             self.schedule_persist()
         return result
@@ -354,6 +409,22 @@ class PPTSession:
             self.iterations.append(iteration_data)
         self.updated_at = datetime.now(timezone.utc)
 
+    def reset_conversation(self) -> None:
+        """Starts a brand-new conversation while preserving the deck and history.
+
+        Clears the transcript, Agent memory, subagent memories and any manual
+        compression anchor. The presentation, document epoch, checkpoints and
+        pending confirmations/plans are deliberately left untouched.
+        """
+        self.memory.clear_conversation()
+        self.updated_at = datetime.now(timezone.utc)
+        self.schedule_persist()
+
+    def set_interaction_mode(self, mode: str) -> str:
+        self.interaction_mode = "plan" if mode == "plan" else "auto"
+        self.updated_at = datetime.now(timezone.utc)
+        return self.interaction_mode
+
     def schedule_persist(self) -> None:
         """Marks committed state dirty for debounced durable persistence.
 
@@ -377,4 +448,6 @@ class PPTSession:
             "can_redo": self.history_service.can_redo(),
             "last_target_id": self.document.last_target_id,
             "pending_confirmations_count": len(self.confirmations.pending),
+            "pending_plans_count": len(self.plan_confirmations.pending),
+            "interaction_mode": self.interaction_mode,
         }

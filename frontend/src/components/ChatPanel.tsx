@@ -1,21 +1,42 @@
-import React, { useState, useRef, useEffect } from 'react'
+import React, { useState, useRef, useEffect, useMemo } from 'react'
 import {
   Send, Sparkles, Wrench, Eye, CheckCircle2,
-  Bot, User, Loader2, SlidersHorizontal, ShieldCheck, Activity
+  Bot, User, Loader2, SlidersHorizontal, ShieldCheck, Activity,
+  Paperclip, X, FileText, FileType2, Image as ImageIcon, Presentation,
+  Zap
 } from 'lucide-react'
 import { usePPTStore } from '../store/usePPTStore'
 import { PropertyPanel } from './PropertyPanel'
 import { ContextUsageIndicator } from './ContextUsageIndicator'
+import { buildHelpMessage, matchCommands, parseCommand, type ChatCommand } from './chat/chatCommands'
+import { PlanCard, ConfirmationCard } from './chat/PlanCard'
 
-const QUICK_PROMPTS = [
-  '一键生成《AI Agent 架构》完整PPT',
-  '排版生成发展历程时间线',
-  '生成 3 栏核心特性卡片',
-  '生成核心效能 KPI 指标卡',
-  '两栏对比：传统模式 vs 智能协同',
-  '自动规整当前页卡片对齐与间距',
-  '切换为钛金黑曜深色主题'
-]
+type AttachmentKind = 'pdf' | 'pptx' | 'image' | 'text' | 'unknown'
+
+interface PendingAttachment {
+  id: string
+  file: File
+  name: string
+  kind: AttachmentKind
+  previewUrl?: string
+}
+
+const kindFromFile = (file: File): AttachmentKind => {
+  const name = (file.name || '').toLowerCase()
+  const type = (file.type || '').toLowerCase()
+  if (name.endsWith('.pdf') || type === 'application/pdf') return 'pdf'
+  if (/\.(pptx?|pptm)$/.test(name) || type.includes('presentation') || type.includes('powerpoint')) return 'pptx'
+  if (type.startsWith('image/') || /\.(png|jpe?g|gif|webp|bmp|svg|heic)$/.test(name)) return 'image'
+  if (type.startsWith('text/') || /\.(txt|md|markdown|csv|tsv|json|log|rst|ya?ml)$/.test(name)) return 'text'
+  return 'unknown'
+}
+
+const AttachmentIcon: React.FC<{ kind: AttachmentKind; className?: string }> = ({ kind, className }) => {
+  if (kind === 'image') return <ImageIcon className={className} />
+  if (kind === 'pptx') return <Presentation className={className} />
+  if (kind === 'pdf') return <FileType2 className={className} />
+  return <FileText className={className} />
+}
 
 export const ChatPanel: React.FC = () => {
   const {
@@ -26,26 +47,186 @@ export const ChatPanel: React.FC = () => {
     generationStage,
     contextUsage,
     sendChatMessage,
+    sendChatWithAttachments,
     activeRightTab,
     setActiveRightTab,
-    selectedElementId
+    selectedElementId,
+    interactionMode,
+    setInteractionMode,
+    pendingPlan,
+    confirmPlan,
+    cancelPlan,
+    pendingConfirmation,
+    confirmConfirmation,
+    cancelConfirmation,
+    resetConversation,
+    requestContextCompression,
+    requestVisualReview,
+    addMessage
   } = usePPTStore()
 
   const [input, setInput] = useState('')
+  const [attachments, setAttachments] = useState<PendingAttachment[]>([])
+  const [isDragging, setIsDragging] = useState(false)
+  const [activeCommandIndex, setActiveCommandIndex] = useState(0)
+  const [paletteDismissed, setPaletteDismissed] = useState(false)
   const messagesEndRef = useRef<HTMLDivElement>(null)
+  const fileInputRef = useRef<HTMLInputElement>(null)
+  const textareaRef = useRef<HTMLTextAreaElement>(null)
+  const attachmentsRef = useRef<PendingAttachment[]>([])
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [messages, isAgentThinking])
 
+  useEffect(() => {
+    attachmentsRef.current = attachments
+  }, [attachments])
+
+  // Object URLs for image previews are client-only; revoke them on unmount so a
+  // long session does not leak blobs.
+  useEffect(() => {
+    return () => {
+      attachmentsRef.current.forEach((a) => a.previewUrl && URL.revokeObjectURL(a.previewUrl))
+    }
+  }, [])
+
+  const addFiles = (incoming: FileList | File[] | null | undefined) => {
+    if (!incoming) return
+    const next: PendingAttachment[] = []
+    for (const file of Array.from(incoming)) {
+      if (!file) continue
+      const kind = kindFromFile(file)
+      next.push({
+        id: `att_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+        file,
+        name: file.name || '未命名文件',
+        kind,
+        previewUrl: kind === 'image' ? URL.createObjectURL(file) : undefined
+      })
+    }
+    if (next.length) setAttachments((prev) => [...prev, ...next])
+  }
+
+  const removeAttachment = (id: string) => {
+    setAttachments((prev) => {
+      const target = prev.find((a) => a.id === id)
+      if (target?.previewUrl) URL.revokeObjectURL(target.previewUrl)
+      return prev.filter((a) => a.id !== id)
+    })
+  }
+
+  const clearAttachments = () => {
+    setAttachments((prev) => {
+      prev.forEach((a) => a.previewUrl && URL.revokeObjectURL(a.previewUrl))
+      return []
+    })
+  }
+
+  const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+    addFiles(e.target.files)
+    if (fileInputRef.current) fileInputRef.current.value = ''
+  }
+
+  const handlePaste = (e: React.ClipboardEvent<HTMLTextAreaElement>) => {
+    const files = e.clipboardData?.files
+    if (files && files.length > 0) {
+      e.preventDefault()
+      addFiles(files)
+    }
+  }
+
+  // Slash-command palette: active while the input is a bare "/query" token.
+  const commandQuery = input.startsWith('/') ? input.slice(1) : null
+  const filteredCommands = useMemo(
+    () => (commandQuery !== null ? matchCommands(commandQuery.split(' ')[0]) : []),
+    [commandQuery]
+  )
+  const paletteOpen =
+    commandQuery !== null && !commandQuery.includes(' ') && !paletteDismissed && filteredCommands.length > 0
+
+  const handleInputChange = (value: string) => {
+    setInput(value)
+    setActiveCommandIndex(0)
+    setPaletteDismissed(false)
+  }
+
+  const runCommand = (command: ChatCommand, args: string) => {
+    switch (command.name) {
+      case 'compress':
+        requestContextCompression()
+        break
+      case 'new':
+        resetConversation()
+        break
+      case 'review':
+        requestVisualReview(args || undefined)
+        break
+      case 'plan': {
+        if (/^(off|false|关闭|退出|停用)$/i.test(args)) setInteractionMode('auto')
+        else if (/^(on|true|开启|启用)$/i.test(args)) setInteractionMode('plan')
+        else setInteractionMode(interactionMode === 'plan' ? 'auto' : 'plan')
+        break
+      }
+      case 'help':
+        addMessage(buildHelpMessage())
+        break
+    }
+  }
+
   const handleSubmit = (e?: React.FormEvent) => {
     if (e) e.preventDefault()
-    if (!input.trim() || isAgentThinking) return
-    sendChatMessage(input)
-    setInput('')
+    if (isAgentThinking) return
+
+    // Commands are control-plane only: they are never sent to the LLM transcript.
+    if (attachments.length === 0) {
+      const parsed = parseCommand(input)
+      if (parsed) {
+        runCommand(parsed.command, parsed.args)
+        setInput('')
+        return
+      }
+    }
+
+    const hasContent = input.trim().length > 0 || attachments.length > 0
+    if (!hasContent) return
+    if (attachments.length > 0) {
+      sendChatWithAttachments(input, attachments.map((a) => a.file))
+      setInput('')
+      clearAttachments()
+    } else {
+      sendChatMessage(input)
+      setInput('')
+    }
   }
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (paletteOpen) {
+      if (e.key === 'ArrowDown') {
+        e.preventDefault()
+        setActiveCommandIndex((i) => Math.min(i + 1, filteredCommands.length - 1))
+        return
+      }
+      if (e.key === 'ArrowUp') {
+        e.preventDefault()
+        setActiveCommandIndex((i) => Math.max(i - 1, 0))
+        return
+      }
+      if (e.key === 'Escape') {
+        e.preventDefault()
+        setPaletteDismissed(true)
+        return
+      }
+      if (e.key === 'Tab' || (e.key === 'Enter' && !e.shiftKey)) {
+        e.preventDefault()
+        const command = filteredCommands[activeCommandIndex]
+        if (command) {
+          runCommand(command, '')
+          setInput('')
+        }
+        return
+      }
+    }
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault()
       handleSubmit()
@@ -294,43 +475,154 @@ export const ChatPanel: React.FC = () => {
             <div ref={messagesEndRef} />
           </div>
 
-          {/* Quick Prompt Suggestions */}
-          <div className="px-3 py-2 border-t border-line bg-panel">
-            <div className="flex gap-1.5 overflow-x-auto pb-1 no-scrollbar">
-              {QUICK_PROMPTS.map((prompt, idx) => (
-                <button
-                  key={idx}
-                  onClick={() => sendChatMessage(prompt)}
-                  disabled={isAgentThinking}
-                  className="text-[11px] whitespace-nowrap px-2.5 py-1 rounded-lg bg-elevated hover:bg-line text-secondary hover:text-main border border-line font-medium transition-all disabled:opacity-40"
-                >
-                  {prompt}
-                </button>
-              ))}
-            </div>
-          </div>
-
           {/* Input Box */}
-          <form onSubmit={handleSubmit} className="p-3 border-t border-line bg-panel">
+          <form
+            onSubmit={handleSubmit}
+            onDragOver={(e) => { e.preventDefault(); setIsDragging(true) }}
+            onDragLeave={() => setIsDragging(false)}
+            onDrop={(e) => { e.preventDefault(); setIsDragging(false); addFiles(e.dataTransfer?.files) }}
+            className={`p-3 border-t bg-panel transition-colors ${isDragging ? 'border-blue-400 bg-blue-50/40' : 'border-line'}`}
+          >
+            {/* Slash-command palette */}
+            {paletteOpen && (
+              <div className="mb-2 border border-line rounded-xl bg-panel shadow-md overflow-hidden">
+                {filteredCommands.map((command, idx) => {
+                  const Icon = command.icon
+                  const active = idx === activeCommandIndex
+                  return (
+                    <button
+                      key={command.name}
+                      type="button"
+                      onMouseEnter={() => setActiveCommandIndex(idx)}
+                      onClick={() => {
+                        runCommand(command, '')
+                        setInput('')
+                      }}
+                      className={`w-full flex items-start gap-2 px-3 py-2 text-left transition-colors ${
+                        active ? 'bg-blue-50' : 'hover:bg-subtle'
+                      }`}
+                    >
+                      <Icon className={`w-3.5 h-3.5 mt-0.5 shrink-0 ${active ? 'text-blue-600' : 'text-muted'}`} />
+                      <span className="min-w-0">
+                        <span className="flex items-center gap-1.5 text-[11px] font-semibold text-main">
+                          /{command.name}
+                          {command.argsPlaceholder && (
+                            <span className="text-[9px] text-muted font-normal">{command.argsPlaceholder}</span>
+                          )}
+                        </span>
+                        <span className="block text-[10px] text-muted truncate">{command.description}</span>
+                      </span>
+                    </button>
+                  )
+                })}
+              </div>
+            )}
+
+            {/* Plan mode indicator */}
+            {interactionMode === 'plan' && (
+              <div className="mb-2 flex items-center gap-1.5 text-[10px] text-amber-800 bg-amber-50 border border-amber-200 rounded-lg px-2 py-1">
+                <Zap className="w-3 h-3" />
+                <span className="font-medium">计划模式已开启：每个任务先出计划，确认后执行</span>
+                <button
+                  type="button"
+                  onClick={() => setInteractionMode('auto')}
+                  className="ml-auto text-amber-700 hover:text-amber-900"
+                  aria-label="关闭计划模式"
+                >
+                  <X className="w-3 h-3" />
+                </button>
+              </div>
+            )}
+
+            {/* Pending plan / confirmation gates */}
+            {pendingPlan && (
+              <div className="mb-2">
+                <PlanCard
+                  plan={pendingPlan}
+                  onConfirm={confirmPlan}
+                  onCancel={cancelPlan}
+                  disabled={isAgentThinking}
+                />
+              </div>
+            )}
+            {pendingConfirmation && (
+              <div className="mb-2">
+                <ConfirmationCard
+                  confirmation={pendingConfirmation}
+                  onConfirm={confirmConfirmation}
+                  onCancel={cancelConfirmation}
+                  disabled={isAgentThinking}
+                />
+              </div>
+            )}
+
+            {/* Attachment chips */}
+            {attachments.length > 0 && (
+              <div className="flex flex-wrap gap-1.5 mb-2">
+                {attachments.map((att) => (
+                  <div
+                    key={att.id}
+                    className="flex items-center gap-1.5 bg-subtle border border-line rounded-lg pl-1.5 pr-1 py-1 text-[10px] text-secondary max-w-[190px]"
+                    title={att.name}
+                  >
+                    {att.previewUrl ? (
+                      <img src={att.previewUrl} alt={att.name} className="w-5 h-5 rounded object-cover shrink-0" />
+                    ) : (
+                      <AttachmentIcon kind={att.kind} className="w-3.5 h-3.5 text-muted shrink-0" />
+                    )}
+                    <span className="truncate font-medium">{att.name}</span>
+                    <button
+                      type="button"
+                      onClick={() => removeAttachment(att.id)}
+                      className="p-0.5 rounded hover:bg-elevated text-muted hover:text-main shrink-0"
+                      aria-label={`移除 ${att.name}`}
+                    >
+                      <X className="w-3 h-3" />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+
             <div className="relative flex items-center bg-subtle rounded-xl border border-line-strong focus-within:border-blue-500 transition-colors">
+              <input
+                ref={fileInputRef}
+                type="file"
+                multiple
+                accept=".pdf,.ppt,.pptx,.pptm,.txt,.md,.markdown,.csv,.tsv,.json,.log,.rst,.yaml,.yml,image/*"
+                onChange={handleFileSelect}
+                className="hidden"
+              />
+              <button
+                type="button"
+                onClick={() => fileInputRef.current?.click()}
+                disabled={isAgentThinking}
+                className="absolute left-2 bottom-2 p-1.5 rounded-lg text-muted hover:text-main hover:bg-elevated disabled:opacity-30 transition-colors"
+                title="添加附件（PDF / PPTX / 图片 / 文档，也可粘贴或拖拽）"
+                aria-label="添加附件"
+              >
+                <Paperclip className="w-3.5 h-3.5" />
+              </button>
               <textarea
+                ref={textareaRef}
                 value={input}
-                onChange={(e) => setInput(e.target.value)}
+                onChange={(e) => handleInputChange(e.target.value)}
                 onKeyDown={handleKeyDown}
+                onPaste={handlePaste}
                 rows={2}
-                placeholder="输入排版需求或微调指令..."
-                className="w-full bg-transparent text-xs text-main placeholder-line-focus px-3 py-2.5 resize-none focus:outline-none leading-relaxed"
+                placeholder="输入需求，或输入 / 使用快捷功能，也可粘贴/拖入文件..."
+                className="w-full bg-transparent text-xs text-main placeholder-line-focus pl-9 pr-3 py-2.5 resize-none focus:outline-none leading-relaxed"
               />
               <button
                 type="submit"
-                disabled={!input.trim() || isAgentThinking}
+                disabled={(!input.trim() && attachments.length === 0) || isAgentThinking}
                 className="absolute right-2 bottom-2 p-1.5 rounded-lg bg-inverted hover:bg-inverted-hover disabled:opacity-30 disabled:hover:bg-inverted text-inverted-text transition-all shadow-xs"
               >
                 <Send className="w-3.5 h-3.5" />
               </button>
             </div>
             <p className="text-[10px] text-muted mt-1.5 px-1 font-medium">
-              Enter 发送 · Shift+Enter 换行
+              Enter 发送 · Shift+Enter 换行 · 输入 / 快捷功能 · 支持粘贴/拖拽附件
             </p>
           </form>
         </div>
