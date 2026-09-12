@@ -37,6 +37,7 @@ from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence
 from .risk_policy import ConfirmationGate, RiskEnricher
 from .tools import tools
 from ..ir.models import PresentationIR
+from ..session.services.connection import ConnectionTakenOver, STALE_CONNECTION
 
 logger = logging.getLogger(__name__)
 
@@ -310,6 +311,7 @@ class MutationGateway:
         replaces_document: bool = False,
         require_stamps: bool = False,
         agent_turn_id: Optional[str] = None,
+        transport: Optional[Any] = None,
     ) -> MutationBatchResult:
         """Executes a batch of tool calls, awaiting every telemetry event."""
         events: List[Dict[str, Any]] = []
@@ -337,6 +339,7 @@ class MutationGateway:
                 replaces_document=replaces_document,
                 require_stamps=require_stamps,
                 agent_turn_id=agent_turn_id,
+                transport=transport,
             )
 
         # Serialize only the actual mutations. The lock is NOT held while the graph
@@ -381,6 +384,7 @@ class MutationGateway:
         memory: Optional[Any] = None,
         confirmed_ids: Optional[Iterable[str]] = None,
         bypass_confirmation: bool = False,
+        transport: Optional[Any] = None,
     ) -> MutationBatchResult:
         """Executes a pre-built `MutationEnvelope` through the gateway."""
         return await cls.execute_tool_calls(
@@ -405,6 +409,7 @@ class MutationGateway:
             replaces_document=envelope.replaces_document,
             require_stamps=envelope.require_stamps,
             agent_turn_id=getattr(envelope, "agent_turn_id", None),
+            transport=transport,
         )
 
     @classmethod
@@ -543,6 +548,7 @@ class MutationGateway:
         replaces_document: bool = False,
         require_stamps: bool = False,
         agent_turn_id: Optional[str] = None,
+        transport: Optional[Any] = None,
     ) -> MutationBatchResult:
         calls = list(tool_calls or [])
         payload_hash = _logical_payload_hash(calls, client_id, client_sequence)
@@ -556,6 +562,30 @@ class MutationGateway:
             document_epoch=live_epoch,
             mutation_id=effective_mutation_id,
         )
+
+        # 0-ownership. Connection ownership at the commit boundary. The transport
+        # injects the server-bound socket+generation, so even a mutation that was
+        # already accepted/queued before a newer tab attached is rejected once it
+        # finally reaches the lock. This is checked BEFORE the idempotency cache so
+        # a cached outcome can never let a superseded connection bypass ownership.
+        if transport is not None and session is not None:
+            connection = getattr(session, "connection", None)
+            if connection is not None:
+                try:
+                    connection.assert_current(
+                        transport.websocket, transport.connection_generation
+                    )
+                except ConnectionTakenOver:
+                    batch.error = STALE_CONNECTION
+                    batch.failed = len(calls)
+                    emit({
+                        "type": "mutation_rejected",
+                        "error": STALE_CONNECTION,
+                        "mutation_id": batch.mutation_id,
+                        "version": batch.version,
+                        "document_epoch": batch.document_epoch,
+                    })
+                    return batch
 
         # 0-freeze. Agent edit window (S7/S8): while a session has an active Agent
         # turn, only that turn's own mutations may write. Enforced here, at the

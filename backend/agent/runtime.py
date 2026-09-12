@@ -16,6 +16,7 @@ from ..session.services.agent_execution import (
     AGENT_TURN_IN_PROGRESS,
     AgentTurnInProgress,
 )
+from ..session.services.connection import ConnectionTakenOver, STALE_CONNECTION
 
 logger = logging.getLogger(__name__)
 
@@ -24,6 +25,7 @@ _ADMISSION_MESSAGES = {
     "request_epoch_mismatch": "演示文稿已被替换，本次指令未执行，已同步到最新版本，请重试。",
     "request_stale": "演示文稿已在您发送后更新，本次指令未执行，已同步到最新版本，请重试。",
     AGENT_TURN_IN_PROGRESS: "演示文稿正被另一个 Agent 任务编辑，请稍后重试。",
+    STALE_CONNECTION: "会话已在其他窗口接管，本次指令未执行。",
 }
 
 
@@ -136,6 +138,7 @@ class AgentRuntime:
         request_document_epoch: Optional[str] = None,
         request_base_revision: Optional[int] = None,
         ui_context: Optional[Any] = None,
+        transport: Optional[Any] = None,
     ) -> Dict[str, Any]:
         """Runs an interactive turn executed through the LangGraph state machine.
 
@@ -184,7 +187,16 @@ class AgentRuntime:
             async with session.document.mutation_lock:
                 live_epoch = session.document.epoch
                 live_revision = pres.version
-                if request_document_epoch is not None and request_document_epoch != live_epoch:
+                if transport is not None:
+                    try:
+                        session.connection.assert_current(
+                            transport.websocket, transport.connection_generation
+                        )
+                    except ConnectionTakenOver:
+                        admission_error = STALE_CONNECTION
+                if admission_error is not None:
+                    pass
+                elif request_document_epoch is not None and request_document_epoch != live_epoch:
                     admission_error = "request_epoch_mismatch"
                 elif request_base_revision is not None and request_base_revision != live_revision:
                     admission_error = "request_stale"
@@ -359,12 +371,28 @@ class AgentRuntime:
         session: Any,
         call_id: str,
         on_event: Optional[Callable[[Dict[str, Any]], Any]] = None,
+        transport: Optional[Any] = None,
     ) -> Dict[str, Any]:
         """Executes the ORIGINAL pending call after explicit user confirmation.
 
         Confirmation is invalidated when the presentation changed since the call was
         blocked: executing it against a newer version could hit a different element.
         """
+        if transport is not None and session is not None:
+            try:
+                session.connection.assert_current(
+                    transport.websocket, transport.connection_generation
+                )
+            except ConnectionTakenOver:
+                result = {
+                    "success": False,
+                    "error": STALE_CONNECTION,
+                    "call_id": call_id,
+                    "message": "会话已在其他窗口接管，确认未执行。",
+                }
+                if on_event:
+                    await on_event({"type": "confirmation_failed", **result})
+                return result
         record = session.get_pending_confirmation(call_id) if session else None
         if record is None:
             result = {
@@ -440,6 +468,7 @@ class AgentRuntime:
             source="user_confirmation",
             document_epoch=claimed_epoch,
             expected_revision=claimed_revision,
+            transport=transport,
         )
 
         # TOCTOU: the pre-check passed but the deck advanced before the gateway

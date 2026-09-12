@@ -11,10 +11,24 @@ server at attach; client-reported values are never trusted.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Optional, Tuple
 
 SESSION_TAKEN_OVER = "session_taken_over"
+STALE_CONNECTION = "stale_connection"
 WS_TAKEN_OVER_CODE = 4001
+
+
+@dataclass
+class TransportOwnership:
+    """Server-issued proof of which socket owns a session.
+
+    Created by the transport at ``attach`` time from the server-bound
+    ``connection_generation``. A client-reported generation is never trusted.
+    """
+
+    websocket: object
+    connection_generation: int
 
 
 class ConnectionTakenOver(Exception):
