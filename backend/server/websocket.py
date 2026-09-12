@@ -19,6 +19,10 @@ from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from ..state.store import store
 from ..session.manager import session_manager
 from ..session.session import PPTSession
+from ..session.services.connection import (
+    SESSION_TAKEN_OVER,
+    WS_TAKEN_OVER_CODE,
+)
 from ..ir.svg_renderer import SVGRenderer
 from ..quality import QualityService
 from ..agent.mutation_gateway import (
@@ -202,13 +206,36 @@ async def websocket_endpoint(websocket: WebSocket):
     await store.connect_ws(websocket, session_id=session.session_id)
     logger.info(f"WebSocket client connected to session '{session.session_id}'")
 
+    # S1: newest tab wins. Notify + evict any previous owner of this session so
+    # exactly one writable frontend remains.
+    previous, generation = session.connection.attach(
+        websocket, frontend_instance_id=websocket.query_params.get("frontend_instance_id")
+    )
+    if previous is not None and previous is not websocket:
+        try:
+            await previous.send_json({
+                "type": SESSION_TAKEN_OVER,
+                "session_id": session.session_id,
+                "reason": "another_tab_opened",
+            })
+        except Exception:
+            pass
+        try:
+            await previous.close(code=WS_TAKEN_OVER_CODE)
+        except Exception:
+            pass
+        store.disconnect_ws(previous)
+
     try:
         # 1. Send initial presentation state immediately
         await websocket.send_json(
             build_presentation_event(
                 session,
                 "presentation_loaded",
-                extra={"checkpoints_count": len(session.checkpoints)},
+                extra={
+                    "checkpoints_count": len(session.checkpoints),
+                    "connection_generation": generation,
+                },
             )
         )
 
@@ -226,6 +253,12 @@ async def websocket_endpoint(websocket: WebSocket):
                 continue
 
             msg_type = data.get("type", "")
+
+            # A superseded socket loses write access the moment another tab
+            # attaches (S1). Read-only preview requests still terminate here:
+            # the socket is closed and the client suppresses reconnect.
+            if not session.connection.is_current(websocket):
+                break
 
             # User sends conversational design instruction
             if msg_type == "chat":
@@ -535,7 +568,9 @@ async def websocket_endpoint(websocket: WebSocket):
 
     except WebSocketDisconnect:
         logger.info(f"WebSocket client disconnected from session '{session.session_id}'")
+        session.connection.detach(websocket)
         store.disconnect_ws(websocket)
     except Exception as e:
         logger.warning(f"WebSocket session error: {e}")
+        session.connection.detach(websocket)
         store.disconnect_ws(websocket)
