@@ -1110,7 +1110,7 @@ describe('usePPTStore mutation pipeline', () => {
     const sent = ws.sentMessages().find((m) => m.action === 'clear_slide_elements')!
     expect(sent).toBeTruthy()
 
-    // A remote element was added after we captured the fingerprint.
+    // A remote element was added after the clear was authored.
     const authoritative = makePresentation(
       [makeSlide([makeShape('s1', 0, 0), makeShape('s2', 200, 0), makeShape('s3', 40, 40)], 'slide_1')],
       6

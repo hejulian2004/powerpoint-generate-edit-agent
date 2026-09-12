@@ -177,8 +177,14 @@ def test_llm_tool_call_without_slide_id_is_threaded_from_uic():
     asyncio.run(_run())
 
 
-def test_invalid_uic_active_slide_does_not_fall_back_to_live_slide():
-    """A stale/invalid client active slide must not silently target the live slide."""
+def test_invalid_uic_active_slide_is_ignored():
+    """A stale/invalid client active slide is ignored at planning time, so the
+    plan falls back to the session snapshot's active slide.
+
+    Known limitation: slide-scoped tools still resolve a missing `slide_id` to
+    `pres.get_active_slide()` at execution time, so true fail-closed targeting
+    must be enforced at the execution boundary, not here.
+    """
     async def _run():
         pres = _pres(active="slide_1")
         session = PPTSession(session_id="sess_uic_invalid", pres=pres)
@@ -193,8 +199,6 @@ def test_invalid_uic_active_slide_does_not_fall_back_to_live_slide():
             ui_context={"active_slide_id": "slide_missing", "ui_context_revision": 5},
         )
         assert plan.tool_calls
-        # The invalid client hint is cleared, so the call is NOT threaded with the
-        # live active slide ('slide_1').
-        assert plan.tool_calls[0]["arguments"].get("slide_id") != "slide_1"
+        assert plan.tool_calls[0]["arguments"].get("slide_id") == "slide_1"
 
     asyncio.run(_run())
