@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { usePPTStore } from './usePPTStore'
 import { FakeWebSocket, installFakeWebSocket } from '../test/wsMock'
 import { makePresentation, makeShape, makeSlide } from '../test/factories'
@@ -153,5 +153,22 @@ describe('agent edit freeze', () => {
     expect(usePPTStore.getState().inFlightMutationId).toBeNull()
     expect(usePPTStore.getState().needsResync).toBe(true)
     expect(usePPTStore.getState().mutationStatus).toBe('resyncing')
+  })
+
+  it('never falls back to REST when the socket is unusable after the barrier', async () => {
+    const ws = connect()
+    usePPTStore.setState({ sessionTakenOver: true })
+    const fetchSpy = vi.fn()
+    const originalFetch = globalThis.fetch
+    globalThis.fetch = fetchSpy as never
+    try {
+      await usePPTStore.getState().sendChatMessage('hello')
+    } finally {
+      globalThis.fetch = originalFetch
+    }
+    expect(fetchSpy).not.toHaveBeenCalled()
+    expect(ws.sentMessages().find((m) => m.type === 'chat')).toBeFalsy()
+    expect(usePPTStore.getState().editLockState).toBe('editable')
+    expect(usePPTStore.getState().isAgentThinking).toBe(false)
   })
 })

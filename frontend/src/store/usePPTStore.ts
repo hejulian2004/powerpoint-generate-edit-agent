@@ -1881,11 +1881,7 @@ export const usePPTStore = create<PPTState>((set, get) => ({
   },
 
   sendChatMessage: async (text) => {
-    const {
-      ws, addMessage, sessionId, selectedElementIds, selectedElementId,
-      selectionScope, editingElementId, activeSlideId, confirmedRevision,
-      documentEpoch, uiContextRevision, clientId
-    } = get()
+    const { addMessage } = get()
     if (!text.trim()) return
 
     // The Agent must observe every committed local edit before planning or the
@@ -1902,16 +1898,36 @@ export const usePPTStore = create<PPTState>((set, get) => ({
       return
     }
 
+    // Re-read the live transport AFTER the barrier: the socket can drop or be
+    // taken over while we awaited. There is deliberately NO REST fallback — a
+    // REST chat would bypass the session's single-frontend ownership and the
+    // websocket edit-lock stream, so a missing socket fails closed instead.
+    const current = get()
+    if (
+      !current.ws ||
+      current.ws.readyState !== WebSocket.OPEN ||
+      current.sessionTakenOver
+    ) {
+      set({ editLockState: 'editable', isAgentThinking: false, thinkingStatus: '' })
+      addMessage({
+        id: `notsynced_${Date.now()}`,
+        role: 'assistant',
+        content: '实时连接不可用（本地修改未同步或会话已被接管），已取消本次发送。请检查连接或刷新页面后重试。',
+        timestamp: Date.now()
+      })
+      return
+    }
+
     // Request-scoped UI context: never written into the document, it lets the
     // Agent bind "这个/它" to the elements this client currently has selected.
     const uiContext: UIContextWire = {
-      client_id: clientId,
-      ui_context_revision: uiContextRevision,
-      active_slide_id: activeSlideId,
-      selected_element_ids: selectedElementIds,
-      primary_selected_element_id: selectedElementId,
-      selection_scope: selectionScope,
-      editing_element_id: editingElementId
+      client_id: current.clientId,
+      ui_context_revision: current.uiContextRevision,
+      active_slide_id: current.activeSlideId,
+      selected_element_ids: current.selectedElementIds,
+      primary_selected_element_id: current.selectedElementId,
+      selection_scope: current.selectionScope,
+      editing_element_id: current.editingElementId
     }
 
     addMessage({
@@ -1930,52 +1946,14 @@ export const usePPTStore = create<PPTState>((set, get) => ({
       editLockState: 'agent_lock_pending'
     })
 
-    if (ws && ws.readyState === WebSocket.OPEN) {
-      ws.send(JSON.stringify({
-        type: 'chat',
-        message: text,
-        session_id: sessionId,
-        document_epoch: documentEpoch,
-        base_revision: confirmedRevision,
-        ui_context: uiContext
-      }))
-    } else {
-      fetch('/api/chat', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          message: text,
-          session_id: sessionId,
-          document_epoch: documentEpoch,
-          base_revision: confirmedRevision,
-          ui_context: uiContext
-        })
-      })
-        .then((res) => res.json())
-        .then((data) => {
-          set({ isAgentThinking: false })
-          addMessage({
-            id: `msg_${Date.now()}`,
-            role: 'assistant',
-            content: data.reply,
-            timestamp: Date.now(),
-            toolCalls: data.tools_executed,
-            visionCritique: data.vision_critique
-          })
-          fetch(`/api/presentation/snapshot?session_id=${encodeURIComponent(sessionId)}`)
-            .then((r) => r.json())
-            .then((snap) => get().adoptCanonicalSnapshot(snap))
-        })
-        .catch((err) => {
-          set({ isAgentThinking: false })
-          addMessage({
-            id: `err_${Date.now()}`,
-            role: 'assistant',
-            content: `请求失败: ${err}`,
-            timestamp: Date.now()
-          })
-        })
-    }
+    current.ws.send(JSON.stringify({
+      type: 'chat',
+      message: text,
+      session_id: current.sessionId,
+      document_epoch: current.documentEpoch,
+      base_revision: current.confirmedRevision,
+      ui_context: uiContext
+    }))
   },
 
   triggerUndo: () => {
