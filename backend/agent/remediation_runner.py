@@ -55,7 +55,9 @@ class RemediationRunner:
         slide_id: Optional[str] = None,
         only_critical: bool = True,
         max_iterations: Optional[int] = None,
-        on_event: Optional[Any] = None
+        on_event: Optional[Any] = None,
+        session: Optional[Any] = None,
+        agent_turn_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Executes plan with transaction rollback protection and conflict detection."""
         slide = pres.get_slide(slide_id) if slide_id else pres.get_active_slide()
@@ -125,7 +127,8 @@ class RemediationRunner:
                 })
 
                 res = MutationGateway.execute_one_sync(
-                    fn_name, args, pres, history, on_event=on_event, source="remediation"
+                    fn_name, args, pres, history, on_event=on_event,
+                    source="remediation", session=session, agent_turn_id=agent_turn_id,
                 )
                 applied_records.append({
                     "action_type": action.action_type.value,

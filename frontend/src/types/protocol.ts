@@ -37,6 +37,15 @@ export interface CanonicalSnapshot {
   // Navigation is client-local; this mutation-scoped hint travels ONLY on the
   // ack of the client that triggered a slide-creating mutation.
   local_view_hint?: LocalViewHintWire | null
+  // Server-owned Agent edit window. When locked, the frontend must not mutate;
+  // the backend enforces this at the MutationGateway regardless of UI state.
+  edit_lock?: EditLockWire | null
+}
+
+export interface EditLockWire {
+  locked: boolean
+  kind: string | null
+  turn_id: string | null
 }
 
 export interface MutationRejectionWire {

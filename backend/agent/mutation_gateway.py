@@ -60,6 +60,10 @@ MISSING_MUTATION_STAMP = "missing_mutation_stamp"
 # A client reused a mutation_id for a different logical operation. Retry (same
 # payload, possibly a stale expected_revision) is allowed; payload drift is not.
 MUTATION_ID_PAYLOAD_MISMATCH = "mutation_id_payload_mismatch"
+# A mutation arrived while an Agent turn held the session's exclusive edit window
+# and did not come from that turn's own agent-owned source.
+DOCUMENT_FROZEN = "document_frozen"
+AGENT_OWNED_SOURCES = frozenset({"agent", "remediation"})
 
 
 def _tool_name(call: Dict[str, Any]) -> str:
@@ -194,6 +198,8 @@ class MutationEnvelope:
     # When True, session-backed writes must carry `document_epoch` AND
     # `expected_revision`; missing stamps fail closed before cache/CAS.
     require_stamps: bool = False
+    # Identifies the Agent turn that owns the session's edit window, if any.
+    agent_turn_id: Optional[str] = None
 
     @classmethod
     def from_tool_calls(
@@ -212,6 +218,7 @@ class MutationEnvelope:
         enforce_grounding: bool = False,
         replaces_document: bool = False,
         require_stamps: bool = False,
+        agent_turn_id: Optional[str] = None,
     ) -> "MutationEnvelope":
         return cls(
             operations=[MutationOperation.from_tool_call(c) for c in (tool_calls or [])],
@@ -227,6 +234,7 @@ class MutationEnvelope:
             enforce_grounding=enforce_grounding,
             replaces_document=replaces_document,
             require_stamps=require_stamps,
+            agent_turn_id=agent_turn_id,
         )
 
     def to_calls(self) -> List[Dict[str, Any]]:
@@ -301,6 +309,7 @@ class MutationGateway:
         enforce_grounding: bool = False,
         replaces_document: bool = False,
         require_stamps: bool = False,
+        agent_turn_id: Optional[str] = None,
     ) -> MutationBatchResult:
         """Executes a batch of tool calls, awaiting every telemetry event."""
         events: List[Dict[str, Any]] = []
@@ -327,6 +336,7 @@ class MutationGateway:
                 enforce_grounding=enforce_grounding,
                 replaces_document=replaces_document,
                 require_stamps=require_stamps,
+                agent_turn_id=agent_turn_id,
             )
 
         # Serialize only the actual mutations. The lock is NOT held while the graph
@@ -394,6 +404,7 @@ class MutationGateway:
             enforce_grounding=envelope.enforce_grounding,
             replaces_document=envelope.replaces_document,
             require_stamps=envelope.require_stamps,
+            agent_turn_id=getattr(envelope, "agent_turn_id", None),
         )
 
     @classmethod
@@ -420,6 +431,7 @@ class MutationGateway:
         enforce_grounding: bool = False,
         replaces_document: bool = False,
         require_stamps: bool = False,
+        agent_turn_id: Optional[str] = None,
     ) -> MutationBatchResult:
         """Sync entry point used by deterministic remediation pipelines."""
 
@@ -447,6 +459,7 @@ class MutationGateway:
             enforce_grounding=enforce_grounding,
             replaces_document=replaces_document,
             require_stamps=require_stamps,
+            agent_turn_id=agent_turn_id,
         )
 
     @classmethod
@@ -461,6 +474,7 @@ class MutationGateway:
         on_event: Optional[Callable] = None,
         source: str = "remediation",
         bypass_confirmation: bool = True,
+        agent_turn_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Convenience wrapper for internal single-call mutation pipelines."""
         call = {
@@ -476,6 +490,7 @@ class MutationGateway:
             on_event=on_event,
             source=source,
             bypass_confirmation=bypass_confirmation,
+            agent_turn_id=agent_turn_id,
         )
         return batch.first_result()
 
@@ -527,6 +542,7 @@ class MutationGateway:
         enforce_grounding: bool = False,
         replaces_document: bool = False,
         require_stamps: bool = False,
+        agent_turn_id: Optional[str] = None,
     ) -> MutationBatchResult:
         calls = list(tool_calls or [])
         payload_hash = _logical_payload_hash(calls, client_id, client_sequence)
@@ -540,6 +556,23 @@ class MutationGateway:
             document_epoch=live_epoch,
             mutation_id=effective_mutation_id,
         )
+
+        # 0-freeze. Agent edit window (S7/S8): while a session has an active Agent
+        # turn, only that turn's own mutations may write. Enforced here, at the
+        # single writer, so a stale frontend cannot bypass the UI freeze.
+        if session is not None:
+            execution = getattr(session, "agent_execution", None)
+            if execution is not None and not execution.allows(source, agent_turn_id):
+                batch.error = DOCUMENT_FROZEN
+                batch.failed = len(calls)
+                emit({
+                    "type": "mutation_rejected",
+                    "error": DOCUMENT_FROZEN,
+                    "mutation_id": batch.mutation_id,
+                    "version": batch.version,
+                    "document_epoch": batch.document_epoch,
+                })
+                return batch
 
         # 0-pre. Required CAS stamps (session-backed user mutations): fail closed
         # BEFORE the idempotency cache and CAS so an unstamped write can never be

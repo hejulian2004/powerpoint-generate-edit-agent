@@ -614,6 +614,8 @@ interface PPTState {
   sessionId: string
   isBootstrapping: boolean
   sessionTakenOver: boolean
+  editLockState: 'editable' | 'agent_lock_pending' | 'agent_locked'
+  needsResync: boolean
   presentation: PresentationIR | null
   confirmedPresentation: PresentationIR | null
   activeSlideId: string | null
@@ -753,6 +755,8 @@ export const usePPTStore = create<PPTState>((set, get) => ({
   sessionId: '',
   isBootstrapping: false,
   sessionTakenOver: false,
+  editLockState: 'editable',
+  needsResync: false,
   presentation: null,
   confirmedPresentation: null,
   activeSlideId: null,
@@ -898,6 +902,8 @@ export const usePPTStore = create<PPTState>((set, get) => ({
       const keepLocalActive = !!state.activeSlideId && (
         hasPending || snapshot.presentation.slides.some((s) => s.id === state.activeSlideId)
       )
+      const snapshotLock = snapshot.edit_lock
+      const snapshotLocked = !!snapshotLock && snapshotLock.locked === true
       return {
         sessionId: snapshot.session_id || state.sessionId,
         presentation: hasPending ? state.presentation : snapshot.presentation,
@@ -905,6 +911,8 @@ export const usePPTStore = create<PPTState>((set, get) => ({
         activeSlideId: keepLocalActive ? state.activeSlideId : serverActive,
         canUndo: snapshot.can_undo ?? state.canUndo,
         canRedo: snapshot.can_redo ?? state.canRedo,
+        editLockState: snapshotLocked ? 'agent_locked' : 'editable',
+        needsResync: snapshotLocked ? state.needsResync : false,
         selectedElementId: hasPending ? state.selectedElementId : null,
         selectedElementIds: hasPending ? state.selectedElementIds : [],
         selectionScope: hasPending ? state.selectionScope : [],
@@ -1547,7 +1555,15 @@ export const usePPTStore = create<PPTState>((set, get) => ({
         const data = JSON.parse(event.data)
         const type = data.type
 
-        if (type === 'session_taken_over') {
+        if (type === 'document_frozen') {
+          const locked = data.edit_lock?.locked === true
+          set((state) => ({
+            editLockState: locked ? 'agent_locked' : 'editable',
+            // Frozen while local edits are queued: do NOT replay them into the
+            // Agent's document. Resync once the turn's canonical snapshot lands.
+            needsResync: locked && state.pendingMutations.length > 0 ? true : state.needsResync
+          }))
+        } else if (type === 'session_taken_over') {
           set({ sessionTakenOver: true })
           get().addMessage({
             id: `takeover_${Date.now()}`,
@@ -1574,6 +1590,13 @@ export const usePPTStore = create<PPTState>((set, get) => ({
             qualityScore: data.quality_score
           })
         } else if (type === 'presentation_updated') {
+          if (data.edit_lock) {
+            const locked = data.edit_lock.locked === true
+            set((state) => ({
+              editLockState: locked ? 'agent_locked' : 'editable',
+              needsResync: locked ? state.needsResync : false
+            }))
+          }
           const serverPres: PresentationIR = data.presentation
           const ackId: string | undefined = data.last_mutation_id
           const shouldSelectTarget = !!ackId && selectTargetOnAck.has(ackId)
@@ -1702,6 +1725,13 @@ export const usePPTStore = create<PPTState>((set, get) => ({
           const rejectedId: string | undefined = data.mutation_id
           if (rejectedId) selectTargetOnAck.delete(rejectedId)
           const error: string = data.error ?? ''
+          if (error === 'document_frozen') {
+            set((state) => ({
+              editLockState: 'agent_locked',
+              needsResync: state.pendingMutations.length > 0 || state.needsResync
+            }))
+            return
+          }
           const isStale = error === 'stale_mutation' || error === 'document_epoch_mismatch'
           if (isStale) {
             const authoritative: PresentationIR | undefined = data.presentation
@@ -1954,7 +1984,14 @@ export const usePPTStore = create<PPTState>((set, get) => ({
       timestamp: Date.now()
     })
 
-    set({ isAgentThinking: true, thinkingStatus: '分析需求与视觉结构...', activeRightTab: 'copilot' })
+    set({
+      isAgentThinking: true,
+      thinkingStatus: '分析需求与视觉结构...',
+      activeRightTab: 'copilot',
+      // Enter the freeze before the server ack so a fast local edit can't slip in
+      // between "Send" and the server's document_frozen broadcast.
+      editLockState: 'agent_lock_pending'
+    })
 
     if (ws && ws.readyState === WebSocket.OPEN) {
       ws.send(JSON.stringify({

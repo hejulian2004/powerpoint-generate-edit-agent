@@ -31,6 +31,11 @@ def build_canonical_snapshot(
         "can_redo": session.history_service.can_redo(),
         "last_target_id": session.document.last_target_id,
         "last_mutation_id": last_mutation_id,
+        "edit_lock": (
+            session.agent_execution.edit_lock()
+            if getattr(session, "agent_execution", None) is not None
+            else {"locked": False, "kind": None, "turn_id": None}
+        ),
     }
     if extra:
         snapshot.update(extra)

@@ -83,6 +83,9 @@ class PPTAgentState(TypedDict, total=False):
     turn_document_epoch: Optional[str]
     turn_base_revision: Optional[int]
     turn_invalidated: bool
+    # Session Agent-turn lease id, threaded end-to-end so the MutationGateway can
+    # verify this turn owns the document freeze (S7/S8).
+    agent_turn_id: Optional[str]
 
 
 # =====================================================================
@@ -890,6 +893,7 @@ async def mutation_node(state: PPTAgentState, config: RunnableConfig) -> Dict[st
         expected_revision=plan_revision,
         grounding_source=source_text if enforce_grounding else None,
         enforce_grounding=enforce_grounding,
+        agent_turn_id=state.get("agent_turn_id"),
     )
     changed_slide_ids = _collect_changed_slide_ids(pres, before_signatures)
 
@@ -1127,7 +1131,9 @@ async def auto_correct_node(state: PPTAgentState, config: RunnableConfig) -> Dic
                 plan=plan,
                 slide_id=target_slide_id,
                 only_critical=True,
-                on_event=on_event
+                on_event=on_event,
+                session=session,
+                agent_turn_id=state.get("agent_turn_id"),
             )
             runs.append({"slide_id": target_slide_id, **runner_res})
         return runs

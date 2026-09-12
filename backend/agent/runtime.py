@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 import json
+import uuid
 import logging
 from typing import Dict, Any, List, Optional, Callable
 from .llm import LLMClient
@@ -13,6 +14,21 @@ from ..ir.patch import HistoryManager
 from ..config import settings
 
 logger = logging.getLogger(__name__)
+
+
+async def _emit(on_event: Optional[Callable], event: Dict[str, Any]) -> None:
+    if not on_event:
+        return
+    import inspect
+    try:
+        if inspect.iscoroutinefunction(on_event):
+            await on_event(event)
+        else:
+            result = on_event(event)
+            if inspect.isawaitable(result):
+                await result
+    except Exception as e:
+        logger.debug(f"Event emission ignored: {e}")
 
 
 class AgentRuntime:
@@ -205,6 +221,27 @@ class AgentRuntime:
             except Exception as e:
                 logger.debug(f"Failed to emit context_usage: {e}")
 
+        # 1b. Acquire the session's exclusive Agent edit window (S7/S8). While the
+        #     turn runs, MutationGateway rejects every non-owned mutation at the
+        #     backend boundary, so a stale frontend cannot edit behind the Agent.
+        turn_id = f"turn_{uuid.uuid4().hex[:10]}"
+        if session is not None:
+            try:
+                session.agent_execution.begin_turn(turn_id, kind="agent")
+            except Exception:
+                return await self._reject_turn(
+                    on_event,
+                    code="document_frozen",
+                    message="演示文稿正被另一个 Agent 任务编辑，请稍后重试。",
+                    version=live_revision,
+                    document_epoch=live_epoch,
+                )
+            await _emit(on_event, {
+                "type": "document_frozen",
+                "session_id": session.session_id,
+                "edit_lock": session.agent_execution.edit_lock(),
+            })
+
         initial_state: PPTAgentState = {
             "user_query": user_message,
             "messages": compressed_messages,
@@ -222,6 +259,7 @@ class AgentRuntime:
             "turn_base_revision": turn_revision,
             "turn_invalidated": False,
             "subagent_memories": seeded_subagent_memories,
+            "agent_turn_id": turn_id,
         }
 
         config = {
@@ -290,6 +328,9 @@ class AgentRuntime:
                 "version": pres.version,
                 "error": str(e)
             }
+        finally:
+            if session is not None:
+                session.agent_execution.end_turn(turn_id)
 
     # ------------------------------------------------------------------
     # Pending confirmation lifecycle (PR6-hardening round 2)
