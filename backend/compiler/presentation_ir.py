@@ -131,6 +131,10 @@ def compile_layout_element_to_ir(
                 asset_id=asset_id,
                 alt_text=resolved.get("alt_text") or caption or label,
                 style=figure_style,
+                metadata={
+                    "asset_status": "resolved",
+                    "source_figure_id": payload.get("source_figure_id") or "",
+                },
             )
 
         paras: List[ParagraphIR] = [
@@ -174,6 +178,8 @@ def compile_layout_element_to_ir(
             source_evidence_ids=source_evidence_ids,
             metadata={
                 "is_figure_placeholder": True,
+                "asset_status": "placeholder",
+                "source_figure_id": payload.get("source_figure_id") or "",
                 "label": label,
                 "caption": caption,
                 "page": page,

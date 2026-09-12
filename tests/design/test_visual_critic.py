@@ -94,6 +94,28 @@ def test_critique_manifest_only_uses_reasoning_role(
     assert client.roles == ["reasoning"]
 
 
+def test_critique_source_images_only_use_vision_role(
+    design_client_cls, deck_spec_two_slides
+):
+    client = design_client_cls(
+        lambda messages, role="reasoning": json.dumps(
+            {"aesthetic_score": 90, "defects": [], "recommendations": []}
+        )
+    )
+    layout = _compile(_valid_payload(), deck_spec_two_slides.slides[0])
+    critique = asyncio.run(
+        critique_slide(
+            layout,
+            llm_client=client,
+            source_image_data_uris=["data:image/webp;base64,SOURCE"],
+        )
+    )
+    # An image-bearing request must never go out on the reasoning role, even when
+    # the slide raster is unavailable.
+    assert client.roles == ["vision"]
+    assert critique.vision_status["mode"] == "source_only"
+
+
 def test_critique_multimodal_fuses_score(design_client_cls, deck_spec_two_slides):
     def builder(messages, role="reasoning"):
         return json.dumps(

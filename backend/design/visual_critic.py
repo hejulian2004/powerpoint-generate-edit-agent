@@ -261,7 +261,11 @@ async def critique_slide(
     if include_multimodal and has_vision_api:
         try:
             messages = _vision_messages(layout, raster_data_uri, source_image_data_uris)
-            role = "vision" if raster_data_uri else "reasoning"
+            # Any request that actually carries an ``image_url`` MUST go out on the
+            # vision role, even when only source paper images are attached and the
+            # slide raster is missing.
+            has_images = bool(raster_data_uri) or bool(source_image_data_uris)
+            role = "vision" if has_images else "reasoning"
             response = await llm_client.chat_completion(messages, role=role, max_tokens=800)
             vision_feedback = response["choices"][0]["message"].get("content", "")
             payload = extract_json(vision_feedback)
@@ -287,7 +291,11 @@ async def critique_slide(
                         recommendations.append(text)
             vision_status = {
                 "vision_available": True,
-                "mode": "multimodal" if raster_data_uri else "manifest_only",
+                "mode": (
+                    "multimodal"
+                    if raster_data_uri
+                    else ("source_only" if source_image_data_uris else "manifest_only")
+                ),
             }
         except Exception as exc:
             logger.warning("Visual critique model call failed for %s: %s", layout.slide_id, exc)

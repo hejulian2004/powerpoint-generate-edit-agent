@@ -171,6 +171,7 @@ async def design_slide_layout(
     )
 
     content: List[Dict[str, Any]] = [{"type": "text", "text": context.text}]
+    has_images = False
     for path in context.image_paths:
         trusted = _trusted_asset_path(path)
         if trusted is None:
@@ -185,8 +186,11 @@ async def design_slide_layout(
                 "image_url": {"url": data_uri, "detail": "high"},
             }
         )
+        has_images = True
 
-    role = "vision" if context.use_vision else "reasoning"
+    # Image-bearing requests must use the vision role (invariant); a context that
+    # claimed vision but resolved zero images degrades to a text-only reasoning call.
+    role = "vision" if has_images else "reasoning"
     messages = [
         {"role": "system", "content": LAYOUT_DESIGNER_SYSTEM_PROMPT},
         {"role": "user", "content": content},

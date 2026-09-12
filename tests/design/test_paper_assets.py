@@ -97,6 +97,8 @@ def test_figure_resolves_to_image_element(tmp_path):
     assert isinstance(element, ImageElementIR)
     assert element.src.startswith("data:image/webp;base64,")
     assert pres.assets
+    assert element.metadata["asset_status"] == "resolved"
+    assert element.metadata["source_figure_id"] == "figure1"
 
 
 def test_figure_without_trusted_crop_falls_back_to_placeholder(tmp_path):
@@ -112,3 +114,5 @@ def test_figure_without_trusted_crop_falls_back_to_placeholder(tmp_path):
     element = pres.slides[0].elements[0]
     assert isinstance(element, ShapeElementIR)
     assert element.metadata.get("is_figure_placeholder") is True
+    assert element.metadata["asset_status"] == "placeholder"
+    assert element.metadata["source_figure_id"] == "figure1"
