@@ -49,19 +49,33 @@ def verify_bearer_token(auth_header: Optional[str]) -> bool:
     return hmac.compare_digest(credential.strip(), expected)
 
 
+def _decode_base64url(s: str) -> Optional[str]:
+    """Strict base64url decoding to UTF-8 token string."""
+    import base64
+
+    s = s.strip()
+    if not s:
+        return None
+    # Add padding if needed
+    rem = len(s) % 4
+    if rem:
+        s += "=" * (4 - rem)
+    try:
+        decoded_bytes = base64.urlsafe_b64decode(s.encode("ascii"))
+        return decoded_bytes.decode("utf-8")
+    except Exception:
+        return None
+
+
 def _token_from_subprotocols(raw: Optional[str]) -> Optional[str]:
     if not raw:
         return None
     for part in raw.split(","):
         token = part.strip()
         if token.startswith(_WS_TOKEN_SUBPROTOCOL_PREFIX):
-            return token[len(_WS_TOKEN_SUBPROTOCOL_PREFIX):].strip()
-        # Also accept the raw token as a subprotocol for non-browser clients
-        # that control the handshake manually.
-        if token and "." not in token and len(token) >= 8:
-            # Heuristic: a bare subprotocol that matches the configured token.
-            # Verified by the caller with compare_digest.
-            return token
+            encoded = token[len(_WS_TOKEN_SUBPROTOCOL_PREFIX):].strip()
+            # Must strictly decode base64url
+            return _decode_base64url(encoded)
     return None
 
 
@@ -118,10 +132,15 @@ def is_loopback_host(host: str) -> bool:
     return h in ("127.0.0.1", "localhost", "::1")
 
 
-def ensure_remote_auth_configured() -> None:
-    """Fail fast when a non-loopback bind has no API token configured."""
+def ensure_remote_auth_configured(bind_host: Optional[str] = None) -> None:
+    """Fail fast when a non-loopback bind has no API token configured.
+
+    ``bind_host`` takes precedence over ``settings.host``: launchers that accept
+    a CLI ``--host`` argument must pass their intended bind address here so the
+    guard cannot be bypassed when CLI args and settings diverge.
+    """
     s = _get_settings()
-    host = (getattr(s, "host", "") or "").strip()
+    host = (bind_host if bind_host is not None else getattr(s, "host", "") or "").strip()
     token = (getattr(s, "ppt_api_token", "") or "").strip()
     if host and not is_loopback_host(host) and not token:
         raise RuntimeError(

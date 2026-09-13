@@ -97,6 +97,7 @@ class PPTSession:
 
         self.connection = ConnectionService()
         self.iterations: List[Dict[str, Any]] = []
+        self.committed_turns: Dict[str, Dict[str, Any]] = {}  # request_id -> turn DTO
         self.created_at = datetime.now(timezone.utc)
         self.updated_at = datetime.now(timezone.utc)
         # Attached by WorkspaceManager; marks committed state dirty for debounced
@@ -409,6 +410,44 @@ class PPTSession:
         )
         self.updated_at = datetime.now(timezone.utc)
         return msg
+
+    async def commit_conversation_turn(
+        self,
+        request_id: str,
+        user_content: str,
+        assistant_content: str,
+        provenance: Optional[List[Dict[str, Any]]] = None,
+    ) -> Dict[str, Any]:
+        """Atomically commits a single canonical conversation turn (User + Assistant).
+
+        Idempotent by request_id: retrying with the same request_id returns the exact
+        same committed turn DTO without creating duplicate messages in memory.
+        """
+        async with self.memory.conversation_lock:
+            if request_id and request_id in self.committed_turns:
+                return self.committed_turns[request_id]
+
+            user_msg = self.add_message(role="user", content=user_content)
+            asst_msg = self.add_message(role="assistant", content=assistant_content)
+
+            import time
+            turn_dto = {
+                "turn_id": f"turn_{int(time.time() * 1000)}_{len(self.memory.messages)}",
+                "request_id": request_id or "",
+                "user": user_msg,
+                "assistant": asst_msg,
+                "provenance": provenance or [],
+            }
+            if request_id:
+                # Bounded cache of recently committed turns
+                if len(self.committed_turns) > 200:
+                    oldest = next(iter(self.committed_turns))
+                    self.committed_turns.pop(oldest, None)
+                self.committed_turns[request_id] = turn_dto
+
+            self.updated_at = datetime.now(timezone.utc)
+            self.schedule_persist()
+            return turn_dto
 
     def record_iteration(self, iteration_data: Any) -> None:
         if hasattr(iteration_data, "to_dict"):

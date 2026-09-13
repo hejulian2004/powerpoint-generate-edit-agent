@@ -587,13 +587,19 @@ class AgentRuntime:
                     "usage": usage_report.to_dict(),
                 }
 
-            # Use the session-level writer so the workspace `updated_at`
-            # timestamp advances exactly like a normal turn (the transcript
-            # itself lives on `session.memory`).
-            session.add_message(role="user", content=user_message or "（已附加文件）")
-            session.add_message(role="assistant", content=reply)
+            user_msg = session.add_message(role="user", content=user_message or "（已附加文件）")
+            asst_msg = session.add_message(role="assistant", content=reply)
             if hasattr(session, "schedule_persist"):
                 session.schedule_persist()
+
+            import time
+            turn_dto = {
+                "turn_id": f"turn_{int(time.time() * 1000)}_{len(session.memory.messages)}",
+                "request_id": getattr(context, "request_id", "") or "",
+                "user": user_msg,
+                "assistant": asst_msg,
+                "provenance": getattr(context, "provenance", []) or [],
+            }
 
         if on_event:
             await _emit(
@@ -602,6 +608,7 @@ class AgentRuntime:
             )
         return {
             "reply": reply,
+            "turn": turn_dto,
             "role": role,
             "has_images": has_images,
             "usage": usage_report.to_dict(),

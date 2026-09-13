@@ -170,6 +170,77 @@ def test_outbound_dns_pinning_filters_rebinding(monkeypatch):
         assert ips == {"93.184.216.34"}
 
 
+@pytest.mark.anyio
+async def test_pinned_async_transport_concurrent_interleaving_safe():
+    """Adversarial test for DNS pinning: two concurrent requests targeting different
+
+    hosts must route to their respective pinned IPs without race conditions, and
+    MUST NOT mutate process-global socket.getaddrinfo.
+    """
+    import anyio
+    import socket as std_socket
+    from backend.security.outbound import create_pinned_async_transport
+
+    orig_getaddrinfo = std_socket.getaddrinfo
+
+    host_a = "service-a.test"
+    ips_a = ["198.51.100.1"]
+    host_b = "service-b.test"
+    ips_b = ["198.51.100.2"]
+
+    transport_a = create_pinned_async_transport(host_a, ips_a)
+    transport_b = create_pinned_async_transport(host_b, ips_b)
+
+    recorded_connections = []
+    barrier = anyio.Event()
+
+    # Inspect the backend of each transport
+    backend_a = transport_a._pool._network_backend
+    backend_b = transport_b._pool._network_backend
+
+    orig_connect_a = backend_a._auto_backend.connect_tcp
+    orig_connect_b = backend_b._auto_backend.connect_tcp
+
+    async def mock_connect_a(target_ip, port, **kw):
+        recorded_connections.append(("A_start", target_ip))
+        # Signal B to start and wait for B
+        barrier.set()
+        await anyio.sleep(0.05)
+        recorded_connections.append(("A_done", target_ip))
+        class FakeStream:
+            async def aclose(self): pass
+        return FakeStream()
+
+    async def mock_connect_b(target_ip, port, **kw):
+        # Wait until A has started
+        await barrier.wait()
+        recorded_connections.append(("B_start", target_ip))
+        recorded_connections.append(("B_done", target_ip))
+        class FakeStream:
+            async def aclose(self): pass
+        return FakeStream()
+
+    backend_a._auto_backend.connect_tcp = mock_connect_a
+    backend_b._auto_backend.connect_tcp = mock_connect_b
+
+    async def run_a():
+        await backend_a.connect_tcp(host_a, 443)
+
+    async def run_b():
+        await backend_b.connect_tcp(host_b, 443)
+
+    async with anyio.create_task_group() as tg:
+        tg.start_soon(run_a)
+        tg.start_soon(run_b)
+
+    # Global socket.getaddrinfo must NEVER have been replaced!
+    assert std_socket.getaddrinfo is orig_getaddrinfo
+
+    # Verify that A dialed 198.51.100.1 and B dialed 198.51.100.2 despite interleaving
+    assert ("A_start", "198.51.100.1") in recorded_connections
+    assert ("B_start", "198.51.100.2") in recorded_connections
+
+
 def test_models_does_not_inherit_saved_key_for_custom_host(monkeypatch):
     """Custom base_url must NOT receive the server-saved API key."""
     import httpx
@@ -223,6 +294,20 @@ def test_models_does_not_inherit_saved_key_for_custom_host(monkeypatch):
     # No inherited server key for a foreign host.
     assert seen.get("auth") in (None, "")
 
+    # Even if base_url has the exact same host/path (e.g. HTTP downgrade attempt),
+    # explicit base_url NEVER inherits server-saved key!
+    resp_downgrade = client.post(
+        "/api/models",
+        json={"base_url": "http://default.example/v1"},
+    )
+    assert resp_downgrade.status_code == 200
+    assert seen.get("auth") in (None, "")
+
+    # Omitting base_url uses default endpoint AND inherits server key
+    resp_default = client.post("/api/models", json={})
+    assert resp_default.status_code == 200
+    assert seen.get("auth") == "Bearer sk-SERVER-SAVED"
+
 
 def test_models_blocks_loopback_even_with_key(monkeypatch):
     resp = client.post(
@@ -245,6 +330,46 @@ def test_remote_bind_without_token_fails_fast(monkeypatch):
     monkeypatch.setattr(settings, "ppt_api_token", "")
     with pytest.raises(RuntimeError, match="REMOTE_EXPOSURE_WITHOUT_AUTH"):
         ensure_remote_auth_configured()
+    # Explicit bind_host also fails fast regardless of settings.host
+    with pytest.raises(RuntimeError, match="REMOTE_EXPOSURE_WITHOUT_AUTH"):
+        ensure_remote_auth_configured(bind_host="0.0.0.0")
+
+
+def test_launcher_cli_host_guard_subprocess():
+    """Verify that launching via python main.py --host 0.0.0.0 without a token
+
+    fails fast before uvicorn starts. Protected with strict timeout and cleanup.
+    """
+    import os
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    root_dir = Path(__file__).resolve().parent.parent.parent
+    main_py = root_dir / "main.py"
+    env = dict(os.environ)
+    env.pop("PPT_API_TOKEN", None)
+    env["HOST"] = "127.0.0.1"  # ensure env alone wouldn't trigger it
+
+    proc = subprocess.Popen(
+        [sys.executable, str(main_py), "--host", "0.0.0.0", "--no-browser"],
+        cwd=str(root_dir),
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        encoding="utf-8",
+        errors="replace",
+    )
+    try:
+        stdout, stderr = proc.communicate(timeout=10)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.communicate()
+        pytest.fail("main.py with --host 0.0.0.0 hung instead of failing fast!")
+
+    assert proc.returncode != 0
+    combined = (stdout + stderr).lower()
+    assert "remote_exposure_without_auth" in combined or "安全拦截" in (stdout + stderr)
 
 
 def test_loopback_without_token_boots(monkeypatch):
@@ -278,16 +403,36 @@ def test_rest_requires_bearer_when_token_configured(monkeypatch):
         monkeypatch.setattr(settings, "ppt_api_token", "")
 
 
-def test_websocket_rejects_unauthenticated_before_ownership():
-    import inspect
+def test_websocket_rejects_unauthenticated_before_ownership(monkeypatch):
+    from backend.config import settings
+    from starlette.websockets import WebSocketDisconnect
 
-    import backend.server.websocket as wsmod
+    monkeypatch.setattr(settings, "ppt_api_token", "super-secret-tok")
+    sid = "test_ws_auth_handshake"
+    sess = session_manager.get_or_create(sid)
+    try:
+        # 1. Unauthenticated WS handshake must receive UNAUTHORIZED and be closed with 4401 before ownership
+        with client.websocket_connect(f"/ws?session_id={sid}") as ws:
+            data = ws.receive_json()
+            assert data.get("type") == "session_error"
+            assert data.get("error") == "UNAUTHORIZED"
+            with pytest.raises(WebSocketDisconnect) as exc_info:
+                ws.receive_json()
+            assert exc_info.value.code == 4401
+            # Session connection was never attached to this unauthenticated socket
+            assert sess.connection.websocket != ws
 
-    src = inspect.getsource(wsmod.websocket_endpoint)
-    # Auth check must precede attach (ownership grant).
-    assert "verify_websocket_auth" in src
-    assert src.index("verify_websocket_auth") < src.index(".attach(")
-    assert "4401" in src
+        # 2. Authenticated WS handshake with base64url subprotocol succeeds
+        import base64
+        b64 = base64.urlsafe_b64encode(b"super-secret-tok").decode("ascii").rstrip("=")
+        with client.websocket_connect(
+            f"/ws?session_id={sid}", subprotocols=[f"ppt-token.{b64}"]
+        ) as ws:
+            # Session is attached only after successful auth
+            assert sess.connection.websocket is not None
+    finally:
+        session_manager.delete_session(sid)
+        monkeypatch.setattr(settings, "ppt_api_token", "")
 
 
 # ---------------------------------------------------------------------------
@@ -339,15 +484,56 @@ def test_ooxml_zip_budget_rejects_bomb_and_traversal():
         settings.pptx_max_uncompressed_bytes = old
 
 
-def test_pdf_page_budget_rejects_oversized(monkeypatch):
+def test_pdf_page_budget_rejects_oversized_and_fail_closed(monkeypatch):
     from backend.config import settings
-    from backend.security.budgets import PayloadTooLarge, validate_pdf_page_budget
+    from backend.security.budgets import (
+        PayloadTooLarge,
+        get_pdf_page_count,
+        validate_pdf_geometry_and_raster_budget,
+        validate_pdf_page_budget,
+    )
 
     monkeypatch.setattr(settings, "max_pdf_pages", 2)
     with pytest.raises(PayloadTooLarge):
         validate_pdf_page_budget(80)
     validate_pdf_page_budget(2)
-    validate_pdf_page_budget(None)
+    # Fail-closed: None or invalid integer must be rejected
+    with pytest.raises(PayloadTooLarge) as exc_info:
+        validate_pdf_page_budget(None)  # type: ignore[arg-type]
+    assert exc_info.value.code == "PDF_INVALID_PAGE_COUNT"
+
+    with pytest.raises(PayloadTooLarge) as exc_info2:
+        validate_pdf_page_budget(0)
+    assert exc_info2.value.code == "PDF_INVALID_PAGE_COUNT"
+
+    # Empty or corrupt PDF fail-closed
+    with pytest.raises(PayloadTooLarge) as exc_empty:
+        get_pdf_page_count(b"")
+    assert exc_empty.value.code == "PDF_EMPTY"
+
+    with pytest.raises(PayloadTooLarge) as exc_bad:
+        get_pdf_page_count(b"NOT_A_PDF_STREAM")
+    assert exc_bad.value.code == "PDF_CORRUPT_OR_UNREADABLE"
+
+    # Geometry & raster pixel limits
+    # 1. Page point limits (8192pt limit)
+    with pytest.raises(PayloadTooLarge) as exc_pts:
+        validate_pdf_geometry_and_raster_budget(10000.0, 500.0, dpi=150)
+    assert exc_pts.value.code == "PDF_PAGE_POINTS_OUT_OF_BOUNDS"
+
+    # 2. Raster dimension limits (8192px limit at high DPI)
+    with pytest.raises(PayloadTooLarge) as exc_dim:
+        validate_pdf_geometry_and_raster_budget(5000.0, 500.0, dpi=300)
+    assert exc_dim.value.code == "PDF_PAGE_DIMENSION_PIXELS_TOO_LARGE"
+
+    # 3. Single page pixel limit (20,000,000 pixels): 4000x5500 at 72dpi = 22M px, dimension 5500 <= 8192
+    with pytest.raises(PayloadTooLarge) as exc_px:
+        validate_pdf_geometry_and_raster_budget(4000.0, 5500.0, dpi=72)
+    assert exc_px.value.code == "PDF_PAGE_PIXELS_TOO_LARGE"
+
+    # 4. Valid page calculates properly and accumulates
+    w, h, cum = validate_pdf_geometry_and_raster_budget(600.0, 800.0, dpi=150, cumulative_pixels=0)
+    assert w > 0 and h > 0 and cum == w * h
 
 
 def test_upload_rejects_oversized_stream(monkeypatch):
@@ -562,8 +748,8 @@ def test_mutating_turn_persists_provenance(monkeypatch):
         user_msg, asst_msg = after[-2], after[-1]
         assert user_msg["role"] == "user" and asst_msg["role"] == "assistant"
         assert "outline.txt" in user_msg["content"]
-        # No binary persisted.
-        assert "大纲A" not in json.dumps(after[-2:], ensure_ascii=False) or True
+        # No raw file content persisted in conversation turns.
+        assert "大纲A" not in json.dumps(after[-2:], ensure_ascii=False)
         for m in after[-2:]:
             assert "base64" not in m["content"]
             assert "data:" not in m["content"]
@@ -603,21 +789,144 @@ def test_llm_provider_failure_is_502_without_transcript_pollution(monkeypatch):
         session_manager.delete_session(sid)
 
 
+def test_chat_drive_idempotency_and_zero_pollution_on_error(monkeypatch):
+    """Verifies that:
+
+    1. Successful /chat/drive turn with a request_id is idempotent: retrying with
+       the same request_id returns identical turn_id without creating extra messages.
+    2. Failed /chat/drive turn leaves ZERO transcript messages in session.memory.
+    """
+    import backend.agent.attachment_router as router
+    import backend.api.routes as routes
+
+    async def _force_text(llm, message, kinds):
+        return "text_generate"
+
+    monkeypatch.setattr(router, "classify_intent", _force_text)
+
+    async def fake_normalize(payload):
+        return {
+            "valid": True,
+            "normalization_id": "nid_idemp",
+            "summary": "s",
+            "warnings": [],
+            "errors": [],
+        }
+
+    async def fake_gen(payload):
+        return {"success": True, "session_id": payload["session_id"]}
+
+    monkeypatch.setattr(routes, "api_normalize_pptspec", fake_normalize)
+    monkeypatch.setattr(routes, "api_generate_from_pptspec", fake_gen)
+
+    sid = "test_transcript_idemp_pollution"
+    sess = session_manager.get_or_create(sid)
+    before_count = len(sess.memory.messages)
+    try:
+        # Part 1: First request with request_id
+        req_id = "req_client_abc_123"
+        resp1 = client.post(
+            "/api/chat/drive",
+            data={
+                "message": "生成",
+                "session_id": sid,
+                "request_id": req_id,
+                "expected_epoch": sess.document_epoch,
+                "expected_revision": sess.document.presentation.version,
+            },
+            files=[("files", ("test.txt", b"sample", "text/plain"))],
+        )
+        assert resp1.status_code == 200
+        data1 = resp1.json()
+        assert "turn" in data1
+        turn1 = data1["turn"]
+        assert turn1["request_id"] == req_id
+        assert len(sess.memory.messages) == before_count + 2
+
+        # Retrying with the same request_id returns the EXACT same turn DTO
+        resp2 = client.post(
+            "/api/chat/drive",
+            data={
+                "message": "生成",
+                "session_id": sid,
+                "request_id": req_id,
+                "expected_epoch": sess.document_epoch,
+                "expected_revision": sess.document.presentation.version,
+            },
+            files=[("files", ("test.txt", b"sample", "text/plain"))],
+        )
+        assert resp2.status_code == 200
+        data2 = resp2.json()
+        assert data2["turn"]["turn_id"] == turn1["turn_id"]
+        # Messages count did NOT increase (strict idempotency)
+        assert len(sess.memory.messages) == before_count + 2
+
+        # Part 2: Failed request (e.g. invalid text normalization) leaves ZERO transcript
+        async def fake_normalize_fail(payload):
+            return {
+                "valid": False,
+                "normalization_id": None,
+                "errors": ["Corrupt text structure"],
+            }
+        monkeypatch.setattr(routes, "api_normalize_pptspec", fake_normalize_fail)
+
+        before_fail = len(sess.memory.messages)
+        resp_fail = client.post(
+            "/api/chat/drive",
+            data={
+                "message": "生成",
+                "session_id": sid,
+                "request_id": "req_will_fail",
+                "expected_epoch": sess.document_epoch,
+                "expected_revision": sess.document.presentation.version,
+            },
+            files=[("files", ("test.txt", b"sample", "text/plain"))],
+        )
+        assert resp_fail.status_code == 422
+        # Exact zero transcript pollution
+        assert len(sess.memory.messages) == before_fail
+    finally:
+        session_manager.delete_session(sid)
 # ---------------------------------------------------------------------------
-# Generation terminal semantics: frozen vs stale are distinct
-# ---------------------------------------------------------------------------
 
-def test_persist_node_distinguishes_frozen_from_stale():
-    import asyncio
-    import inspect
+@pytest.mark.anyio
+async def test_persist_node_distinguishes_frozen_from_stale_behaviorally():
+    from backend.agent.graphs.generation import persist_session_node
+    from backend.agent.mutation_gateway import DOCUMENT_FROZEN, STALE_MUTATION
+    from backend.ir.models import PresentationIR
 
-    import backend.agent.graphs.generation as genmod
+    sid = "test_persist_frozen_vs_stale"
+    sess = session_manager.get_or_create(sid)
+    try:
+        # Acquire agent freeze so that commit_replacement rejects with DOCUMENT_FROZEN
+        sess.agent_execution.begin_turn("turn_frozen_agent")
 
-    src = inspect.getsource(genmod.persist_session_node)
-    assert "document_frozen" in src
-    assert "DOCUMENT_FROZEN" in src
-    # The frozen branch must not be reported as stale_generation.
-    assert src.count("stale_generation") >= 1
+        # 1. State when document is frozen by agent
+        state_frozen = {
+            "session_id": sid,
+            "presentation_ir": PresentationIR(title="New"),
+            "base_document_epoch": sess.document_epoch,
+            "base_revision": sess.document.presentation.version,
+        }
+        res_frozen = await persist_session_node(state_frozen, config={})
+        assert res_frozen.get("status") == "document_frozen"
+        assert res_frozen.get("error") == DOCUMENT_FROZEN
+
+        # Release freeze so next test hits revision CAS mismatch
+        sess.agent_execution.end_turn("turn_frozen_agent")
+
+        # 2. State when revision is stale (CAS mismatch)
+        state_stale = {
+            "session_id": sid,
+            "presentation_ir": PresentationIR(title="New"),
+            "base_document_epoch": sess.document_epoch,
+            "base_revision": sess.document.presentation.version + 999,
+        }
+        res_stale = await persist_session_node(state_stale, config={})
+        assert res_stale.get("status") == "stale_generation"
+        assert res_stale.get("status") != "document_frozen"
+    finally:
+        session_manager.delete_session(sid)
 
 
 # ---------------------------------------------------------------------------

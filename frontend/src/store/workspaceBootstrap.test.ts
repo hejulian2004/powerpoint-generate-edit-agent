@@ -48,7 +48,10 @@ describe('workspace bootstrap', () => {
 
     await usePPTStore.getState().bootstrapWorkspace()
 
-    expect(fetchMock).toHaveBeenCalledWith('/api/workspace/bootstrap')
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/api/workspace/bootstrap',
+      expect.objectContaining({ headers: expect.any(Headers) })
+    )
     expect(usePPTStore.getState().sessionId).toBe('sess_backend')
     expect(usePPTStore.getState().presentation?.title).toBe('Test Deck')
     expect(FakeWebSocket.instances).toHaveLength(1)
@@ -66,7 +69,10 @@ describe('workspace bootstrap', () => {
 
     await usePPTStore.getState().bootstrapWorkspace()
 
-    expect(fetchMock).toHaveBeenCalledWith('/api/workspace/bootstrap?hint=sess_prev')
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/api/workspace/bootstrap?hint=sess_prev',
+      expect.objectContaining({ headers: expect.any(Headers) })
+    )
   })
 
   it('stays disconnected and surfaces an error when bootstrap is unavailable', async () => {

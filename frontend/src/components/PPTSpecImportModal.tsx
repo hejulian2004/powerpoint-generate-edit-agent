@@ -4,6 +4,7 @@ import {
   FileText, Image as ImageIcon, Loader2, ArrowRight
 } from 'lucide-react'
 import { usePPTStore } from '../store/usePPTStore'
+import { authFetch } from '../utils/auth'
 
 interface AssetRequirement {
   slide_id: string
@@ -44,7 +45,7 @@ export const PPTSpecImportModal: React.FC = () => {
 
   const handleCopyPrompt = async (type: 'general' | 'strict') => {
     try {
-      const res = await fetch(`/api/pptspec/prompts/${type}`)
+      const res = await authFetch(`/api/pptspec/prompts/${type}`)
       if (!res.ok) throw new Error('获取提示词失败')
       const data = await res.json()
       await navigator.clipboard.writeText(data.prompt)
@@ -63,7 +64,7 @@ export const PPTSpecImportModal: React.FC = () => {
     setNormResult(null)
 
     try {
-      const res = await fetch('/api/pptspec/normalize', {
+      const res = await authFetch('/api/pptspec/normalize', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ content: rawInput, session_id: sessionId }),
@@ -95,12 +96,15 @@ export const PPTSpecImportModal: React.FC = () => {
     }
 
     try {
-      const res = await fetch('/api/pptspec/generate', {
+      const { documentEpoch, confirmedRevision } = usePPTStore.getState()
+      const res = await authFetch('/api/pptspec/generate', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           normalization_id: normResult.normalization_id,
           session_id: sessionId,
+          expected_epoch: documentEpoch ?? '',
+          expected_revision: confirmedRevision,
         }),
       })
 

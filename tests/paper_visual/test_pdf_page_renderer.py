@@ -66,6 +66,9 @@ def test_single_page_failure_is_isolated(multicase_pdf: Path, tmp_path: Path, mo
         def __init__(self, fail: bool):
             self.fail = fail
 
+        def get_size(self):
+            return (612, 792)
+
         def render(self, scale=1):
             if self.fail:
                 raise RuntimeError("boom")

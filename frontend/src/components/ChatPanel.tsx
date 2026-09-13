@@ -45,6 +45,7 @@ const AttachmentIcon: React.FC<{ kind: AttachmentKind; className?: string }> = (
 export const ChatPanel: React.FC = () => {
   const {
     messages,
+    pendingTurn,
     isAgentThinking,
     thinkingStatus,
     visualRemediation,
@@ -436,6 +437,21 @@ export const ChatPanel: React.FC = () => {
                 </div>
               )
             })}
+
+            {/* Ephemeral Pending Turn (not yet committed to durable transcript) */}
+            {pendingTurn && (
+              <div className="flex flex-col items-end gap-1 opacity-70">
+                <div className="max-w-[85%] rounded-2xl px-4 py-2.5 text-xs font-normal shadow-xs bg-inverted text-inverted-text rounded-tr-xs">
+                  <p className="whitespace-pre-wrap leading-relaxed">{pendingTurn.text}</p>
+                  {pendingTurn.files.length > 0 && (
+                    <div className="mt-1 text-[10px] text-inverted-text/75">
+                      附件: {pendingTurn.files.join(', ')}
+                    </div>
+                  )}
+                </div>
+                <span className="text-[10px] text-muted font-tabular px-1">发送中…</span>
+              </div>
+            )}
 
             {isAgentThinking && (
               <div className="bg-panel border border-line-strong rounded-xl p-3 text-xs text-secondary space-y-2 shadow-xs">

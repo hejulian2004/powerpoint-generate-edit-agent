@@ -76,13 +76,77 @@ def _resolve_all_ips(host: str, port: int) -> List[str]:
     return ips
 
 
+class PinnedAsyncNetworkBackend:
+    """Request-scoped network backend pinning a target host to validated public IPs.
+
+    Unlike modifying global ``socket.getaddrinfo``, this is completely concurrency-safe
+    and cannot be bypassed or corrupted by interleaved coroutines.
+    """
+
+    def __init__(self, pinned_host: str, allowed_ips: List[str]):
+        from httpcore._backends.auto import AutoBackend
+
+        self._auto_backend = AutoBackend()
+        self._pinned_host = pinned_host.lower()
+        self._allowed_ips = set(allowed_ips)
+
+    async def connect_tcp(
+        self,
+        host: str,
+        port: int,
+        timeout: Optional[float] = None,
+        local_address: Optional[str] = None,
+        socket_options: Optional[Any] = None,
+    ) -> Any:
+        if host.lower() == self._pinned_host:
+            if not self._allowed_ips:
+                raise socket.gaierror(f"No validated IP available for {host!r}")
+            # Target connection is bound to a validated public IP
+            target_ip = host if host in self._allowed_ips else next(iter(self._allowed_ips))
+            return await self._auto_backend.connect_tcp(
+                target_ip,
+                port,
+                timeout=timeout,
+                local_address=local_address,
+                socket_options=socket_options,
+            )
+        return await self._auto_backend.connect_tcp(
+            host,
+            port,
+            timeout=timeout,
+            local_address=local_address,
+            socket_options=socket_options,
+        )
+
+    async def connect_unix_socket(self, *args: Any, **kwargs: Any) -> Any:
+        return await self._auto_backend.connect_unix_socket(*args, **kwargs)
+
+    async def sleep(self, seconds: float) -> None:
+        await self._auto_backend.sleep(seconds)
+
+
+def create_pinned_async_transport(
+    host: str, allowed_ips: List[str]
+) -> Any:
+    """Creates an httpx.AsyncHTTPTransport whose TCP dialer connects only to allowed_ips.
+
+    Request-scoped, avoids monkey-patching process-global socket.getaddrinfo.
+    """
+    import httpcore
+    import httpx
+
+    backend = PinnedAsyncNetworkBackend(host, allowed_ips)
+    pool = httpcore.AsyncConnectionPool(network_backend=backend)  # type: ignore[arg-type]
+    transport = httpx.AsyncHTTPTransport()
+    transport._pool = pool
+    return transport
+
+
 @contextmanager
 def pinned_dns(host: str, allowed_ips: List[str]) -> Iterator[None]:
-    """Constrain ``socket.getaddrinfo(host)`` to the validated IP set.
+    """Legacy backward-compatible contextmanager for synchronous test helpers.
 
-    Closes the DNS-rebinding TOCTOU window: the HTTP client re-resolves
-    during connect, but the second resolution can only return IPs we already
-    validated as public. Other hosts resolve normally.
+    DEPRECATED for async runtime use in favor of ``create_pinned_async_transport``.
     """
     allowed: Set[str] = set(allowed_ips)
     original_getaddrinfo = socket.getaddrinfo
@@ -201,4 +265,9 @@ class OutboundURLPolicy:
         return normalized, host, ips
 
 
-__all__ = ["OutboundURLPolicy", "OutboundURLRejected", "pinned_dns"]
+__all__ = [
+    "OutboundURLPolicy",
+    "OutboundURLRejected",
+    "create_pinned_async_transport",
+    "pinned_dns",
+]

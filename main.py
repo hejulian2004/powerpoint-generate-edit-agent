@@ -126,6 +126,20 @@ def main():
 
     args = parser.parse_args()
 
+    # 0. 安全门禁：非 loopback 绑定必须配置 PPT_API_TOKEN，以命令行参数为准
+    from backend.security.auth import ensure_remote_auth_configured
+    try:
+        ensure_remote_auth_configured(args.host)
+    except RuntimeError as exc:
+        print(f"\n❌ 安全拦截: {exc}\n", file=sys.stderr)
+        sys.exit(1)
+    os.environ["HOST"] = args.host
+    try:
+        from backend.config import settings
+        settings.host = args.host
+    except Exception:
+        pass
+
     # 1. 确保构建产物或开发服务就绪
     if args.build_frontend:
         build_frontend_if_needed(force=True)

@@ -240,29 +240,27 @@ async def build_attachment_context(
             if analyze_pdf is not None:
                 try:
                     analysis = await analyze_pdf(name, att.get("content_type"), content)
-                except Exception as exc:  # pragma: no cover - defensive
+                except Exception as exc:
                     logger.warning("PDF attachment analysis failed for chat: %s", exc)
+                    raise ValueError(f"PDF_PARSE_FAILED: 附件《{name}》解析失败：{exc}") from exc
             if analysis:
                 sections.append(_paper_digest(analysis))
                 remaining = MAX_IMAGES - len(ctx.image_parts)
                 ctx.image_parts.extend(_paper_page_images(analysis, remaining))
             else:
-                sections.append(f"# PDF 附件: {name}（未能解析内容）")
+                raise ValueError(f"PDF_EMPTY_OR_UNREADABLE: 附件《{name}》未能解析出有效内容")
         elif kind == KIND_PPTX:
             pres = None
             if parse_pptx is not None:
                 try:
                     pres = parse_pptx(content, name)
-                except Exception as exc:  # pragma: no cover - defensive
+                except Exception as exc:
                     logger.warning("PPTX attachment parse failed for chat: %s", exc)
+                    raise ValueError(f"PPTX_PARSE_FAILED: 附件《{name}》解析失败：{exc}") from exc
             if pres is not None:
                 sections.append(_pptx_digest(pres, active_slide_id))
             else:
-                # Never fall back to the session's current deck: the user asked
-                # about THIS file, so answer from it or say it could not be read.
-                sections.append(
-                    f"# PPTX 附件: {name}\n附件解析失败，无法读取其中的幻灯片内容。"
-                )
+                raise ValueError(f"PPTX_PARSE_FAILED: 附件《{name}》未能解析出有效幻灯片")
         elif kind == KIND_UNKNOWN:
             # Recorded (not inserted into the digest) so a mixed request tells the
             # model this file was not read, while an all-unknown request still

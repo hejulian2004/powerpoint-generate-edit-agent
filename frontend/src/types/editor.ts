@@ -98,6 +98,13 @@ export interface PreviewUpdateEvent {
   version: number
 }
 
+export interface PendingTurn {
+  id: string
+  text: string
+  files: string[]
+  timestamp: number
+}
+
 export interface PPTEditorState {
   slide: SlideIR | null
   selectedElement: ElementIR | null
