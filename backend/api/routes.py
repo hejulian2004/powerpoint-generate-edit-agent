@@ -1325,6 +1325,16 @@ async def chat_with_attachments(
     # Mutating actions proceed ONLY when 100% are consumed.
     disposition_plan = build_disposition_plan(attachments, action)
     if action in (ACTION_PAPER, ACTION_IMPORT, ACTION_TEXT, ACTION_IMAGE):
+        # Preserve specific missing-kind errors (clearer than generic
+        # UNPROCESSED) when the required kind is entirely absent.
+        _required = {
+            ACTION_PAPER: (KIND_PDF, "PDF_REQUIRED_FOR_PAPER"),
+            ACTION_IMPORT: (KIND_PPTX, "PPTX_REQUIRED_FOR_IMPORT"),
+            ACTION_TEXT: (KIND_TEXT, "TEXT_REQUIRED_FOR_GENERATION"),
+            ACTION_IMAGE: (KIND_IMAGE, "IMAGE_REQUIRED_FOR_INSERT"),
+        }.get(action)
+        if _required is not None and _required[0] not in kinds:
+            raise HTTPException(status_code=400, detail=_required[1])
         if not disposition_all_consumed(disposition_plan):
             raise HTTPException(
                 status_code=400,
