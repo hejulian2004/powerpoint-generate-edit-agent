@@ -224,6 +224,22 @@ async def _handle_history_action(
 @ws_router.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
     """Session-aware WebSocket endpoint for streaming editing, chat, and instant previews."""
+    # PR #28 Phase 0: authenticate BEFORE any session ownership is granted.
+    # When PPT_API_TOKEN is configured, unauthenticated sockets are rejected
+    # without attaching, so they can never mutate or confirm plans.
+    from ..security.auth import is_auth_enabled, verify_websocket_auth
+
+    if is_auth_enabled() and not verify_websocket_auth(websocket):
+        await websocket.accept()
+        await websocket.send_json({
+            "type": "session_error",
+            "error": "UNAUTHORIZED",
+            "message": "Valid PPT_API_TOKEN required (Authorization Bearer or "
+            "Sec-WebSocket-Protocol ppt-token.<token>)",
+        })
+        await websocket.close(code=4401)
+        return
+
     # The socket must name an EXISTING session. The workspace is the sole creator
     # of sessions; the websocket never implicitly creates one (S4).
     session_id = websocket.query_params.get("session_id")

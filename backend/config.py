@@ -16,9 +16,32 @@ ASSETS_DIR.mkdir(parents=True, exist_ok=True)
 
 
 class AppSettings(BaseModel):
-    # Server
-    host: str = os.getenv("HOST", "0.0.0.0")
+    # Server — loopback by default (PR #28 Phase 0). Remote exposure requires
+    # PPT_API_TOKEN (see backend/security/auth.py startup guard).
+    host: str = os.getenv("HOST", "127.0.0.1")
     port: int = int(os.getenv("PORT", "8000"))
+
+    # Remote-mode API token. Empty = local/trusted mode (no auth enforced).
+    # Non-empty = explicit secure mode (REST + WebSocket both enforce auth).
+    ppt_api_token: str = os.getenv("PPT_API_TOKEN", "")
+
+    # Explicit allowlist for custom provider hosts probed via /api/models.
+    # Comma-separated hostnames, e.g. "api.openai.com,my-proxy.example.com".
+    # Empty = any publicly-routable host (still SSRF-checked + DNS-pinned).
+    trusted_provider_hosts: str = os.getenv("TRUSTED_PROVIDER_HOSTS", "")
+
+    # ---- Upload / parse / vision resource budgets (PR #28 Phase 0) ----
+    max_upload_file_bytes: int = int(os.getenv("MAX_UPLOAD_FILE_BYTES", str(50 * 1024 * 1024)))
+    max_total_attachment_bytes: int = int(
+        os.getenv("MAX_TOTAL_ATTACHMENT_BYTES", str(100 * 1024 * 1024))
+    )
+    max_attachment_count: int = int(os.getenv("MAX_ATTACHMENT_COUNT", "10"))
+    max_pdf_pages: int = int(os.getenv("MAX_PDF_PAGES", "80"))
+    pptx_max_uncompressed_bytes: int = int(
+        os.getenv("PPTX_MAX_UNCOMPRESSED_BYTES", str(200 * 1024 * 1024))
+    )
+    pptx_max_entries: int = int(os.getenv("PPTX_MAX_ENTRIES", "1000"))
+    vision_concurrency: int = int(os.getenv("VISION_CONCURRENCY", "4"))
 
     # Runtime environment: "production" | "test" | "dev".
     # Mock LLM completions are only permitted outside production when explicitly enabled.
@@ -80,6 +103,14 @@ class AppSettings(BaseModel):
     @property
     def cors_origin_list(self) -> list[str]:
         return [origin.strip() for origin in self.cors_origins.split(",") if origin.strip()]
+
+    @property
+    def trusted_provider_host_set(self) -> set[str]:
+        return {
+            h.strip().lower()
+            for h in (self.trusted_provider_hosts or "").split(",")
+            if h.strip()
+        }
 
 
 settings = AppSettings()

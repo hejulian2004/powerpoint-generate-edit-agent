@@ -16,6 +16,10 @@ from .workspace.runtime import shutdown_workspace, startup_workspace
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # PR #28 Phase 0: fail fast when a non-loopback bind has no API token.
+    from .security.auth import ensure_remote_auth_configured
+
+    ensure_remote_auth_configured()
     await startup_workspace()
     try:
         yield
@@ -41,6 +45,28 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.middleware("http")
+async def _api_token_guard(request, call_next):
+    """Enforces PPT_API_TOKEN on REST when explicit secure mode is on.
+
+    When no token is configured (local loopback default) every request
+    passes through. When configured, every /api/* request must carry
+    ``Authorization: Bearer <token>``. Docs/health/asset paths stay public.
+    """
+    from .security.auth import is_auth_enabled, verify_bearer_token
+
+    path = request.url.path or ""
+    if path.startswith("/api/") and is_auth_enabled():
+        if not verify_bearer_token(request.headers.get("authorization")):
+            from fastapi.responses import JSONResponse
+
+            return JSONResponse(
+                status_code=401,
+                content={"detail": "UNAUTHORIZED: valid PPT_API_TOKEN required"},
+            )
+    return await call_next(request)
 
 # Register API and WebSocket routes
 app.include_router(api_router)
