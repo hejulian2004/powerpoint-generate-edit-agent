@@ -534,6 +534,17 @@ class AgentRuntime:
             digest = getattr(context, "text_digest", "") or ""
             if digest:
                 content_parts.append({"type": "text", "text": "【附件内容（只读）】\n" + digest})
+            unsupported = list(getattr(context, "unsupported", None) or [])
+            if unsupported:
+                # The request also carried files the backend could not read.
+                # Tell the model explicitly so it never pretends to have seen
+                # them (the all-unsupported case is rejected before reaching here).
+                notice = (
+                    "【以下附件格式不受支持，未能读取，未纳入上下文，"
+                    "请勿基于其内容作答】\n"
+                    + "\n".join(f"- {name}" for name in unsupported)
+                )
+                content_parts.append({"type": "text", "text": notice})
             content_parts.extend(getattr(context, "image_parts", []) or [])
             model_messages = list(history) + [{"role": "user", "content": content_parts}]
             model_messages, usage_report = ContextCompressor.evaluate_and_compress(

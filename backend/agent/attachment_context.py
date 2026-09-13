@@ -29,6 +29,7 @@ from .attachment_router import (
     KIND_PDF,
     KIND_PPTX,
     KIND_TEXT,
+    KIND_UNKNOWN,
 )
 
 logger = logging.getLogger(__name__)
@@ -58,12 +59,21 @@ class AttachmentChatContext:
     text_digest: str = ""
     image_parts: List[Dict[str, Any]] = field(default_factory=list)
     truncated: bool = False
+    # Names of attachments whose format the backend cannot read. They are
+    # surfaced to the model as an explicit "not read" notice (mixed requests);
+    # an all-unsupported request is rejected before the model is called.
+    unsupported: List[str] = field(default_factory=list)
 
     @property
     def has_images(self) -> bool:
         return bool(self.image_parts)
 
     def is_empty(self) -> bool:
+        """True when NO model-readable content was produced.
+
+        Unsupported attachments are tracked separately in ``unsupported`` and do
+        NOT count here, so an all-unsupported request still fails closed.
+        """
         return not self.text_digest and not self.image_parts
 
 
@@ -208,6 +218,7 @@ async def build_attachment_context(
                 "name": name,
                 "kind": kind,
                 "sha256": hashlib.sha256(content).hexdigest()[:16],
+                "status": "unsupported" if kind == KIND_UNKNOWN else "supported",
             }
         )
 
@@ -252,6 +263,11 @@ async def build_attachment_context(
                 sections.append(
                     f"# PPTX 附件: {name}\n附件解析失败，无法读取其中的幻灯片内容。"
                 )
+        elif kind == KIND_UNKNOWN:
+            # Recorded (not inserted into the digest) so a mixed request tells the
+            # model this file was not read, while an all-unknown request still
+            # produces an empty context and is rejected upstream.
+            ctx.unsupported.append(name)
 
     digest = "\n\n".join(s for s in sections if s)
     ctx.text_digest, clipped = _clip(digest, MAX_DIGEST_CHARS)
