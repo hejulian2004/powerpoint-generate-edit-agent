@@ -1194,6 +1194,16 @@ async def chat_with_attachments(
             parse_pptx=store.parse_pptx_bytes,
         )
 
+        # Capability boundary: a request that carries attachments but produces NO
+        # model-readable context (every kind is UNKNOWN) must fail closed instead
+        # of silently answering from the user text alone. Otherwise the model can
+        # fabricate an answer about a file it never actually received.
+        if attachments and attachment_context.is_empty():
+            raise HTTPException(
+                status_code=415,
+                detail="UNSUPPORTED_ATTACHMENT_TYPE: 附件格式不受支持，无法读取其中的内容",
+            )
+
         async def _on_chat_event(ev: Dict[str, Any]):
             ev.setdefault("session_id", session.session_id)
             await store.broadcast(ev, session_id=session.session_id)

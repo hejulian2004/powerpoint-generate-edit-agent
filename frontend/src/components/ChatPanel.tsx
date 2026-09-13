@@ -21,11 +21,15 @@ interface PendingAttachment {
   previewUrl?: string
 }
 
+// Mirrors the backend importer capability: only OOXML .pptx is importable.
+// Legacy .ppt / macro .pptm are intentionally NOT advertised.
+const PPTX_MIME = 'application/vnd.openxmlformats-officedocument.presentationml.presentation'
+
 const kindFromFile = (file: File): AttachmentKind => {
   const name = (file.name || '').toLowerCase()
   const type = (file.type || '').toLowerCase()
   if (name.endsWith('.pdf') || type === 'application/pdf') return 'pdf'
-  if (/\.(pptx?|pptm)$/.test(name) || type.includes('presentation') || type.includes('powerpoint')) return 'pptx'
+  if (name.endsWith('.pptx') || type === PPTX_MIME) return 'pptx'
   if (type.startsWith('image/') || /\.(png|jpe?g|gif|webp|bmp|svg|heic)$/.test(name)) return 'image'
   if (type.startsWith('text/') || /\.(txt|md|markdown|csv|tsv|json|log|rst|ya?ml)$/.test(name)) return 'text'
   return 'unknown'
@@ -94,15 +98,31 @@ export const ChatPanel: React.FC = () => {
   const addFiles = (incoming: FileList | File[] | null | undefined) => {
     if (!incoming) return
     const next: PendingAttachment[] = []
+    const rejected: string[] = []
     for (const file of Array.from(incoming)) {
       if (!file) continue
       const kind = kindFromFile(file)
+      if (kind === 'unknown') {
+        // Never attach a file the backend cannot read: an attachment that
+        // silently contributes no content would let the model answer about a
+        // file it never saw.
+        rejected.push(file.name || '未命名文件')
+        continue
+      }
       next.push({
         id: `att_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
         file,
         name: file.name || '未命名文件',
         kind,
         previewUrl: kind === 'image' ? URL.createObjectURL(file) : undefined
+      })
+    }
+    if (rejected.length) {
+      addMessage({
+        id: `attach_rejected_${Date.now()}`,
+        role: 'assistant',
+        content: `不支持该文件格式：${rejected.join('、')}。支持 PDF / PPTX / 图片 / 文本文档。`,
+        timestamp: Date.now()
       })
     }
     if (next.length) setAttachments((prev) => [...prev, ...next])
@@ -589,7 +609,7 @@ export const ChatPanel: React.FC = () => {
                 ref={fileInputRef}
                 type="file"
                 multiple
-                accept=".pdf,.ppt,.pptx,.pptm,.txt,.md,.markdown,.csv,.tsv,.json,.log,.rst,.yaml,.yml,image/*"
+                accept=".pdf,.pptx,.txt,.md,.markdown,.csv,.tsv,.json,.log,.rst,.yaml,.yml,image/*"
                 onChange={handleFileSelect}
                 className="hidden"
               />

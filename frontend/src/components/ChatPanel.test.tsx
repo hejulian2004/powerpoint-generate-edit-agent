@@ -79,4 +79,34 @@ describe('ChatPanel slash-command palette', () => {
     expect(screen.getByText('待确认计划')).toBeInTheDocument()
     expect(screen.getByText('确认执行')).toBeInTheDocument()
   })
+
+  it('rejects unsupported files instead of silently attaching them', () => {
+    resetStore()
+    render(<ChatPanel />)
+    const input = document.querySelector('input[type="file"]') as HTMLInputElement
+    const bad = new File(['x'], 'old.ppt', { type: 'application/vnd.ms-powerpoint' })
+    Object.defineProperty(input, 'files', { value: [bad], configurable: true })
+
+    fireEvent.change(input)
+
+    expect(screen.queryByLabelText('移除 old.ppt')).toBeNull()
+    const messages = usePPTStore.getState().messages
+    expect(
+      messages.some((m) => m.content.includes('不支持该文件格式') && m.content.includes('old.ppt'))
+    ).toBe(true)
+  })
+
+  it('accepts a .pptx attachment', () => {
+    resetStore()
+    render(<ChatPanel />)
+    const input = document.querySelector('input[type="file"]') as HTMLInputElement
+    const good = new File(['x'], 'deck.pptx', {
+      type: 'application/vnd.openxmlformats-officedocument.presentationml.presentation'
+    })
+    Object.defineProperty(input, 'files', { value: [good], configurable: true })
+
+    fireEvent.change(input)
+
+    expect(screen.getByLabelText('移除 deck.pptx')).toBeInTheDocument()
+  })
 })
