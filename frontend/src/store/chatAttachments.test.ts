@@ -75,7 +75,13 @@ describe('sendChatWithAttachments', () => {
       version: 10,
       active_slide_id: slide.id,
       can_undo: true,
-      can_redo: false
+      can_redo: false,
+      turn: {
+        turn_id: 'turn_img',
+        request_id: 'req_img',
+        user: { id: 'u1', role: 'user', content: '把这张图放到当前页', timestamp: 123 },
+        assistant: { id: 'a1', role: 'assistant', content: '已将图片插入当前幻灯片。', timestamp: 124 }
+      }
     }
     const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => snapshot })
     vi.stubGlobal('fetch', fetchMock)
@@ -101,7 +107,7 @@ describe('sendChatWithAttachments', () => {
     expect(state.messages.at(-1)?.content).toContain('图片')
   })
 
-  it('falls back to a normal chat turn without duplicating the user message', async () => {
+  it('treats 200 without canonical turn as protocol error with zero durable messages', async () => {
     const slide = makeSlide([makeShape('s1', 0, 0)])
     const pres = makePresentation([slide], 9)
     const ws = connect()
@@ -118,16 +124,19 @@ describe('sendChatWithAttachments', () => {
     })
     vi.stubGlobal('fetch', fetchMock)
 
+    const beforeCount = usePPTStore.getState().messages.length
+
     await usePPTStore.getState().sendChatWithAttachments('这是什么文件', [
       makeFile('a.png', 'image/png')
     ])
 
-    const userMessages = usePPTStore.getState().messages.filter((m) => m.role === 'user')
-    expect(userMessages).toHaveLength(1)
-    expect(ws.sentMessages().some((m) => m.type === 'chat')).toBe(true)
+    // Protocol error: zero durable message pollution!
+    expect(usePPTStore.getState().messages).toHaveLength(beforeCount)
+    expect(usePPTStore.getState().pendingTurn).toBeNull()
+    expect(ws.sentMessages().some((m) => m.type === 'chat')).toBe(false)
   })
 
-  it('shows the server attachment-chat answer without a second WS turn', async () => {
+  it('shows the server attachment-chat answer via canonical turn', async () => {
     const slide = makeSlide([makeShape('s1', 0, 0)])
     const pres = makePresentation([slide], 9)
     const ws = connect()
@@ -144,7 +153,12 @@ describe('sendChatWithAttachments', () => {
         success: true,
         action: 'chat',
         session_id: 'sess_test',
-        message: '这篇论文讲的是……'
+        turn: {
+          turn_id: 'turn_chat',
+          request_id: 'req_chat',
+          user: { id: 'u_chat', role: 'user', content: '这篇论文讲什么', timestamp: 123 },
+          assistant: { id: 'a_chat', role: 'assistant', content: '这篇论文讲的是……', timestamp: 124 }
+        }
       })
     })
     vi.stubGlobal('fetch', fetchMock)

@@ -109,6 +109,7 @@ export const SettingsModal: React.FC = () => {
     e.preventDefault()
     setSaving(true)
     setApiToken(pptApiToken)
+    usePPTStore.getState().setAuthStatus(pptApiToken ? 'authenticated' : 'unknown')
     try {
       const res = await authFetch('/api/settings', {
         method: 'POST',

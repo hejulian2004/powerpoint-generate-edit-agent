@@ -528,77 +528,64 @@ class AgentRuntime:
                 getattr(memory, "compressed_anchor", None),
                 getattr(memory, "compression_through_index", 0),
             )
-            content_parts: List[Dict[str, Any]] = [
-                {"type": "text", "text": user_message or "请根据附件内容回答问题。"}
-            ]
-            digest = getattr(context, "text_digest", "") or ""
-            if digest:
-                content_parts.append({"type": "text", "text": "【附件内容（只读）】\n" + digest})
-            unsupported = list(getattr(context, "unsupported", None) or [])
-            if unsupported:
-                # The request also carried files the backend could not read.
-                # Tell the model explicitly so it never pretends to have seen
-                # them (the all-unsupported case is rejected before reaching here).
-                notice = (
-                    "【以下附件格式不受支持，未能读取，未纳入上下文，"
-                    "请勿基于其内容作答】\n"
-                    + "\n".join(f"- {name}" for name in unsupported)
-                )
-                content_parts.append({"type": "text", "text": notice})
-            content_parts.extend(getattr(context, "image_parts", []) or [])
-            model_messages = list(history) + [{"role": "user", "content": content_parts}]
-            model_messages, usage_report = ContextCompressor.evaluate_and_compress(
-                messages=model_messages,
-                max_tokens=max_tokens_budget,
-                context_key=ctx_limit_key,
+
+        content_parts: List[Dict[str, Any]] = [
+            {"type": "text", "text": user_message or "请根据附件内容回答问题。"}
+        ]
+        digest = getattr(context, "text_digest", "") or ""
+        if digest:
+            content_parts.append({"type": "text", "text": "【附件内容（只读）】\n" + digest})
+        unsupported = list(getattr(context, "unsupported", None) or [])
+        if unsupported:
+            # The request also carried files the backend could not read.
+            # Tell the model explicitly so it never pretends to have seen
+            # them (the all-unsupported case is rejected before reaching here).
+            notice = (
+                "【以下附件格式不受支持，未能读取，未纳入上下文，"
+                "请勿基于其内容作答】\n"
+                + "\n".join(f"- {name}" for name in unsupported)
             )
+            content_parts.append({"type": "text", "text": notice})
+        content_parts.extend(getattr(context, "image_parts", []) or [])
+        model_messages = list(history) + [{"role": "user", "content": content_parts}]
+        model_messages, usage_report = ContextCompressor.evaluate_and_compress(
+            messages=model_messages,
+            max_tokens=max_tokens_budget,
+            context_key=ctx_limit_key,
+        )
 
-            # The model role is decided by the FINAL payload: any real image part
-            # makes this a vision request, otherwise it is plain reasoning.
-            has_images = any(
-                isinstance(m.get("content"), list)
-                and any(
-                    isinstance(p, dict) and p.get("type") == "image_url"
-                    for p in m["content"]
-                )
-                for m in model_messages
+        # The model role is decided by the FINAL payload: any real image part
+        # makes this a vision request, otherwise it is plain reasoning.
+        has_images = any(
+            isinstance(m.get("content"), list)
+            and any(
+                isinstance(p, dict) and p.get("type") == "image_url"
+                for p in m["content"]
             )
-            role = "vision" if has_images else "reasoning"
+            for m in model_messages
+        )
+        role = "vision" if has_images else "reasoning"
 
-            # PR #28 Phase 2: separate inference failure (502) from parse
-            # failure (415/422). An LLM/provider exception must NOT be
-            # disguised as a normal assistant turn ("附件内容读取失败").
-            # It returns a structured provider error with NO transcript write,
-            # so the route can emit 502 LLM_PROVIDER_ERROR without polluting
-            # durable memory. Parse failures stay in AttachmentChatContext as
-            # explicit not-read notes (never silent substitution).
-            try:
-                response = await self.llm.chat_completion(
-                    model_messages, role=role, max_tokens=2000
-                )
-                reply = response["choices"][0]["message"].get("content", "") or ""
-            except Exception as exc:
-                logger.error("Attachment chat LLM call failed: %s", exc)
-                return {
-                    "error": "LLM_PROVIDER_ERROR",
-                    "detail": str(exc),
-                    "role": role,
-                    "has_images": has_images,
-                    "usage": usage_report.to_dict(),
-                }
-
-            user_msg = session.add_message(role="user", content=user_message or "（已附加文件）")
-            asst_msg = session.add_message(role="assistant", content=reply)
-            if hasattr(session, "schedule_persist"):
-                session.schedule_persist()
-
-            import time
-            turn_dto = {
-                "turn_id": f"turn_{int(time.time() * 1000)}_{len(session.memory.messages)}",
-                "request_id": getattr(context, "request_id", "") or "",
-                "user": user_msg,
-                "assistant": asst_msg,
-                "provenance": getattr(context, "provenance", []) or [],
+        # PR #28 Phase 2: separate inference failure (502) from parse
+        # failure (415/422). An LLM/provider exception must NOT be
+        # disguised as a normal assistant turn ("附件内容读取失败").
+        # It returns a structured provider error with NO transcript write,
+        # so the route can emit 502 LLM_PROVIDER_ERROR without polluting
+        # durable memory. Parse failures stay in AttachmentChatContext as
+        # explicit not-read notes (never silent substitution).
+        try:
+            response = await self.llm.chat_completion(
+                model_messages, role=role, max_tokens=2000
+            )
+            reply = response["choices"][0]["message"].get("content", "") or ""
+        except Exception as exc:
+            logger.error("Attachment chat LLM call failed: %s", exc)
+            return {
+                "error": "LLM_PROVIDER_ERROR",
+                "detail": str(exc),
+                "role": role,
+                "has_images": has_images,
+                "usage": usage_report.to_dict(),
             }
 
         if on_event:
@@ -608,7 +595,6 @@ class AgentRuntime:
             )
         return {
             "reply": reply,
-            "turn": turn_dto,
             "role": role,
             "has_images": has_images,
             "usage": usage_report.to_dict(),

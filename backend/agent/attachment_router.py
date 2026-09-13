@@ -39,6 +39,20 @@ ATTACHMENT_ACTIONS = frozenset(
     {ACTION_PAPER, ACTION_IMPORT, ACTION_IMAGE, ACTION_TEXT}
 )
 
+
+class AttachmentParseError(ValueError):
+    """Typed exception raised when an attachment cannot be parsed or is corrupted.
+
+    Subclasses ValueError for backward compatibility and maps to HTTP 422 in the API layer.
+    """
+
+    def __init__(self, code: str, message: str):
+        full_msg = f"{code}: {message}" if not message.startswith(f"{code}:") else message
+        super().__init__(full_msg)
+        self.code = code
+        self.message = message
+
+
 # Kind -> default action when the message carries no stronger signal.
 _KIND_DEFAULT_ACTION = {
     KIND_PDF: ACTION_PAPER,

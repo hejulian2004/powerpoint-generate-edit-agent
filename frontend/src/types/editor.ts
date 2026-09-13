@@ -105,6 +105,8 @@ export interface PendingTurn {
   timestamp: number
 }
 
+export type AuthStatus = 'unknown' | 'authenticated' | 'unauthorized'
+
 export interface PPTEditorState {
   slide: SlideIR | null
   selectedElement: ElementIR | null
