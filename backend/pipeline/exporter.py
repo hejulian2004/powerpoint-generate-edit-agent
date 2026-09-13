@@ -28,7 +28,9 @@ class PPTExporter:
         out_p.parent.mkdir(parents=True, exist_ok=True)
 
         try:
-            export_pptx(pres, out_p)
+            # Automated pipeline explicitly opts into lossy write-back; the
+            # user-facing REST default (allow_lossy=False) still fails closed.
+            export_pptx(pres, out_p, allow_lossy=True)
         except Exception as e:
             logger.error(f"Failed to export PPTX to {out_p}: {e}")
             return False, False, f"Failed to export PPTX: {str(e)}"

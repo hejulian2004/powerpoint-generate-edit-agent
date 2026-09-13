@@ -819,7 +819,8 @@ def export_pptx(
     output_path: Union[str, Path, os.PathLike],
     exporter: str = "legacy",
     *,
-    allow_lossy: bool = True
+    # PR #28 Phase 1: fail closed by default; callers must opt into lossy.
+    allow_lossy: bool = False
 ) -> Path:
     """Exports a PPT-IR presentation into a valid OOXML PPTX file.
 
