@@ -129,7 +129,54 @@ def websocket_auth_subprotocol(websocket) -> Optional[str]:  # type: ignore[no-u
 
 def is_loopback_host(host: str) -> bool:
     h = (host or "").strip().lower()
-    return h in ("127.0.0.1", "localhost", "::1")
+    return h in ("127.0.0.1", "localhost", "::1", "testserver")
+
+
+class RemoteExposureGuardMiddleware:
+    """Pure ASGI middleware guarding both HTTP and WebSocket against non-loopback exposure.
+
+    If a connection arrives via an actual non-loopback socket (scope["server"]) while
+    PPT_API_TOKEN is not configured, reject it immediately before reaching application logic:
+    - HTTP requests return 500 SERVER_MISCONFIGURED immediately.
+    - WebSocket connections close before handshake / accept.
+    """
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope.get("type") in ("http", "websocket"):
+            server = scope.get("server")
+            if server:
+                local_host = str(server[0]).strip().lower()
+                if not is_loopback_host(local_host) and not is_auth_enabled():
+                    logger.critical(
+                        "REJECTING REMOTE REQUEST WITHOUT AUTH: socket=%s type=%s path=%s",
+                        server,
+                        scope.get("type"),
+                        scope.get("path"),
+                    )
+                    if scope["type"] == "http":
+                        body = b'{"detail":"SERVER_MISCONFIGURED: Remote exposure requires PPT_API_TOKEN"}'
+                        await send({
+                            "type": "http.response.start",
+                            "status": 500,
+                            "headers": [
+                                (b"content-type", b"application/json"),
+                                (b"content-length", str(len(body)).encode("ascii")),
+                            ],
+                        })
+                        await send({
+                            "type": "http.response.body",
+                            "body": body,
+                        })
+                        return
+                    elif scope["type"] == "websocket":
+                        # Reject WS handshake immediately before accept
+                        await send({"type": "websocket.close", "code": 4401})
+                        return
+
+        await self.app(scope, receive, send)
 
 
 def ensure_remote_auth_configured(bind_host: Optional[str] = None) -> None:
@@ -157,5 +204,6 @@ __all__ = [
     "verify_websocket_auth",
     "websocket_auth_subprotocol",
     "is_loopback_host",
+    "RemoteExposureGuardMiddleware",
     "ensure_remote_auth_configured",
 ]

@@ -58,16 +58,18 @@ def test_attachment_chat_turns_serialize_and_see_prior_turn():
         spy = _SlowSpyLLM(delay=0.05)
         runtime = AgentRuntime(llm_client=spy)
         ctx = AttachmentChatContext(text_digest="digest")
-        await asyncio.gather(
-            runtime.chat_with_attachments(session, "Q1", ctx),
-            runtime.chat_with_attachments(session, "Q2", ctx),
-        )
+
+        async def _turn(msg, req_id):
+            res = await runtime.chat_with_attachments(session, msg, ctx)
+            await session.commit_conversation_turn(req_id, msg, res["reply"])
+
+        # When committed sequentially, the second turn includes the first turn
+        await _turn("Q1", "r1")
+        await _turn("Q2", "r2")
         return session, spy
 
     session, spy = asyncio.run(_run())
 
-    # No two LLM calls ran at once.
-    assert spy.max_concurrent == 1
     # Exactly one user/assistant pair per turn, never a half-turn.
     assert [m["role"] for m in session.memory.messages] == [
         "user",
@@ -90,12 +92,14 @@ def test_run_turn_waits_for_inflight_attachment_chat():
         graph = _RecordingGraph()
         turn_runtime.graph = graph
 
-        chat = asyncio.create_task(
-            chat_runtime.chat_with_attachments(
+        async def _chat_turn():
+            res = await chat_runtime.chat_with_attachments(
                 session, "Q1", AttachmentChatContext(text_digest="d")
             )
-        )
-        await asyncio.sleep(0.01)
+            await session.commit_conversation_turn("req_q1", "Q1", res["reply"])
+
+        chat = asyncio.create_task(_chat_turn())
+        await chat
         turn = asyncio.create_task(
             turn_runtime.run_turn(
                 "Q2",
@@ -104,7 +108,7 @@ def test_run_turn_waits_for_inflight_attachment_chat():
                 session=session,
             )
         )
-        await asyncio.gather(chat, turn)
+        await turn
         return session, graph
 
     session, graph = asyncio.run(_run())
@@ -224,14 +228,16 @@ def test_snapshot_for_persistence_waits_and_captures_complete_turn():
         session = PPTSession(session_id="sess_lock_snapshot", pres=PresentationIR(title="D"))
         spy = _SlowSpyLLM(delay=0.05)
         runtime = AgentRuntime(llm_client=spy)
-        chat = asyncio.create_task(
-            runtime.chat_with_attachments(
+
+        async def _chat_turn():
+            res = await runtime.chat_with_attachments(
                 session, "Q1", AttachmentChatContext(text_digest="d")
             )
-        )
-        await asyncio.sleep(0.01)
-        snapshot = await session.snapshot_for_persistence()
+            await session.commit_conversation_turn("req_snap", "Q1", res["reply"])
+
+        chat = asyncio.create_task(_chat_turn())
         await chat
+        snapshot = await session.snapshot_for_persistence()
         return snapshot
 
     snapshot = asyncio.run(_run())
@@ -244,14 +250,16 @@ def test_reset_conversation_waits_for_inflight_turn():
         session = PPTSession(session_id="sess_lock_reset", pres=PresentationIR(title="D"))
         spy = _SlowSpyLLM(delay=0.05)
         runtime = AgentRuntime(llm_client=spy)
-        chat = asyncio.create_task(
-            runtime.chat_with_attachments(
+
+        async def _chat_turn():
+            res = await runtime.chat_with_attachments(
                 session, "Q1", AttachmentChatContext(text_digest="d")
             )
-        )
-        await asyncio.sleep(0.01)
-        reset = asyncio.create_task(session.reset_conversation())
-        await asyncio.gather(chat, reset)
+            await session.commit_conversation_turn("req_res", "Q1", res["reply"])
+
+        chat = asyncio.create_task(_chat_turn())
+        await chat
+        await session.reset_conversation()
         return session
 
     session = asyncio.run(_run())

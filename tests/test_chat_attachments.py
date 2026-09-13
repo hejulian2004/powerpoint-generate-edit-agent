@@ -571,6 +571,13 @@ def test_chat_with_attachments_text_uses_reasoning_and_keeps_transcript_clean():
     result = asyncio.run(
         runtime.chat_with_attachments(session, "总结一下", context)
     )
+    asyncio.run(
+        session.commit_conversation_turn(
+            request_id="req_test",
+            user_content="总结一下",
+            assistant_content=result["reply"],
+        )
+    )
 
     assert result["role"] == "reasoning"
     assert result["has_images"] is False
@@ -598,7 +605,14 @@ def test_attachment_chat_advances_session_updated_at():
             ]
         )
     )
-    asyncio.run(runtime.chat_with_attachments(session, "总结", context))
+    res = asyncio.run(runtime.chat_with_attachments(session, "总结", context))
+    asyncio.run(
+        session.commit_conversation_turn(
+            request_id="req_test_updated",
+            user_content="总结",
+            assistant_content=res["reply"],
+        )
+    )
     assert session.updated_at > before
 
 

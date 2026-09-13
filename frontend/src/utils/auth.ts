@@ -67,6 +67,26 @@ export interface AuthFetchOptions extends RequestInit {
   onUnauthorized?: () => void
 }
 
+type UnauthorizedListener = () => void
+const unauthorizedListeners: Set<UnauthorizedListener> = new Set()
+
+export function onUnauthorized(listener: UnauthorizedListener): () => void {
+  unauthorizedListeners.add(listener)
+  return () => {
+    unauthorizedListeners.delete(listener)
+  }
+}
+
+export function notifyUnauthorized(): void {
+  unauthorizedListeners.forEach((fn) => {
+    try {
+      fn()
+    } catch {
+      // Ignore listener exceptions
+    }
+  })
+}
+
 /**
  * Authenticated fetch wrapper that injects Authorization Bearer if token is set.
  */
@@ -84,6 +104,7 @@ export async function authFetch(input: RequestInfo | URL, init?: AuthFetchOption
   })
 
   if (response.status === 401) {
+    notifyUnauthorized()
     if (init?.onUnauthorized) {
       init.onUnauthorized()
     }

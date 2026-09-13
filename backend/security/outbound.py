@@ -142,39 +142,6 @@ def create_pinned_async_transport(
     return transport
 
 
-@contextmanager
-def pinned_dns(host: str, allowed_ips: List[str]) -> Iterator[None]:
-    """Legacy backward-compatible contextmanager for synchronous test helpers.
-
-    DEPRECATED for async runtime use in favor of ``create_pinned_async_transport``.
-    """
-    allowed: Set[str] = set(allowed_ips)
-    original_getaddrinfo = socket.getaddrinfo
-
-    def _guarded(
-        h: Optional[str], p: Optional[int], *args: object, **kwargs: object
-    ):  # type: ignore[no-untyped-def]
-        if h == host:
-            results = original_getaddrinfo(h, p, *args, **kwargs)
-            filtered = []
-            for fam, stype, proto, canon, sockaddr in results:
-                ip_str = sockaddr[0] if isinstance(sockaddr, tuple) else str(sockaddr)
-                if ip_str in allowed:
-                    filtered.append((fam, stype, proto, canon, sockaddr))
-            if not filtered:
-                raise socket.gaierror(
-                    f"DNS pinning rejected unvalidated address for {host!r}"
-                )
-            return filtered
-        return original_getaddrinfo(h, p, *args, **kwargs)
-
-    socket.getaddrinfo = _guarded  # type: ignore[method-assign]
-    try:
-        yield
-    finally:
-        socket.getaddrinfo = original_getaddrinfo  # type: ignore[method-assign]
-
-
 class OutboundURLPolicy:
     """Validates an OpenAI-compatible ``base_url`` before any key is attached."""
 
@@ -269,5 +236,4 @@ __all__ = [
     "OutboundURLPolicy",
     "OutboundURLRejected",
     "create_pinned_async_transport",
-    "pinned_dns",
 ]

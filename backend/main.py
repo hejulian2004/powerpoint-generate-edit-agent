@@ -46,6 +46,9 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+from .security.auth import RemoteExposureGuardMiddleware
+app.add_middleware(RemoteExposureGuardMiddleware)
+
 
 @app.middleware("http")
 async def _api_token_guard(request, call_next):

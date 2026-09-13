@@ -146,28 +146,79 @@ def test_outbound_dns_all_must_be_public(monkeypatch):
         ob.OutboundURLPolicy.validate("https://provider.example.com/v1")
 
 
-def test_outbound_dns_pinning_filters_rebinding(monkeypatch):
+@pytest.mark.anyio
+async def test_pinned_async_transport_tls_sni_host_dial_verified():
+    """Verifies that create_pinned_async_transport dials the validated IP,
+
+    preserves the original Host header and TLS SNI, and does NOT mutate
+    process-global socket.getaddrinfo.
+    """
     import socket as std_socket
+    import httpx
+    from backend.security.outbound import create_pinned_async_transport
 
-    import backend.security.outbound as ob
+    orig_getaddrinfo = std_socket.getaddrinfo
 
-    validated = ["93.184.216.34"]
+    pinned_host = "secure-provider.test"
+    pinned_ip = "192.0.2.99"
+    port = 443
 
-    real = std_socket.getaddrinfo
+    transport = create_pinned_async_transport(pinned_host, [pinned_ip])
+    backend = transport._pool._network_backend
 
-    def _rebinding(host, port, *a, **k):
-        if host == "provider.example.com":
-            return [
-                (2, 1, 6, "", ("93.184.216.34", port)),
-                (2, 1, 6, "", ("127.0.0.1", port)),
-            ]
-        return real(host, port, *a, **k)
+    recorded = {}
 
-    monkeypatch.setattr(ob.socket, "getaddrinfo", _rebinding)
-    with ob.pinned_dns("provider.example.com", validated):
-        results = ob.socket.getaddrinfo("provider.example.com", 443)
-        ips = {r[4][0] for r in results}
-        assert ips == {"93.184.216.34"}
+    class FakeSocketStream:
+        def __init__(self, target_ip, target_port):
+            self.target_ip = target_ip
+            self.target_port = target_port
+
+        async def start_tls(self, server_hostname=None, ssl_context=None, timeout=None):
+            recorded["sni"] = server_hostname
+            return self
+
+        async def aclose(self):
+            pass
+
+        def get_extra_info(self, name):
+            return None
+
+        async def read(self, max_bytes, timeout=None):
+            resp = (
+                b"HTTP/1.1 200 OK\r\n"
+                b"Content-Length: 15\r\n"
+                b"Content-Type: application/json\r\n"
+                b"\r\n"
+                b'{"models": []}'
+            )
+            return resp
+
+        recorded["raw_request"] = ""
+
+        async def write(self, buffer, timeout=None):
+            recorded["raw_request"] += buffer.decode("utf-8", errors="replace")
+
+    async def fake_connect_tcp(target_ip, target_port, **kw):
+        recorded["dial_ip"] = target_ip
+        recorded["dial_port"] = target_port
+        return FakeSocketStream(target_ip, target_port)
+
+    backend._auto_backend.connect_tcp = fake_connect_tcp
+
+    async with httpx.AsyncClient(transport=transport, verify=False) as client:
+        res = await client.get(f"https://{pinned_host}/v1/models")
+        assert res.status_code == 200
+
+    # Assertions on connection contract:
+    # 1. TCP dial dialed the pinned IP
+    assert recorded["dial_ip"] == pinned_ip
+    assert recorded["dial_port"] == port
+    # 2. TLS SNI matched the original hostname
+    assert recorded["sni"] == pinned_host
+    # 3. HTTP Host header matched the original hostname
+    assert f"host: {pinned_host}" in recorded["raw_request"].lower()
+    # 4. Global socket.getaddrinfo remains unmutated
+    assert std_socket.getaddrinfo is orig_getaddrinfo
 
 
 @pytest.mark.anyio
@@ -844,6 +895,8 @@ def test_chat_drive_idempotency_and_zero_pollution_on_error(monkeypatch):
         assert len(sess.memory.messages) == before_count + 2
 
         # Retrying with the same request_id returns the EXACT same turn DTO
+        # EVEN IF document revision advanced in the meantime!
+        sess.document.presentation.version += 10
         resp2 = client.post(
             "/api/chat/drive",
             data={
@@ -851,7 +904,7 @@ def test_chat_drive_idempotency_and_zero_pollution_on_error(monkeypatch):
                 "session_id": sid,
                 "request_id": req_id,
                 "expected_epoch": sess.document_epoch,
-                "expected_revision": sess.document.presentation.version,
+                "expected_revision": sess.document.presentation.version - 10,
             },
             files=[("files", ("test.txt", b"sample", "text/plain"))],
         )
@@ -860,6 +913,21 @@ def test_chat_drive_idempotency_and_zero_pollution_on_error(monkeypatch):
         assert data2["turn"]["turn_id"] == turn1["turn_id"]
         # Messages count did NOT increase (strict idempotency)
         assert len(sess.memory.messages) == before_count + 2
+
+        # Retrying with SAME request_id but DIFFERENT payload returns 409
+        resp_mismatch = client.post(
+            "/api/chat/drive",
+            data={
+                "message": "不同的指令",
+                "session_id": sid,
+                "request_id": req_id,
+                "expected_epoch": sess.document_epoch,
+                "expected_revision": sess.document.presentation.version,
+            },
+            files=[("files", ("test.txt", b"sample", "text/plain"))],
+        )
+        assert resp_mismatch.status_code == 409
+        assert "REQUEST_ID_PAYLOAD_MISMATCH" in resp_mismatch.text
 
         # Part 2: Failed request (e.g. invalid text normalization) leaves ZERO transcript
         async def fake_normalize_fail(payload):
@@ -885,6 +953,177 @@ def test_chat_drive_idempotency_and_zero_pollution_on_error(monkeypatch):
         assert resp_fail.status_code == 422
         # Exact zero transcript pollution
         assert len(sess.memory.messages) == before_fail
+
+        # Part 3: Corrupted PDF upload maps to 422 with zero transcript pollution
+        from backend.agent.attachment_router import ACTION_CHAT
+        async def _force_chat(*a, **k):
+            return ACTION_CHAT
+        monkeypatch.setattr(router, "classify_intent", _force_chat)
+
+        before_corrupt = len(sess.memory.messages)
+        resp_corrupt = client.post(
+            "/api/chat/drive",
+            data={
+                "message": "解析这篇论文",
+                "session_id": sid,
+                "request_id": "req_corrupt_pdf",
+            },
+            files=[("files", ("corrupt.pdf", b"not-a-valid-pdf-content", "application/pdf"))],
+        )
+        assert resp_corrupt.status_code == 422
+        assert len(sess.memory.messages) == before_corrupt
+    finally:
+        session_manager.delete_session(sid)
+
+
+@pytest.mark.anyio
+async def test_chat_drive_in_flight_concurrent_deduplication():
+    """Gate B: Concurrent in-flight requests with identical (session_id, request_id, fingerprint)
+
+    must execute the pipeline ONLY ONCE and broadcast the exact same outcome to all waiters.
+    """
+    import anyio
+    import backend.agent.attachment_router as router
+    import backend.api.routes as routes
+
+    async def _force_text(llm, message, kinds):
+        return "text_generate"
+
+    execution_count = 0
+    barrier = anyio.Event()
+
+    async def fake_normalize(payload):
+        nonlocal execution_count
+        execution_count += 1
+        # Signal that first execution started, wait a moment to allow concurrent request to arrive
+        barrier.set()
+        await anyio.sleep(0.05)
+        return {
+            "valid": True,
+            "normalization_id": "nid_conc",
+            "summary": "s",
+            "warnings": [],
+            "errors": [],
+        }
+
+    async def fake_gen(payload):
+        return {"success": True, "session_id": payload["session_id"]}
+
+    sid = "test_concurrent_dedup"
+    sess = session_manager.get_or_create(sid)
+    req_id = "req_conc_123"
+
+    import httpx
+    from backend.main import app
+
+    results = []
+
+    async def client_request(idx):
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://testserver") as ac:
+            data = {
+                "message": "生成",
+                "session_id": sid,
+                "request_id": req_id,
+                "expected_epoch": sess.document_epoch,
+                "expected_revision": str(sess.document.presentation.version),
+            }
+            files = {"files": ("test.txt", b"sample", "text/plain")}
+            resp = await ac.post("/api/chat/drive", data=data, files=files)
+            results.append((idx, resp.status_code, resp.json()))
+
+    from unittest.mock import patch
+    with patch.object(router, "classify_intent", _force_text), \
+         patch.object(routes, "api_normalize_pptspec", fake_normalize), \
+         patch.object(routes, "api_generate_from_pptspec", fake_gen):
+        async with anyio.create_task_group() as tg:
+            tg.start_soon(client_request, 1)
+            await barrier.wait()
+            tg.start_soon(client_request, 2)
+
+    try:
+        # Pipeline executed exactly once
+        assert execution_count == 1
+        assert len(results) == 2
+        assert results[0][1] == 200
+        assert results[1][1] == 200
+        # Exactly identical turn DTO received
+        assert results[0][2]["turn"]["turn_id"] == results[1][2]["turn"]["turn_id"]
+        # Exactly 2 messages in session (1 user, 1 assistant)
+        assert len(sess.memory.messages) == 2
+    finally:
+        session_manager.delete_session(sid)
+
+
+@pytest.mark.anyio
+async def test_chat_drive_rejects_conversation_reset_during_request():
+    """Gate B / reset_conversation(): If reset_conversation() runs while /chat/drive
+
+    is in flight, the request MUST NOT commit its transcript to the new conversation
+    and must return 409 CONVERSATION_RESET_DURING_REQUEST.
+    """
+    import anyio
+    import backend.agent.attachment_router as router
+    import backend.api.routes as routes
+
+    async def _force_text(llm, message, kinds):
+        return "text_generate"
+
+    barrier = anyio.Event()
+
+    async def fake_normalize(payload):
+        # Notify that request has been admitted with generation 0
+        barrier.set()
+        await anyio.sleep(0.08)
+        return {
+            "valid": True,
+            "normalization_id": "nid_reset",
+            "summary": "s",
+            "warnings": [],
+            "errors": [],
+        }
+
+    async def fake_gen(payload):
+        return {"success": True, "session_id": payload["session_id"]}
+
+    sid = "test_reset_in_flight"
+    sess = session_manager.get_or_create(sid)
+    req_id = "req_reset_123"
+
+    import httpx
+    from backend.main import app
+
+    results = []
+
+    async def client_request():
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://testserver") as ac:
+            data = {
+                "message": "生成",
+                "session_id": sid,
+                "request_id": req_id,
+                "expected_epoch": sess.document_epoch,
+                "expected_revision": str(sess.document.presentation.version),
+            }
+            files = {"files": ("test.txt", b"sample", "text/plain")}
+            resp = await ac.post("/api/chat/drive", data=data, files=files)
+            results.append((resp.status_code, resp.json()))
+
+    from unittest.mock import patch
+    with patch.object(router, "classify_intent", _force_text), \
+         patch.object(routes, "api_normalize_pptspec", fake_normalize), \
+         patch.object(routes, "api_generate_from_pptspec", fake_gen):
+        async with anyio.create_task_group() as tg:
+            tg.start_soon(client_request)
+            await barrier.wait()
+            # User triggers reset while request is in flight
+            await sess.reset_conversation()
+
+    try:
+        assert len(results) == 1
+        status_code, body = results[0]
+        assert status_code == 409
+        assert "CONVERSATION_RESET_DURING_REQUEST" in str(body)
+        # Session transcript remains empty after reset
+        assert len(sess.memory.messages) == 0
     finally:
         session_manager.delete_session(sid)
 # ---------------------------------------------------------------------------
@@ -932,6 +1171,79 @@ async def test_persist_node_distinguishes_frozen_from_stale_behaviorally():
 # ---------------------------------------------------------------------------
 # Export fail-closed on lossy write-back
 # ---------------------------------------------------------------------------
+
+@pytest.mark.anyio
+async def test_remote_exposure_guard_asgi_middleware_blocks_non_loopback():
+    """Gate A: Pure ASGI middleware RemoteExposureGuardMiddleware must block
+
+    any request arriving at a non-loopback local socket when PPT_API_TOKEN is unset.
+    - HTTP returns 500 SERVER_MISCONFIGURED
+    - WebSocket closes with 4401 immediately
+    """
+    from backend.security.auth import RemoteExposureGuardMiddleware
+    from backend.config import settings
+
+    # Ensure auth is disabled
+    saved_token = settings.ppt_api_token
+    settings.ppt_api_token = ""
+    try:
+        # Dummy downstream app
+        downstream_called = False
+        async def dummy_app(scope, receive, send):
+            nonlocal downstream_called
+            downstream_called = True
+            if scope["type"] == "http":
+                await send({"type": "http.response.start", "status": 200, "headers": []})
+                await send({"type": "http.response.body", "body": b"OK"})
+
+        guarded = RemoteExposureGuardMiddleware(dummy_app)
+
+        # 1. Non-loopback HTTP (e.g. socket bound to LAN or 0.0.0.0)
+        http_scope = {
+            "type": "http",
+            "server": ("192.168.1.50", 8000),
+            "path": "/api/chat",
+        }
+        sent_messages = []
+        async def mock_send_http(msg):
+            sent_messages.append(msg)
+
+        downstream_called = False
+        await guarded(http_scope, None, mock_send_http)
+        assert not downstream_called
+        assert any(m.get("status") == 500 for m in sent_messages)
+
+        # 2. Non-loopback WebSocket
+        ws_scope = {
+            "type": "websocket",
+            "server": ("0.0.0.0", 8000),
+            "path": "/ws",
+        }
+        sent_ws = []
+        async def mock_send_ws(msg):
+            sent_ws.append(msg)
+
+        downstream_called = False
+        await guarded(ws_scope, None, mock_send_ws)
+        assert not downstream_called
+        assert sent_ws == [{"type": "websocket.close", "code": 4401}]
+
+        # 3. Loopback HTTP is permitted through to downstream
+        loopback_scope = {
+            "type": "http",
+            "server": ("127.0.0.1", 8000),
+            "path": "/api/chat",
+        }
+        sent_loopback = []
+        async def mock_send_loopback(msg):
+            sent_loopback.append(msg)
+
+        downstream_called = False
+        await guarded(loopback_scope, None, mock_send_loopback)
+        assert downstream_called
+    finally:
+        settings.ppt_api_token = saved_token
+
 
 def test_export_requires_explicit_lossy_consent():
     from backend.ir.models import SlideIR, TableCellIR, TableElementIR

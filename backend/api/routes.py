@@ -1252,6 +1252,8 @@ async def chat_with_attachments(
     Mutating actions require 100% disposition (fail-closed, no silent drops).
     """
     import hashlib
+    import asyncio
+    import json
 
     from ..agent.attachment_router import (
         ACTION_CHAT,
@@ -1313,6 +1315,150 @@ async def chat_with_attachments(
         )
 
     kinds = [a["kind"] for a in attachments]
+
+    # ---- Gate B: Request-level idempotency fingerprint & admission ----
+    import json
+    parsed_ui_obj = None
+    if ui_context:
+        try:
+            parsed_ui_obj = json.loads(ui_context)
+        except Exception:
+            parsed_ui_obj = None
+    canonical_ui_str = (
+        json.dumps(parsed_ui_obj, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+        if parsed_ui_obj is not None
+        else ""
+    )
+    attachment_records = [
+        {
+            "index": idx,
+            "name": a.get("name"),
+            "kind": a.get("kind"),
+            "content_type": a.get("content_type"),
+            "size_bytes": a.get("size_bytes"),
+            "sha256": a.get("sha256"),
+        }
+        for idx, a in enumerate(attachments)
+    ]
+    raw_fp_payload = {
+        "message": (message or "").strip(),
+        "attachments": attachment_records,
+        "expected_epoch": (expected_epoch or "").strip(),
+        "expected_revision": expected_revision,
+        "ui_context": canonical_ui_str,
+    }
+    req_fingerprint = hashlib.sha256(
+        json.dumps(raw_fp_payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+    ).hexdigest()
+
+    from ..session.session import RequestOutcome, RequestExecution
+
+    is_first_executor = False
+    execution_fut: Optional[asyncio.Future] = None
+    admitted_generation = session.conversation_generation
+
+    if request_id:
+        async with session.request_journal_lock:
+            cached_record = session.get_completed_request(request_id)
+            if cached_record is not None:
+                if cached_record.fingerprint != req_fingerprint:
+                    raise HTTPException(status_code=409, detail="REQUEST_ID_PAYLOAD_MISMATCH")
+                return cached_record.response
+
+            in_flight = session.in_flight_requests.get(request_id)
+            if in_flight is not None:
+                if in_flight.fingerprint != req_fingerprint:
+                    raise HTTPException(status_code=409, detail="REQUEST_ID_PAYLOAD_MISMATCH")
+                execution_fut = in_flight.future
+            else:
+                loop = asyncio.get_running_loop()
+                fut: asyncio.Future[RequestOutcome] = loop.create_future()
+                execution_fut = fut
+                session.in_flight_requests[request_id] = RequestExecution(
+                    fingerprint=req_fingerprint,
+                    future=fut,
+                    admitted_generation=admitted_generation,
+                )
+                is_first_executor = True
+
+    if request_id and not is_first_executor and execution_fut is not None:
+        # Wait for first executor to complete
+        outcome = await execution_fut
+        if not outcome.ok:
+            raise HTTPException(status_code=outcome.status_code or 500, detail=outcome.detail)
+        return outcome.response
+
+    try:
+        res = await _execute_chat_drive(
+            session=session,
+            message=message,
+            files=files,
+            attachments=attachments,
+            kinds=kinds,
+            ui_context=ui_context,
+            expected_epoch=expected_epoch,
+            expected_revision=expected_revision,
+            request_id=request_id,
+            req_fingerprint=req_fingerprint,
+            admitted_generation=admitted_generation,
+        )
+        if request_id and is_first_executor and execution_fut is not None:
+            async with session.request_journal_lock:
+                session.in_flight_requests.pop(request_id, None)
+                if session.conversation_generation == admitted_generation:
+                    session.record_completed_request(
+                        request_id=request_id,
+                        fingerprint=req_fingerprint,
+                        response=res,
+                        admitted_generation=admitted_generation,
+                    )
+            execution_fut.set_result(RequestOutcome(ok=True, response=res))
+        return res
+    except HTTPException as exc:
+        if request_id and is_first_executor and execution_fut is not None:
+            async with session.request_journal_lock:
+                session.in_flight_requests.pop(request_id, None)
+            execution_fut.set_result(RequestOutcome(ok=False, status_code=exc.status_code, detail=exc.detail))
+        raise
+    except Exception as exc:
+        if request_id and is_first_executor and execution_fut is not None:
+            async with session.request_journal_lock:
+                session.in_flight_requests.pop(request_id, None)
+            execution_fut.set_result(RequestOutcome(ok=False, status_code=500, detail=str(exc)))
+        raise
+
+
+async def _execute_chat_drive(
+    session: Any,
+    message: str,
+    files: Optional[List[UploadFile]],
+    attachments: List[Dict[str, Any]],
+    kinds: List[str],
+    ui_context: Optional[str],
+    expected_epoch: Optional[str],
+    expected_revision: Optional[int],
+    request_id: Optional[str],
+    req_fingerprint: str,
+    admitted_generation: int,
+) -> Dict[str, Any]:
+    from ..agent.attachment_router import (
+        ACTION_CHAT,
+        ACTION_IMAGE,
+        ACTION_IMPORT,
+        ACTION_PAPER,
+        ACTION_TEXT,
+        KIND_IMAGE,
+        KIND_PDF,
+        KIND_PPTX,
+        KIND_TEXT,
+        build_disposition_plan,
+        classify_intent,
+        detect_kind,
+        disposition_all_consumed,
+        unprocessed_attachments,
+        AttachmentParseError,
+    )
+
     action = await classify_intent(getattr(store.agent_runtime, "llm", None), message, kinds)
 
     # Explicit disposition: every attachment gets consume/unsupported/unused.
@@ -1366,12 +1512,18 @@ async def chat_with_attachments(
         user_content = f"[{turn_action}] {user_brief}"
         if prov_lines:
             user_content += f"（附件: {prov_lines[:1000]}）"
-        return await session.commit_conversation_turn(
-            request_id=request_id or "",
-            user_content=user_content,
-            assistant_content=assistant_summary[:2000],
-            provenance=provenance,
-        )
+        try:
+            return await session.commit_conversation_turn(
+                request_id=request_id or "",
+                user_content=user_content,
+                assistant_content=assistant_summary[:2000],
+                provenance=provenance,
+                admitted_generation=admitted_generation,
+            )
+        except RuntimeError as exc:
+            if "CONVERSATION_RESET_DURING_REQUEST" in str(exc):
+                raise HTTPException(status_code=409, detail="CONVERSATION_RESET_DURING_REQUEST")
+            raise
 
     def _provenance_for(action_name: str, status: str = "consumed") -> List[Dict[str, Any]]:
         out: List[Dict[str, Any]] = []
@@ -1408,12 +1560,18 @@ async def chat_with_attachments(
                 force=False,
             )
 
-        attachment_context = await build_attachment_context(
-            attachments,
-            ui_context=ui,
-            analyze_pdf=_analyze_pdf,
-            parse_pptx=store.parse_pptx_bytes,
-        )
+        try:
+            attachment_context = await build_attachment_context(
+                attachments,
+                ui_context=ui,
+                analyze_pdf=_analyze_pdf,
+                parse_pptx=store.parse_pptx_bytes,
+            )
+        except AttachmentParseError as exc:
+            raise HTTPException(
+                status_code=422,
+                detail={"error": exc.code, "message": exc.message},
+            )
 
         # Capability boundary: a request that carries attachments but produces NO
         # model-readable context (every kind is UNKNOWN) must fail closed instead
@@ -1442,7 +1600,7 @@ async def chat_with_attachments(
                 status_code=502,
                 detail=f"LLM_PROVIDER_ERROR: 附件问答的模型推理失败：{result.get('detail') or 'unknown'}",
             )
-        turn_dto = result.get("turn") or await _commit_turn(
+        turn_dto = await _commit_turn(
             ACTION_CHAT,
             result.get("reply", ""),
             _provenance_for(ACTION_CHAT),

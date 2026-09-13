@@ -20,7 +20,11 @@ legacy surface.
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
+from collections import OrderedDict
+import asyncio
+import json
 
 from ..ir.models import PresentationIR, SlideIR
 from .snapshot import SessionSnapshot, session_to_snapshot
@@ -53,7 +57,38 @@ __all__ = [
     "ReplacementResult",
     "STALE_GENERATION",
     "STALE_MUTATION",
+    "RequestOutcome",
+    "RequestExecution",
+    "CompletedRequestRecord",
 ]
+
+
+MAX_COMPLETED_REQUESTS = 32
+MAX_COMPLETED_REQUEST_BYTES = 16 * 1024 * 1024  # 16 MB
+
+
+@dataclass
+class RequestOutcome:
+    ok: bool
+    response: Optional[Dict[str, Any]] = None
+    status_code: Optional[int] = None
+    detail: Any = None
+
+
+class RequestExecution:
+    def __init__(self, fingerprint: str, future: asyncio.Future, admitted_generation: int):
+        self.fingerprint = fingerprint
+        self.future = future
+        self.admitted_generation = admitted_generation
+
+
+@dataclass
+class CompletedRequestRecord:
+    request_id: str
+    fingerprint: str
+    response: Dict[str, Any]
+    admitted_generation: int
+    size_bytes: int = 0
 
 
 class PPTSession:
@@ -98,6 +133,12 @@ class PPTSession:
         self.connection = ConnectionService()
         self.iterations: List[Dict[str, Any]] = []
         self.committed_turns: Dict[str, Dict[str, Any]] = {}  # request_id -> turn DTO
+        self.conversation_generation: int = 0
+        self.completed_requests: OrderedDict[str, CompletedRequestRecord] = OrderedDict()
+        self.in_flight_requests: Dict[str, RequestExecution] = {}
+        self._request_journal_lock: Optional[asyncio.Lock] = None
+        self._request_journal_lock_loop: Optional[Any] = None
+
         self.created_at = datetime.now(timezone.utc)
         self.updated_at = datetime.now(timezone.utc)
         # Attached by WorkspaceManager; marks committed state dirty for debounced
@@ -411,19 +452,76 @@ class PPTSession:
         self.updated_at = datetime.now(timezone.utc)
         return msg
 
+    @property
+    def request_journal_lock(self) -> asyncio.Lock:
+        """The request-journal mutex, lazily bound to the caller's running loop."""
+        try:
+            loop: Optional[Any] = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = None
+        if self._request_journal_lock is None or self._request_journal_lock_loop is not loop:
+            self._request_journal_lock = asyncio.Lock()
+            self._request_journal_lock_loop = loop
+        return self._request_journal_lock
+
+    def get_completed_request(self, request_id: str) -> Optional[CompletedRequestRecord]:
+        return self.completed_requests.get(request_id)
+
+    def record_completed_request(
+        self,
+        request_id: str,
+        fingerprint: str,
+        response: Dict[str, Any],
+        admitted_generation: int,
+    ) -> None:
+        """Records a completed request with double bounded budgets (count + total bytes)."""
+        if not request_id:
+            return
+        try:
+            size_bytes = len(json.dumps(response, ensure_ascii=False).encode("utf-8"))
+        except Exception:
+            size_bytes = 1024
+
+        record = CompletedRequestRecord(
+            request_id=request_id,
+            fingerprint=fingerprint,
+            response=response,
+            admitted_generation=admitted_generation,
+            size_bytes=size_bytes,
+        )
+
+        # Evict oldest if count exceeds MAX_COMPLETED_REQUESTS
+        while len(self.completed_requests) >= MAX_COMPLETED_REQUESTS:
+            self.completed_requests.popitem(last=False)
+
+        # Evict oldest if total bytes exceed MAX_COMPLETED_REQUEST_BYTES
+        current_bytes = sum(r.size_bytes for r in self.completed_requests.values()) + size_bytes
+        while current_bytes > MAX_COMPLETED_REQUEST_BYTES and self.completed_requests:
+            evicted = self.completed_requests.popitem(last=False)[1]
+            current_bytes -= evicted.size_bytes
+
+        self.completed_requests[request_id] = record
+        self.updated_at = datetime.now(timezone.utc)
+        self.schedule_persist()
+
     async def commit_conversation_turn(
         self,
         request_id: str,
         user_content: str,
         assistant_content: str,
         provenance: Optional[List[Dict[str, Any]]] = None,
+        admitted_generation: Optional[int] = None,
     ) -> Dict[str, Any]:
         """Atomically commits a single canonical conversation turn (User + Assistant).
 
         Idempotent by request_id: retrying with the same request_id returns the exact
         same committed turn DTO without creating duplicate messages in memory.
+        If admitted_generation is provided, rejects commit if conversation was reset.
         """
         async with self.memory.conversation_lock:
+            if admitted_generation is not None and admitted_generation != self.conversation_generation:
+                raise RuntimeError("CONVERSATION_RESET_DURING_REQUEST")
+
             if request_id and request_id in self.committed_turns:
                 return self.committed_turns[request_id]
 
@@ -465,6 +563,10 @@ class PPTSession:
         document epoch, checkpoints and interaction mode are preserved.
         """
         async with self.memory.conversation_lock:
+            async with self.request_journal_lock:
+                self.conversation_generation += 1
+                self.committed_turns.clear()
+                self.completed_requests.clear()
             self.memory.clear_conversation()
             self.confirmations.clear()
             self.plan_confirmations.clear()

@@ -27,7 +27,7 @@ import {
   syncTransform,
   translateElement
 } from '../editor/geometry/adapter'
-import { authFetch, getWebSocketProtocols } from '../utils/auth'
+import { authFetch, getWebSocketProtocols, onUnauthorized } from '../utils/auth'
 
 // Terminal generation statuses (paper generation is REST-initiated, so the
 // store must clear its own thinking lifecycle when one of these arrives).
@@ -576,6 +576,8 @@ interface PPTState {
   editingElementId: string | null
   messages: ChatMessage[]
   pendingTurn: PendingTurn | null
+  authStatus: 'unknown' | 'authenticated' | 'unauthorized'
+  setAuthStatus: (status: 'unknown' | 'authenticated' | 'unauthorized') => void
   wsConnected: boolean
   isAgentThinking: boolean
   thinkingStatus: string
@@ -764,6 +766,8 @@ export const usePPTStore = create<PPTState>((set, get) => ({
     }
   ],
   pendingTurn: null,
+  authStatus: 'unknown',
+  setAuthStatus: (status) => set({ authStatus: status }),
   wsConnected: false,
   isAgentThinking: false,
   thinkingStatus: '',
@@ -1624,6 +1628,7 @@ export const usePPTStore = create<PPTState>((set, get) => ({
         set({
           ws: null,
           wsConnected: false,
+          authStatus: 'unauthorized',
           inFlightMutationId: null,
           inFlightMessage: null,
           mutationStatus: 'idle'
@@ -2395,64 +2400,68 @@ export const usePPTStore = create<PPTState>((set, get) => ({
         get().adoptCanonicalSnapshot(data)
       }
 
-      // Fallback if reply is empty and client text exists, forward to WS chat
-      if (data?.action === 'chat' && !data?.turn && !data?.message && text.trim()) {
-        set({ pendingTurn: null, isAgentThinking: false, thinkingStatus: '' })
-        await get().sendChatMessage(text, { skipLocalEcho: false })
-        return
-      }
-
-      // Adopt canonical turn from server if present
+      // Gate D: Strict canonical turn adoption with deduplication.
+      // Missing turn on 200 is treated as a Protocol Error. Zero fallback message synthesis.
       if (data?.turn?.user && data?.turn?.assistant) {
         const userTurn = data.turn.user
         const asstTurn = data.turn.assistant
-        set((state) => ({
-          messages: [
-            ...state.messages,
-            {
-              id: userTurn.id || `user_${Date.now()}`,
-              role: 'user',
-              content: userTurn.content || text,
-              timestamp: userTurn.timestamp || Date.now()
-            },
-            {
-              id: asstTurn.id || `assistant_${Date.now()}`,
-              role: 'assistant',
-              content: asstTurn.content || data?.message || attachmentResultMessage(data?.action),
-              timestamp: asstTurn.timestamp || Date.now()
+        const turnReqId = data.turn.request_id || ''
+        const turnId = data.turn.turn_id || ''
+
+        set((state) => {
+          // Deduplicate by turn_id, request_id, or message id
+          const isDuplicate = state.messages.some(
+            (m) =>
+              (turnId && m.id === turnId) ||
+              (turnReqId && (m as any).request_id === turnReqId) ||
+              m.id === userTurn.id ||
+              m.id === asstTurn.id
+          )
+          if (isDuplicate) {
+            return {
+              pendingTurn: null,
+              isAgentThinking: false,
+              thinkingStatus: '',
+              visualRemediation: null,
+              generationStage: null
             }
-          ],
-          pendingTurn: null,
-          isAgentThinking: false,
-          thinkingStatus: '',
-          visualRemediation: null,
-          generationStage: null
-        }))
+          }
+
+          return {
+            messages: [
+              ...state.messages,
+              {
+                id: userTurn.id || `user_${Date.now()}`,
+                role: 'user',
+                content: userTurn.content || text,
+                timestamp: userTurn.timestamp || Date.now(),
+                request_id: turnReqId
+              } as ChatMessage,
+              {
+                id: asstTurn.id || `assistant_${Date.now()}`,
+                role: 'assistant',
+                content: asstTurn.content || data?.message || attachmentResultMessage(data?.action),
+                timestamp: asstTurn.timestamp || Date.now(),
+                request_id: turnReqId
+              } as ChatMessage
+            ],
+            pendingTurn: null,
+            isAgentThinking: false,
+            thinkingStatus: '',
+            visualRemediation: null,
+            generationStage: null
+          }
+        })
       } else {
-        // Fallback if older server format
-        const reply = typeof data?.message === 'string' ? data.message.trim() : ''
-        set((state) => ({
-          messages: [
-            ...state.messages,
-            {
-              id: `user_${Date.now()}`,
-              role: 'user',
-              content: text.trim() || `（已附加 ${files.length} 个文件）`,
-              timestamp: Date.now()
-            },
-            {
-              id: `assistant_${Date.now()}`,
-              role: 'assistant',
-              content: reply || attachmentResultMessage(data?.action),
-              timestamp: Date.now()
-            }
-          ],
+        // Protocol Error: 200 response without canonical turn DTO.
+        set({
           pendingTurn: null,
           isAgentThinking: false,
           thinkingStatus: '',
           visualRemediation: null,
           generationStage: null
-        }))
+        })
+        window.alert('协议错误：服务端未返回规范的 canonical turn 实体')
       }
     } catch (err) {
       // Clear pendingTurn without writing any dirty durable message to messages array!
@@ -2652,3 +2661,8 @@ export const usePPTStore = create<PPTState>((set, get) => ({
     }
   }
 }))
+
+// Wire auth unauthorized events to set authStatus in store
+onUnauthorized(() => {
+  usePPTStore.setState({ authStatus: 'unauthorized', wsConnected: false })
+})
