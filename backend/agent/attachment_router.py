@@ -51,7 +51,10 @@ _KIND_DEFAULT_ACTION = {
 _KIND_PRIORITY = (KIND_PDF, KIND_PPTX, KIND_IMAGE, KIND_TEXT)
 
 _PDF_EXTENSIONS = {".pdf"}
-_PPTX_EXTENSIONS = {".ppt", ".pptx", ".pptm"}
+# The importer only reads OOXML .pptx; legacy .ppt / macro .pptm are NOT
+# importable, so they must not be advertised as KIND_PPTX (see tests).
+_PPTX_EXTENSIONS = {".pptx"}
+_PPTX_MIME = "application/vnd.openxmlformats-officedocument.presentationml.presentation"
 _IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".svg", ".heic"}
 _TEXT_EXTENSIONS = {
     ".txt", ".md", ".markdown", ".rst", ".csv", ".tsv", ".json", ".log", ".yaml", ".yml"
@@ -77,7 +80,7 @@ def detect_kind(filename: str, content_type: Optional[str] = None) -> str:
     ctype = (content_type or "").lower()
     if ctype == "application/pdf":
         return KIND_PDF
-    if "presentation" in ctype or "powerpoint" in ctype or ctype.endswith("ms-powerpoint"):
+    if ctype == _PPTX_MIME:
         return KIND_PPTX
     if ctype.startswith("image/"):
         return KIND_IMAGE
@@ -110,7 +113,7 @@ def fallback_action(kinds: List[str]) -> str:
 _ROUTER_SYSTEM_PROMPT = """You are the attachment intent router for an AI slide editor.
 Choose exactly ONE action from this closed set:
 - paper_generate: turn an attached PDF paper into a slide deck.
-- pptx_import: import/replace the current deck with an attached .pptx/.ppt file.
+- pptx_import: import/replace the current deck with an attached .pptx file.
 - image_insert: insert an attached image into the current slide.
 - text_generate: generate a deck from an attached text/document as source material.
 - chat: the attachment needs no pipeline action yet; just answer the user.

@@ -188,6 +188,45 @@ def test_confirm_plan_invalidated_when_document_changed(monkeypatch):
     assert any(e.get("type") == "plan_invalidated" for e in events)
 
 
+def test_confirm_plan_surfaces_rejected_resumed_turn(monkeypatch):
+    """A plan whose resumed run_turn is terminally rejected must NOT report a
+    false success: plan_resolved carries success=False and the rejection error."""
+    runtime = AgentRuntime()
+
+    async def fake_run_turn(**kwargs):
+        return {
+            "reply": "本次指令未执行。",
+            "tools_executed": [],
+            "vision_critique": None,
+            "version": 0,
+            "intent": "chat",
+            "turn_rejected": True,
+            "error": "request_stale",
+        }
+
+    monkeypatch.setattr(runtime, "run_turn", fake_run_turn)
+    session = _make_session("sess_plan_rejected")
+    session.register_pending_plan(
+        plan_id="p_rej",
+        plan="计划",
+        plan_review={"approved": True},
+        user_query="做一份汇报",
+        document_epoch=session.document.epoch,
+        expected_revision=session.document.presentation.version,
+    )
+    events = []
+
+    async def on_ev(ev):
+        events.append(ev)
+
+    result = asyncio.run(runtime.confirm_plan(session, "p_rej", on_event=on_ev))
+    assert result["success"] is False
+    assert result["turn_rejected"] is True
+    resolved = [e for e in events if e.get("type") == "plan_resolved"]
+    assert resolved and resolved[-1]["success"] is False
+    assert resolved[-1]["error"] == "request_stale"
+
+
 def test_confirm_unknown_plan_fails():
     runtime = AgentRuntime()
     session = _make_session("sess_plan_unknown")

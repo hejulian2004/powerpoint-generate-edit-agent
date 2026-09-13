@@ -180,7 +180,6 @@ def _paper_page_images(
 
 
 async def build_attachment_context(
-    session: Any,
     attachments: List[Dict[str, Any]],
     ui_context: Optional[Any] = None,
     analyze_pdf: Optional[
@@ -192,7 +191,9 @@ async def build_attachment_context(
 
     ``analyze_pdf`` / ``parse_pptx`` are injected by the caller (the API layer) so
     this module stays free of transport dependencies. PDFs degrade to a text-only
-    digest when no analyzer is supplied; PPTX falls back to the current deck.
+    digest when no analyzer is supplied. An unparseable PPTX yields an explicit
+    parse-failure note: it NEVER silently substitutes the session's current deck,
+    which would misattribute the answer to the wrong document.
     """
     ctx = AttachmentChatContext()
     sections: List[str] = []
@@ -243,10 +244,14 @@ async def build_attachment_context(
                     pres = parse_pptx(content, name)
                 except Exception as exc:  # pragma: no cover - defensive
                     logger.warning("PPTX attachment parse failed for chat: %s", exc)
-            if pres is None and session is not None:
-                pres = session.document.presentation
-            digest = _pptx_digest(pres, active_slide_id) if pres is not None else ""
-            sections.append(digest or f"# PPTX 附件: {name}")
+            if pres is not None:
+                sections.append(_pptx_digest(pres, active_slide_id))
+            else:
+                # Never fall back to the session's current deck: the user asked
+                # about THIS file, so answer from it or say it could not be read.
+                sections.append(
+                    f"# PPTX 附件: {name}\n附件解析失败，无法读取其中的幻灯片内容。"
+                )
 
     digest = "\n\n".join(s for s in sections if s)
     ctx.text_digest, clipped = _clip(digest, MAX_DIGEST_CHARS)
