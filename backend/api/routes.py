@@ -365,7 +365,9 @@ async def export_preflight(session_id: Optional[str] = Query(None)):
 @router.get("/export")
 async def export_pptx(
     session_id: Optional[str] = Query(None),
-    allow_lossy: bool = Query(True),
+    # PR #28 Phase 1: fail closed on irreversible degradation. Callers must
+    # pass allow_lossy=true explicitly after seeing /export/preflight.
+    allow_lossy: bool = Query(False),
 ):
     session = _resolve_session(session_id)
     # Render from an immutable epoch/revision-pinned copy so a concurrent edit
@@ -697,35 +699,22 @@ async def confirm_pending_plan(
     payload: Dict[str, Any] = Body(...),
     session_id: Optional[str] = Query(None),
 ):
-    """Executes (or cancels) a frozen plan after explicit user confirmation."""
-    plan_id = payload.get("plan_id")
-    if not plan_id:
-        raise HTTPException(status_code=400, detail="plan_id is required")
+    """Retired REST plan-confirmation endpoint (PR #28 Phase 1).
 
-    sid = session_id or payload.get("session_id")
-    session = _resolve_session(sid)
-    decision = (payload.get("decision") or "confirm").lower()
-
-    async def on_event(event):
-        event["session_id"] = session.session_id
-        await store.broadcast(event, session_id=session.session_id)
-
-    if decision == "cancel":
-        result = await store.agent_runtime.cancel_plan(session, plan_id, on_event=on_event)
-    elif decision in ("confirm", "approve"):
-        result = await store.agent_runtime.confirm_plan(session, plan_id, on_event=on_event)
-    else:
-        raise HTTPException(status_code=400, detail="decision must be 'confirm' or 'cancel'")
-
-    await store.broadcast(
-        build_presentation_event(
-            session,
-            "presentation_updated",
-            extra={"pending_plans_count": len(session.plan_confirmations.pending)},
+    Plan confirmation is WebSocket-only: only the socket holding the current
+    ``connection_generation`` may confirm/cancel a frozen plan
+    (``{"type": "confirm_plan"/"cancel_plan", "plan_id"}``). A transport-less
+    REST call cannot prove newest-tab-wins ownership, so it is rejected
+    instead of bypassing the authority check.
+    """
+    raise HTTPException(
+        status_code=410,
+        detail=(
+            "PLAN_CONFIRM_REST_RETIRED: plan confirmation is WebSocket-only; "
+            "send {\"type\": \"confirm_plan\"/\"cancel_plan\", \"plan_id\"} over "
+            "the owning /ws connection."
         ),
-        session_id=session.session_id,
     )
-    return result
 
 
 # =====================================================================
@@ -847,19 +836,15 @@ async def api_generate_from_pptspec(payload: Dict[str, Any] = Body(...)):
                 detail="SESSION_NOT_FOUND: Generation target session does not exist",
             )
 
-    # Freeze the document identity at generation start. The final persist is a
-    # CAS commit against these values, so edits made during generation are never
-    # silently overwritten. When the caller supplies the stamp it observed (the
-    # /chat/drive attachment path), that frozen identity is authoritative; the
-    # dedicated endpoint keeps the re-read default for backward compatibility.
+    # PR #28 Phase 1: strict caller-observed CAS. Whole-document replacement
+    # must prove the caller saw the version it replaces; a server re-read
+    # fallback would let a stale caller overwrite the current document.
     request_epoch = payload.get("expected_epoch")
     request_revision = payload.get("expected_revision")
-    base_epoch = request_epoch if request_epoch else session.document_epoch
-    base_revision = (
-        request_revision
-        if request_revision is not None
-        else session.document.presentation.version
-    )
+    if not request_epoch or request_revision is None:
+        raise HTTPException(status_code=409, detail="MISSING_REPLACEMENT_STAMP")
+    base_epoch = request_epoch
+    base_revision = request_revision
 
     async def on_event(event: Dict[str, Any]):
         event["session_id"] = session_id
@@ -892,6 +877,14 @@ async def api_generate_from_pptspec(payload: Dict[str, Any] = Body(...)):
         logger.exception("LangGraph generation execution error")
         raise HTTPException(status_code=500, detail=f"Generation pipeline error: {e}")
 
+    if gen_result.get("status") == "document_frozen":
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "DOCUMENT_FROZEN: 演示文稿正被 Agent 独占编辑，生成结果已丢弃；"
+                "请等待 Agent 完成后再试。"
+            ),
+        )
     if gen_result.get("status") == "stale_generation":
         raise HTTPException(
             status_code=409,
@@ -1125,16 +1118,14 @@ async def api_generate_from_paper(payload: Dict[str, Any] = Body(...)):
     duration_minutes = max(1, duration_minutes)
 
     session = _resolve_session(session_id)
-    # Caller-supplied stamp (from /chat/drive) wins; otherwise fall back to the
-    # identity observed at generation start.
+    # PR #28 Phase 1: strict caller-observed CAS (same as /upload). A stale
+    # caller must prove it saw the replaced version; no server re-read fallback.
     request_epoch = payload.get("expected_epoch")
     request_revision = payload.get("expected_revision")
-    base_epoch = request_epoch if request_epoch else session.document_epoch
-    base_revision = (
-        request_revision
-        if request_revision is not None
-        else session.document.presentation.version
-    )
+    if not request_epoch or request_revision is None:
+        raise HTTPException(status_code=409, detail="MISSING_REPLACEMENT_STAMP")
+    base_epoch = request_epoch
+    base_revision = request_revision
 
     async def on_event(event: Dict[str, Any]):
         event["session_id"] = session_id
@@ -1168,6 +1159,14 @@ async def api_generate_from_paper(payload: Dict[str, Any] = Body(...)):
         logger.exception("Paper generation pipeline error")
         raise HTTPException(status_code=500, detail=f"Paper generation error: {e}")
 
+    if gen_result.get("status") == "document_frozen":
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "DOCUMENT_FROZEN: 演示文稿正被 Agent 独占编辑，生成结果已丢弃；"
+                "请等待 Agent 完成后再试。"
+            ),
+        )
     if gen_result.get("status") == "stale_generation":
         raise HTTPException(
             status_code=409,

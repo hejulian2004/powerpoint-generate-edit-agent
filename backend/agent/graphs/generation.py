@@ -1160,11 +1160,27 @@ async def persist_session_node(state: PPTGenerationState, config: RunnableConfig
             commit_error = result.error
             if not committed:
                 logger.info(
-                    f"Generation for session '{session_id}' discarded as stale "
+                    f"Generation for session '{session_id}' discarded "
                     f"({result.error}); document revision advanced during generation."
                 )
 
     if not committed:
+        # PR #28 Phase 1: CAS-stale and Agent-lease-frozen are distinct terminal
+        # states with different frontend recovery actions. Never disguise a
+        # DOCUMENT_FROZEN rejection as stale_generation.
+        from ...agent.mutation_gateway import DOCUMENT_FROZEN
+
+        if commit_error == DOCUMENT_FROZEN:
+            await _safe_emit(on_event, {
+                "type": "generation_progress",
+                "status": "document_frozen",
+                "error": commit_error,
+                "text": "演示文稿正被 Agent 独占编辑，生成结果已丢弃，未覆盖正在编辑的内容。",
+            })
+            return {
+                "status": "document_frozen",
+                "error": commit_error,
+            }
         await _safe_emit(on_event, {
             "type": "generation_progress",
             "status": "stale_generation",
@@ -1173,7 +1189,7 @@ async def persist_session_node(state: PPTGenerationState, config: RunnableConfig
         })
         return {
             "status": "stale_generation",
-            "error": None,
+            "error": commit_error or "generation_not_committed",
         }
 
     await _safe_emit(on_event, {

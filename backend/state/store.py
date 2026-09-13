@@ -286,7 +286,8 @@ class PresentationStore:
         self,
         pres: Optional[PresentationIR] = None,
         *,
-        allow_lossy: bool = True,
+        # PR #28 Phase 1: fail closed by default; callers must opt into lossy.
+        allow_lossy: bool = False,
     ) -> bytes:
         """Renders PPT-IR into native PPTX binary bytes.
 

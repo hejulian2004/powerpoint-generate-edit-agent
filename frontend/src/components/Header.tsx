@@ -106,7 +106,27 @@ export const Header: React.FC = () => {
       alert('本地修改尚未同步完成，已取消导出。请等待同步完成或重试。')
       return
     }
-    window.location.href = `/api/export?session_id=${encodeURIComponent(sessionId)}`
+    // PR #28 Phase 1: export defaults to fail-closed on lossy write-back.
+    // Probe first; only after explicit user consent retry with allow_lossy.
+    const base = `/api/export?session_id=${encodeURIComponent(sessionId)}`
+    try {
+      const probe = await fetch(base, { method: 'GET' })
+      if (probe.ok) {
+        window.location.href = base
+        return
+      }
+      if (probe.status === 409) {
+        const ok = window.confirm(
+          '当前文档包含导出时会降级的内容（例如原生表格将转为图形，不可逆）。仍要继续导出吗？'
+        )
+        if (!ok) return
+        window.location.href = `${base}&allow_lossy=true`
+        return
+      }
+      throw new Error(`导出失败 (${probe.status})`)
+    } catch (err) {
+      alert(`导出失败: ${err}`)
+    }
   }
 
   const handleNewSlide = () => {
