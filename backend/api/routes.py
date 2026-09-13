@@ -256,7 +256,17 @@ async def upload_pptx(
     expected_epoch: Optional[str] = Query(None),
     expected_revision: Optional[int] = Query(None),
 ):
-    if not file.filename.lower().endswith(".pptx"):
+    from ..security.budgets import (
+        PayloadTooLarge,
+        read_upload_bounded,
+        validate_ooxml_zip_budget,
+    )
+    from ..security.upload_names import sanitize_upload_name
+
+    safe_name = sanitize_upload_name(
+        getattr(file, "filename", ""), fallback="imported.pptx"
+    )
+    if not safe_name.lower().endswith(".pptx"):
         raise HTTPException(status_code=400, detail="Only .pptx files are supported")
 
     # Replacement is a concurrency transaction: the caller MUST supply the epoch
@@ -267,18 +277,31 @@ async def upload_pptx(
         raise HTTPException(status_code=409, detail="MISSING_REPLACEMENT_STAMP")
 
     session = _resolve_session(session_id)
-    content = await file.read()
+    try:
+        content = await read_upload_bounded(
+            file, max_bytes=int(settings.max_upload_file_bytes)
+        )
+    except PayloadTooLarge as exc:
+        raise HTTPException(status_code=413, detail=f"{exc.code}: {exc}")
+    if not content:
+        raise HTTPException(status_code=400, detail="EMPTY_PPTX: uploaded file is empty")
+    try:
+        validate_ooxml_zip_budget(content)
+    except PayloadTooLarge as exc:
+        code = getattr(exc, "code", "INVALID_OOXML_ZIP")
+        status = 413 if "TOO_LARGE" in code or "RATIO" in code or "ENTRIES" in code else 422
+        raise HTTPException(status_code=status, detail=f"{code}: {exc}")
     try:
         # Parse outside the lock; commit with the caller's stamp so an import
         # cannot overwrite edits made while the file was being read or parsed.
-        pres = store.parse_pptx_bytes(content, file.filename)
+        pres = store.parse_pptx_bytes(content, safe_name)
         result = await session.commit_replacement(
             pres,
             expected_epoch=expected_epoch,
             expected_revision=expected_revision,
             clear_history=True,
             clear_checkpoints=True,
-            checkpoint_description=f"Imported from {file.filename}",
+            checkpoint_description=f"Imported from {safe_name}",
             source="rest",
         )
         if not result.committed:
@@ -391,27 +414,99 @@ async def list_models(payload: Dict[str, Any] = Body(default={})):
 
     Accepts optional base_url / api_key overrides so the UI can probe
     unsaved settings before persisting them.
+
+    PR #28 Phase 0 hardening:
+    - A custom ``base_url`` NEVER inherits the server-saved key. The saved
+      key is attached only when the caller probes the configured default
+      host (or omits base_url entirely).
+    - Every target passes ``OutboundURLPolicy`` (scheme + literal-IP +
+      all-A/AAAA-public checks, redirects disabled). The HTTP connection
+      runs inside DNS pinning so a rebinding second-lookup cannot escape
+      to loopback/private space.
     """
     import httpx
 
-    base_url = payload.get("base_url") or settings.openai_base_url
-    api_key = payload.get("api_key") or settings.openai_api_key
+    from ..security.outbound import (
+        OutboundURLPolicy,
+        OutboundURLRejected,
+        pinned_dns,
+    )
 
-    if not base_url:
+    raw_base = payload.get("base_url") or settings.openai_base_url
+    if not raw_base:
         raise HTTPException(status_code=400, detail="Base URL is required")
 
-    url = f"{base_url.rstrip('/')}/models"
+    # Key isolation: only inherit the saved key when probing the configured
+    # default host. A custom provider must present its own key (or none).
+    def _host_of(url: str) -> str:
+        try:
+            from urllib.parse import urlparse as _up
+
+            return (_up(str(url)).hostname or "").lower()
+        except Exception:
+            return ""
+
+    configured_host = _host_of(settings.openai_base_url)
+    requested_host = _host_of(raw_base)
+    caller_key = (payload.get("api_key") or "").strip()
+    if caller_key:
+        api_key = caller_key
+    elif requested_host and configured_host and requested_host == configured_host:
+        api_key = settings.openai_api_key
+    elif not payload.get("base_url"):
+        api_key = settings.openai_api_key
+    else:
+        api_key = ""
+
+    try:
+        normalized, validated_host, validated_ips = OutboundURLPolicy.validate(
+            raw_base,
+            trusted_hosts=settings.trusted_provider_host_set or None,
+        )
+    except OutboundURLRejected as exc:
+        code = getattr(exc, "code", "OUTBOUND_REJECTED")
+        if code in ("OUTBOUND_SSRF_BLOCKED", "OUTBOUND_HOST_NOT_TRUSTED"):
+            raise HTTPException(status_code=403, detail=f"{code}: {exc}")
+        raise HTTPException(status_code=400, detail=f"{code}: {exc}")
+
+    base_url = normalized
+    url = f"{base_url}/models"
     headers = {"Content-Type": "application/json"}
     if api_key:
         headers["Authorization"] = f"Bearer {api_key}"
 
     try:
-        async with httpx.AsyncClient(timeout=15.0) as client:
-            resp = await client.get(url, headers=headers)
-            resp.raise_for_status()
-            data = resp.json()
+        if validated_ips:
+            with pinned_dns(validated_host, validated_ips):
+                async with httpx.AsyncClient(
+                    timeout=15.0, follow_redirects=False
+                ) as client:
+                    resp = await client.get(url, headers=headers)
+                    resp.raise_for_status()
+                    data = resp.json()
+        else:
+            async with httpx.AsyncClient(
+                timeout=15.0, follow_redirects=False
+            ) as client:
+                resp = await client.get(url, headers=headers)
+                resp.raise_for_status()
+                data = resp.json()
+    except HTTPException:
+        raise
     except httpx.HTTPStatusError as e:
-        raise HTTPException(status_code=502, detail=f"端点返回错误 ({e.response.status_code}): {e.response.text[:300]}")
+        # A redirect response with follow_redirects=False surfaces here as
+        # 3xx: refuse to follow it (SSRF bypass) instead of chasing it.
+        status = getattr(e.response, "status_code", 502)
+        if 300 <= int(status) < 400:
+            raise HTTPException(
+                status_code=403,
+                detail="OUTBOUND_REDIRECT_BLOCKED: provider 重定向被拒绝",
+            )
+        try:
+            body = e.response.text[:300]
+        except Exception:
+            body = ""
+        raise HTTPException(status_code=502, detail=f"端点返回错误 ({status}): {body}")
     except httpx.HTTPError as e:
         raise HTTPException(status_code=502, detail=f"无法连接端点: {e}")
     except Exception as e:
@@ -844,15 +939,42 @@ async def analyze_paper(
     writes to a session's PresentationIR. Vision is optional: when unavailable the
     response still returns the rendered pages and the textual PaperIR with
     ``vision_model=null`` and a degradation warning.
+
+    PR #28 Phase 0: the client filename NEVER touches the filesystem. The PDF
+    is always written to a server-generated ``input.pdf``; the sanitized name
+    survives only as display metadata.
     """
-    if not file.filename or not file.filename.lower().endswith(".pdf"):
+    from ..security.budgets import (
+        PayloadTooLarge,
+        get_pdf_page_count,
+        read_upload_bounded,
+        validate_pdf_page_budget,
+        VisionWorkLimiter,
+    )
+    from ..security.upload_names import sanitize_upload_name
+
+    safe_name = sanitize_upload_name(
+        getattr(file, "filename", ""), fallback="upload.pdf"
+    )
+    if not safe_name.lower().endswith(".pdf"):
         raise HTTPException(status_code=400, detail="Only .pdf files are supported")
     if session_id:
         _resolve_session(session_id)
 
-    content = await file.read()
+    try:
+        content = await read_upload_bounded(
+            file, max_bytes=int(settings.max_upload_file_bytes)
+        )
+    except PayloadTooLarge as exc:
+        raise HTTPException(status_code=413, detail=f"{exc.code}: {exc}")
     if not content:
         raise HTTPException(status_code=400, detail="EMPTY_PDF: uploaded file is empty")
+
+    # Page-count budget BEFORE full parse/raster/vision (cheap header read).
+    try:
+        validate_pdf_page_budget(get_pdf_page_count(content))
+    except PayloadTooLarge as exc:
+        raise HTTPException(status_code=413, detail=f"{exc.code}: {exc}")
 
     import tempfile
     from pathlib import Path as _Path
@@ -870,7 +992,8 @@ async def analyze_paper(
     from ..paper_visual.cache import crops_dir
 
     with tempfile.TemporaryDirectory() as tmp:
-        pdf_path = _Path(tmp) / file.filename
+        # Fixed server-generated name: client input never forms a path.
+        pdf_path = _Path(tmp) / "input.pdf"
         pdf_path.write_bytes(content)
         try:
             paper_ir = extract_paper(pdf_path)
@@ -892,15 +1015,26 @@ async def analyze_paper(
             if cached is not None and cached.source_sha256 == render_result.pdf_sha256:
                 visual_ir = cached
                 analysis_cache_hit = True
+        # The on-disk name is always input.pdf; restore the sanitized client
+        # name purely as display metadata (never a path).
+        try:
+            paper_ir.source_filename = safe_name
+        except Exception:
+            pass
         if visual_ir is None:
-            visual_ir = await analyze_paper_visual(
-                paper_ir,
-                render_result.assets,
-                llm_client=llm,
-                crop_output_dir=str(crops_dir(cache_dir)),
-                source_sha256=render_result.pdf_sha256,
-            )
+            async with VisionWorkLimiter.semaphore():
+                visual_ir = await analyze_paper_visual(
+                    paper_ir,
+                    render_result.assets,
+                    llm_client=llm,
+                    crop_output_dir=str(crops_dir(cache_dir)),
+                    source_sha256=render_result.pdf_sha256,
+                )
             save_visual_ir(visual_ir, cache_dir)
+        try:
+            visual_ir.source_filename = safe_name
+        except Exception:
+            pass
         save_paper_ir(paper_ir, cache_dir)
 
     return {
