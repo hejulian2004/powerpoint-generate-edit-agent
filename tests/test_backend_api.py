@@ -43,9 +43,27 @@ def test_api_slide_svg():
     assert "<svg" in resp.text
 
 
+def _mock_outbound_policy(monkeypatch):
+    """Bypasses DNS/SSRF for normalization tests (security covered separately)."""
+
+    def _fake_validate(cls, base_url, trusted_hosts=None, allow_private_for_tests=False):
+        from urllib.parse import urlparse as _up
+
+        raw = str(base_url).strip().rstrip("/") or "https://test.invalid/v1"
+        host = (_up(raw).hostname or "test.invalid").lower()
+        return raw, host, []
+
+    monkeypatch.setattr(
+        "backend.security.outbound.OutboundURLPolicy.validate",
+        classmethod(_fake_validate),
+    )
+
+
 def test_api_models_list(monkeypatch):
     """POST /api/models proxies the provider /models endpoint and returns model ids."""
     import httpx
+
+    _mock_outbound_policy(monkeypatch)
 
     class FakeResp:
         def raise_for_status(self):
@@ -84,6 +102,8 @@ def test_api_models_list(monkeypatch):
 def test_api_models_accepts_alternate_shapes(monkeypatch):
     """Providers returning {'models': [...]} or a top-level array are normalized."""
     import httpx
+
+    _mock_outbound_policy(monkeypatch)
 
     cases = [
         ({"models": [{"id": "m1"}, {"name": "m2"}, "m3"]}, ["m1", "m2", "m3"]),
@@ -124,6 +144,7 @@ def test_api_models_empty_base_url_falls_back_to_settings(monkeypatch):
     import httpx
     from backend.config import settings
 
+    _mock_outbound_policy(monkeypatch)
     monkeypatch.setattr(settings, "openai_base_url", "https://fallback.example/v1")
 
     class FakeResp:
@@ -159,6 +180,8 @@ def test_api_models_empty_base_url_falls_back_to_settings(monkeypatch):
 def test_api_models_provider_error(monkeypatch):
     """Provider HTTP errors surface as 502 with a readable message."""
     import httpx
+
+    _mock_outbound_policy(monkeypatch)
 
     class FakeResp:
         def raise_for_status(self):

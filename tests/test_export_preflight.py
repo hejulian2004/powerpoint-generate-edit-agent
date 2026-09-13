@@ -93,8 +93,8 @@ def test_export_refuses_lossy_writeback_when_disallowed(tmp_path: Path):
         assert exc.preflight.has_lossy is True
     assert not out.exists()
 
-    # Default (allow_lossy=True) still exports, preserving backwards compatibility
-    export_pptx(_table_pres(), out)
+    # Explicit opt-in (allow_lossy=True) still exports (PR #28 fail-closed default)
+    export_pptx(_table_pres(), out, allow_lossy=True)
     assert out.exists()
 
 
@@ -107,7 +107,8 @@ def test_store_export_preflight_and_strict_mode():
         raise AssertionError("lossy export should have been refused")
     except LossyWritebackError:
         pass
-    assert store.export_pptx_bytes(pres=pres)[:4] == b"PK\x03\x04"
+    # PR #28: default is now fail-closed; explicit opt-in still exports.
+    assert store.export_pptx_bytes(pres=pres, allow_lossy=True)[:4] == b"PK\x03\x04"
 
 
 # =====================================================================
@@ -145,9 +146,15 @@ def test_api_export_strict_mode_returns_409():
 
 
 def test_api_export_default_attaches_warning_headers():
+    # PR #28: default is fail-closed (409); explicit allow_lossy=true exports
+    # with warning headers.
     session = _api_session_with(_table_pres())
     try:
-        resp = client.get(f"/api/export?session_id={session.session_id}")
+        default_resp = client.get(f"/api/export?session_id={session.session_id}")
+        assert default_resp.status_code == 409
+        resp = client.get(
+            f"/api/export?session_id={session.session_id}&allow_lossy=true"
+        )
         assert resp.status_code == 200
         assert resp.content[:4] == b"PK\x03\x04"
         assert resp.headers.get("x-export-lossy") == "true"

@@ -148,11 +148,17 @@ def test_paper_generate_rejects_path_escape(cache_root, tmp_path):
 def test_paper_generate_persists_deck(cache_root):
     session_id = "test_paper_route_gen"
     _seed_cache(cache_root, _CACHE_KEY)
-    session_manager.get_or_create(session_id)
+    _sess = session_manager.get_or_create(session_id)
 
     response = client.post(
         "/api/paper/generate",
-        json={"session_id": session_id, "cache_key": _CACHE_KEY, "duration_minutes": 10},
+        json={
+            "session_id": session_id,
+            "cache_key": _CACHE_KEY,
+            "duration_minutes": 10,
+            "expected_epoch": _sess.document_epoch,
+            "expected_revision": _sess.document.presentation.version,
+        },
     )
     assert response.status_code == 200, response.text
     data = response.json()

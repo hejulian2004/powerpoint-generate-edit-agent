@@ -71,8 +71,9 @@ def test_real_world_deck_fidelity(deck_path: str, tmp_path: Path):
     assert len(orig_pres.slides) > 0, f"Deck {deck_path} has no slides"
 
     # 2. Export IR to temporary round-trip PPTX
+    # (benchmarks explicitly opt into lossy; PR #28 default is fail-closed).
     out_path = tmp_path / f"roundtrip_{deck_name}"
-    export_pptx(orig_pres, str(out_path))
+    export_pptx(orig_pres, str(out_path), allow_lossy=True)
     assert out_path.exists()
 
     # 3. Re-import round-trip PPTX to IR

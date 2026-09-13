@@ -96,6 +96,7 @@ def test_generate_from_valid_artifact():
     """
 
     test_sid = "test_route_gen_sess"
+    session_manager.get_or_create(test_sid)
     res_norm = client.post("/api/pptspec/normalize", json={"content": raw_text, "session_id": test_sid})
     assert res_norm.status_code == 200
     norm_data = res_norm.json()
@@ -103,9 +104,16 @@ def test_generate_from_valid_artifact():
     norm_id = norm_data["normalization_id"]
     assert norm_id is not None
 
+    _sess = session_manager.get_session(test_sid)
+    assert _sess is not None
     res_gen = client.post(
         "/api/pptspec/generate",
-        json={"normalization_id": norm_id, "session_id": test_sid}
+        json={
+            "normalization_id": norm_id,
+            "session_id": test_sid,
+            "expected_epoch": _sess.document_epoch,
+            "expected_revision": _sess.document.presentation.version,
+        },
     )
     assert res_gen.status_code == 200
     gen_data = res_gen.json()
@@ -346,6 +354,7 @@ def test_generation_does_not_hold_session_mutation_lock(monkeypatch):
     - 内容要点
     """
     sid = "sess_lock_verify"
+    session_manager.get_or_create(sid)
     res_norm = client.post("/api/pptspec/normalize", json={"content": raw_text, "session_id": sid})
     assert res_norm.status_code == 200
     norm_id = res_norm.json()["normalization_id"]
@@ -360,7 +369,17 @@ def test_generation_does_not_hold_session_mutation_lock(monkeypatch):
 
     monkeypatch.setattr(generation_graph, "ainvoke", mock_ainvoke)
 
-    res_gen = client.post("/api/pptspec/generate", json={"normalization_id": norm_id, "session_id": sid})
+    _s = session_manager.get_session(sid)
+    assert _s is not None
+    res_gen = client.post(
+        "/api/pptspec/generate",
+        json={
+            "normalization_id": norm_id,
+            "session_id": sid,
+            "expected_epoch": _s.document_epoch,
+            "expected_revision": _s.document.presentation.version,
+        },
+    )
     assert res_gen.status_code == 200
     assert lock_observations == [False]
 
@@ -390,7 +409,15 @@ def test_generation_clears_old_undo_redo_history():
     assert res_norm.status_code == 200
     norm_id = res_norm.json()["normalization_id"]
 
-    res_gen = client.post("/api/pptspec/generate", json={"normalization_id": norm_id, "session_id": sid})
+    res_gen = client.post(
+        "/api/pptspec/generate",
+        json={
+            "normalization_id": norm_id,
+            "session_id": sid,
+            "expected_epoch": sess.document_epoch,
+            "expected_revision": sess.document.presentation.version,
+        },
+    )
     assert res_gen.status_code == 200
 
     # Ensure replaced deck has pristine undo/redo and metadata
