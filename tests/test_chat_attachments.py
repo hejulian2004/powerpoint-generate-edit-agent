@@ -347,7 +347,67 @@ def test_chat_drive_unknown_plus_supported_still_answers(monkeypatch):
     assert resp.status_code == 200, resp.text
     assert resp.json()["action"] == ACTION_CHAT
     assert len(spy.calls) == 1
-    assert "产品大纲" in json.dumps(spy.calls[0]["messages"], ensure_ascii=False)
+    payload = json.dumps(spy.calls[0]["messages"], ensure_ascii=False)
+    assert "产品大纲" in payload
+    # The unreadable file must be explicitly flagged so the model does not
+    # pretend it saw content that was never injected.
+    assert "old.ppt" in payload
+    assert "无法读取" in payload or "不受支持" in payload
+
+
+def test_build_attachment_context_flags_mixed_unknown():
+    context = asyncio.run(
+        build_attachment_context(
+            [
+                {
+                    "name": "old.ppt",
+                    "content_type": "application/vnd.ms-powerpoint",
+                    "content": b"\x00\x01",
+                    "kind": KIND_UNKNOWN,
+                },
+                {
+                    "name": "outline.txt",
+                    "content_type": "text/plain",
+                    "content": "产品大纲".encode("utf-8"),
+                    "kind": KIND_TEXT,
+                },
+            ]
+        )
+    )
+    assert context.is_empty() is False
+    assert context.unsupported == ["old.ppt"]
+    assert "产品大纲" in context.text_digest
+    assert any(
+        p["name"] == "old.ppt" and p["status"] == "unsupported"
+        for p in context.provenance
+    )
+
+
+def test_build_attachment_context_all_unknown_is_empty_but_flagged():
+    context = asyncio.run(
+        build_attachment_context(
+            [
+                {
+                    "name": "old.ppt",
+                    "content_type": "application/vnd.ms-powerpoint",
+                    "content": b"\x00\x01",
+                    "kind": KIND_UNKNOWN,
+                },
+                {
+                    "name": "report.docx",
+                    "content_type": (
+                        "application/vnd.openxmlformats-officedocument."
+                        "wordprocessingml.document"
+                    ),
+                    "content": b"\x00\x01",
+                    "kind": KIND_UNKNOWN,
+                },
+            ]
+        )
+    )
+    # No readable content -> the route still fails closed; the names are tracked.
+    assert context.is_empty() is True
+    assert set(context.unsupported) == {"old.ppt", "report.docx"}
 
 
 def test_chat_drive_paper_requires_pdf(monkeypatch):
