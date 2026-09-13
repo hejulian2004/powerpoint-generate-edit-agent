@@ -565,11 +565,13 @@ class AgentRuntime:
             )
             role = "vision" if has_images else "reasoning"
 
-            # PR #28 Phase 2: separate inference failure from parse failure.
-            # An LLM/provider exception must NOT be disguised as a normal
-            # assistant turn ("附件内容读取失败"). It returns a structured
-            # provider error with NO transcript write, so the route can emit
-            # 502 LLM_PROVIDER_ERROR without polluting durable memory.
+            # PR #28 Phase 2: separate inference failure (502) from parse
+            # failure (415/422). An LLM/provider exception must NOT be
+            # disguised as a normal assistant turn ("附件内容读取失败").
+            # It returns a structured provider error with NO transcript write,
+            # so the route can emit 502 LLM_PROVIDER_ERROR without polluting
+            # durable memory. Parse failures stay in AttachmentChatContext as
+            # explicit not-read notes (never silent substitution).
             try:
                 response = await self.llm.chat_completion(
                     model_messages, role=role, max_tokens=2000
