@@ -126,7 +126,7 @@ class PinnedAsyncNetworkBackend:
 
 
 def create_pinned_async_transport(
-    host: str, allowed_ips: List[str]
+    host: str, allowed_ips: List[str], verify: Any = True
 ) -> Any:
     """Creates an httpx.AsyncHTTPTransport whose TCP dialer connects only to allowed_ips.
 
@@ -136,8 +136,8 @@ def create_pinned_async_transport(
     import httpx
 
     backend = PinnedAsyncNetworkBackend(host, allowed_ips)
-    pool = httpcore.AsyncConnectionPool(network_backend=backend)  # type: ignore[arg-type]
-    transport = httpx.AsyncHTTPTransport()
+    pool = httpcore.AsyncConnectionPool(network_backend=backend, ssl_context=httpx.create_ssl_context(verify=verify))  # type: ignore[arg-type]
+    transport = httpx.AsyncHTTPTransport(verify=verify)
     transport._pool = pool
     return transport
 

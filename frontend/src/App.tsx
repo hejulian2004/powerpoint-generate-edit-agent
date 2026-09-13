@@ -8,7 +8,7 @@ import { PPTSpecImportModal } from './components/PPTSpecImportModal'
 import { usePPTStore } from './store/usePPTStore'
 
 export const App: React.FC = () => {
-  const { bootstrapWorkspace, bootstrapError } = usePPTStore()
+  const { bootstrapWorkspace, bootstrapError, authStatus, setSettingsOpen } = usePPTStore()
 
   useEffect(() => {
     bootstrapWorkspace()
@@ -80,6 +80,20 @@ export const App: React.FC = () => {
             className="px-2 py-1 rounded border border-rose-300 hover:bg-rose-100 transition-colors"
           >
             重试
+          </button>
+        </div>
+      )}
+      {authStatus === 'unauthorized' && (
+        <div className="flex items-center justify-between gap-3 px-4 py-2 text-xs font-medium bg-amber-50 text-amber-800 border-b border-amber-200 shrink-0">
+          <div className="flex items-center gap-2">
+            <span className="font-semibold">⚠️ 访问受限：</span>
+            <span>当前会话需要 API Token 授权。请配置 PPT_API_TOKEN 以启用远程编辑与实时协作。</span>
+          </div>
+          <button
+            onClick={() => setSettingsOpen(true)}
+            className="px-2.5 py-1 bg-amber-200/80 hover:bg-amber-300/80 text-amber-900 rounded font-medium transition-colors cursor-pointer"
+          >
+            打开设置配置 Token
           </button>
         </div>
       )}

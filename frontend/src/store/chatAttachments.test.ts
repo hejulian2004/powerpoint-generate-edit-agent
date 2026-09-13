@@ -66,24 +66,28 @@ describe('sendChatWithAttachments', () => {
       document_epoch: 'epoch_A'
     })
 
-    const snapshot = {
-      success: true,
-      action: 'image_insert',
-      session_id: 'sess_test',
-      presentation: pres,
-      document_epoch: 'epoch_B',
-      version: 10,
-      active_slide_id: slide.id,
-      can_undo: true,
-      can_redo: false,
-      turn: {
-        turn_id: 'turn_img',
-        request_id: 'req_img',
-        user: { id: 'u1', role: 'user', content: '把这张图放到当前页', timestamp: 123 },
-        assistant: { id: 'a1', role: 'assistant', content: '已将图片插入当前幻灯片。', timestamp: 124 }
+    const fetchMock = vi.fn().mockImplementation(async (_url, init) => {
+      const body = init?.body as FormData
+      const reqId = (body?.get('request_id') as string) || 'req_img'
+      const snapshot = {
+        success: true,
+        action: 'image_insert',
+        session_id: 'sess_test',
+        presentation: pres,
+        document_epoch: 'epoch_B',
+        version: 10,
+        active_slide_id: slide.id,
+        can_undo: true,
+        can_redo: false,
+        turn: {
+          turn_id: 'turn_img',
+          request_id: reqId,
+          user: { id: 'u1', role: 'user', content: '把这张图放到当前页', timestamp: 123 },
+          assistant: { id: 'a1', role: 'assistant', content: '已将图片插入当前幻灯片。', timestamp: 124 }
+        }
       }
-    }
-    const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => snapshot })
+      return { ok: true, json: async () => snapshot }
+    })
     vi.stubGlobal('fetch', fetchMock)
 
     await usePPTStore.getState().sendChatWithAttachments('把这张图放到当前页', [
@@ -147,19 +151,23 @@ describe('sendChatWithAttachments', () => {
       document_epoch: 'epoch_A'
     })
 
-    const fetchMock = vi.fn().mockResolvedValue({
-      ok: true,
-      json: async () => ({
-        success: true,
-        action: 'chat',
-        session_id: 'sess_test',
-        turn: {
-          turn_id: 'turn_chat',
-          request_id: 'req_chat',
-          user: { id: 'u_chat', role: 'user', content: '这篇论文讲什么', timestamp: 123 },
-          assistant: { id: 'a_chat', role: 'assistant', content: '这篇论文讲的是……', timestamp: 124 }
-        }
-      })
+    const fetchMock = vi.fn().mockImplementation(async (_url, init) => {
+      const body = init?.body as FormData
+      const reqId = (body?.get('request_id') as string) || 'req_chat'
+      return {
+        ok: true,
+        json: async () => ({
+          success: true,
+          action: 'chat',
+          session_id: 'sess_test',
+          turn: {
+            turn_id: 'turn_chat',
+            request_id: reqId,
+            user: { id: 'u_chat', role: 'user', content: '这篇论文讲什么', timestamp: 123 },
+            assistant: { id: 'a_chat', role: 'assistant', content: '这篇论文讲的是……', timestamp: 124 }
+          }
+        })
+      }
     })
     vi.stubGlobal('fetch', fetchMock)
 
