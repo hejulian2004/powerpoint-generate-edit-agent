@@ -732,16 +732,6 @@ const canAuthorMutation = (state: {
 
 // Human-readable confirmation for each attachment dispatch action returned by
 // POST /api/chat/drive.
-const ATTACHMENT_RESULT_MESSAGES: Record<string, string> = {
-  paper_generate: '已根据论文生成演示文稿。',
-  pptx_import: '已导入 PPTX 文件并替换当前演示文稿。',
-  image_insert: '已将图片插入当前幻灯片。',
-  text_generate: '已根据文档内容生成演示文稿。'
-}
-
-const attachmentResultMessage = (action?: string): string =>
-  (action && ATTACHMENT_RESULT_MESSAGES[action]) || '附件已处理完成。'
-
 export const usePPTStore = create<PPTState>((set, get) => ({
   sessionId: '',
   isBootstrapping: false,
@@ -2400,19 +2390,40 @@ export const usePPTStore = create<PPTState>((set, get) => ({
         get().adoptCanonicalSnapshot(data)
       }
 
-      // Gate D: Strict canonical turn adoption with deduplication.
-      // Missing turn on 200 is treated as a Protocol Error. Zero fallback message synthesis.
-      if (data?.turn?.user && data?.turn?.assistant) {
-        const userTurn = data.turn.user
-        const asstTurn = data.turn.assistant
-        const turnReqId = data.turn.request_id || ''
-        const turnId = data.turn.turn_id || ''
+      // Gate D: Strict canonical turn adoption with deduplication and zero fallback.
+      // Must validate exact contract: matching request_id, valid IDs, distinct user/assistant, finite timestamps.
+      const turn = data?.turn
+      const isValidTurn =
+        turn &&
+        typeof turn === 'object' &&
+        typeof turn.turn_id === 'string' &&
+        turn.turn_id &&
+        (!requestId || turn.request_id === requestId) &&
+        turn.user &&
+        typeof turn.user.id === 'string' &&
+        turn.user.id &&
+        turn.user.role === 'user' &&
+        typeof turn.user.content === 'string' &&
+        typeof turn.user.timestamp === 'number' &&
+        Number.isFinite(turn.user.timestamp) &&
+        turn.assistant &&
+        typeof turn.assistant.id === 'string' &&
+        turn.assistant.id &&
+        turn.assistant.role === 'assistant' &&
+        typeof turn.assistant.content === 'string' &&
+        typeof turn.assistant.timestamp === 'number' &&
+        Number.isFinite(turn.assistant.timestamp) &&
+        turn.user.id !== turn.assistant.id
+
+      if (isValidTurn) {
+        const userTurn = turn.user
+        const asstTurn = turn.assistant
+        const turnReqId = turn.request_id || ''
 
         set((state) => {
-          // Deduplicate by turn_id, request_id, or message id
+          // Deduplicate by request_id, or message id
           const isDuplicate = state.messages.some(
             (m) =>
-              (turnId && m.id === turnId) ||
               (turnReqId && (m as any).request_id === turnReqId) ||
               m.id === userTurn.id ||
               m.id === asstTurn.id
@@ -2431,17 +2442,17 @@ export const usePPTStore = create<PPTState>((set, get) => ({
             messages: [
               ...state.messages,
               {
-                id: userTurn.id || `user_${Date.now()}`,
+                id: userTurn.id,
                 role: 'user',
-                content: userTurn.content || text,
-                timestamp: userTurn.timestamp || Date.now(),
+                content: userTurn.content,
+                timestamp: userTurn.timestamp,
                 request_id: turnReqId
               } as ChatMessage,
               {
-                id: asstTurn.id || `assistant_${Date.now()}`,
+                id: asstTurn.id,
                 role: 'assistant',
-                content: asstTurn.content || data?.message || attachmentResultMessage(data?.action),
-                timestamp: asstTurn.timestamp || Date.now(),
+                content: asstTurn.content,
+                timestamp: asstTurn.timestamp,
                 request_id: turnReqId
               } as ChatMessage
             ],

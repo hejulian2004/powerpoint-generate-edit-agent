@@ -148,77 +148,177 @@ def test_outbound_dns_all_must_be_public(monkeypatch):
 
 @pytest.mark.anyio
 async def test_pinned_async_transport_tls_sni_host_dial_verified():
-    """Verifies that create_pinned_async_transport dials the validated IP,
+    """Gate F E2E: Real TLS test server with dynamic CA and leaf certificate.
 
-    preserves the original Host header and TLS SNI, and does NOT mutate
-    process-global socket.getaddrinfo.
+    Verifies that:
+    1. TCP dials exclusively to the pinned IP (127.0.0.1)
+    2. TLS SNI callback receives 'provider.test'
+    3. HTTP Host header is 'provider.test:<port>'
+    4. Real TLS certificate validation succeeds against custom CA (verify=ca_file, NOT verify=False)
+    5. Global socket.getaddrinfo is NEVER mutated
     """
+    import asyncio
+    import datetime
     import socket as std_socket
+    import ssl
+    import tempfile
+    from pathlib import Path
     import httpx
+    from cryptography import x509
+    from cryptography.hazmat.primitives import hashes, serialization
+    from cryptography.hazmat.primitives.asymmetric import rsa
+    from cryptography.x509.oid import NameOID
+
     from backend.security.outbound import create_pinned_async_transport
 
     orig_getaddrinfo = std_socket.getaddrinfo
 
-    pinned_host = "secure-provider.test"
-    pinned_ip = "192.0.2.99"
-    port = 443
+    # 1. Generate Root CA with KeyUsage, SubjectKeyIdentifier, and AuthorityKeyIdentifier
+    ca_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    ca_name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "Test Root CA")])
+    now = datetime.datetime.now(datetime.timezone.utc)
+    ca_ski = x509.SubjectKeyIdentifier.from_public_key(ca_key.public_key())
+    ca_cert = (
+        x509.CertificateBuilder()
+        .subject_name(ca_name)
+        .issuer_name(ca_name)
+        .public_key(ca_key.public_key())
+        .serial_number(x509.random_serial_number())
+        .not_valid_before(now - datetime.timedelta(days=1))
+        .not_valid_after(now + datetime.timedelta(days=2))
+        .add_extension(x509.BasicConstraints(ca=True, path_length=None), critical=True)
+        .add_extension(
+            x509.KeyUsage(
+                digital_signature=True,
+                content_commitment=False,
+                key_encipherment=False,
+                data_encipherment=False,
+                key_agreement=False,
+                key_cert_sign=True,
+                crl_sign=True,
+                encipher_only=False,
+                decipher_only=False,
+            ),
+            critical=True,
+        )
+        .add_extension(ca_ski, critical=False)
+        .add_extension(x509.AuthorityKeyIdentifier.from_issuer_subject_key_identifier(ca_ski), critical=False)
+        .sign(ca_key, hashes.SHA256())
+    )
 
-    transport = create_pinned_async_transport(pinned_host, [pinned_ip])
-    backend = transport._pool._network_backend
+    # 2. Generate Leaf Certificate for provider.test with SAN, KeyUsage, ExtendedKeyUsage
+    leaf_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    leaf_name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "provider.test")])
+    leaf_cert = (
+        x509.CertificateBuilder()
+        .subject_name(leaf_name)
+        .issuer_name(ca_name)
+        .public_key(leaf_key.public_key())
+        .serial_number(x509.random_serial_number())
+        .not_valid_before(now - datetime.timedelta(days=1))
+        .not_valid_after(now + datetime.timedelta(days=2))
+        .add_extension(x509.BasicConstraints(ca=False, path_length=None), critical=True)
+        .add_extension(
+            x509.KeyUsage(
+                digital_signature=True,
+                content_commitment=False,
+                key_encipherment=True,
+                data_encipherment=False,
+                key_agreement=False,
+                key_cert_sign=False,
+                crl_sign=False,
+                encipher_only=False,
+                decipher_only=False,
+            ),
+            critical=True,
+        )
+        .add_extension(
+            x509.ExtendedKeyUsage([x509.ExtendedKeyUsageOID.SERVER_AUTH]),
+            critical=False,
+        )
+        .add_extension(
+            x509.SubjectAlternativeName([x509.DNSName("provider.test")]),
+            critical=False,
+        )
+        .add_extension(x509.SubjectKeyIdentifier.from_public_key(leaf_key.public_key()), critical=False)
+        .add_extension(x509.AuthorityKeyIdentifier.from_issuer_subject_key_identifier(ca_ski), critical=False)
+        .sign(ca_key, hashes.SHA256())
+    )
 
-    recorded = {}
+    recorded_sni = []
 
-    class FakeSocketStream:
-        def __init__(self, target_ip, target_port):
-            self.target_ip = target_ip
-            self.target_port = target_port
+    def _sni_cb(ssl_sock, server_name, ssl_ctx):
+        recorded_sni.append(server_name)
 
-        async def start_tls(self, server_hostname=None, ssl_context=None, timeout=None):
-            recorded["sni"] = server_hostname
-            return self
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        tmp_path = Path(tmp_dir)
+        ca_path = tmp_path / "ca.crt"
+        cert_path = tmp_path / "leaf.crt"
+        key_path = tmp_path / "leaf.key"
 
-        async def aclose(self):
-            pass
+        ca_path.write_bytes(ca_cert.public_bytes(serialization.Encoding.PEM))
+        cert_path.write_bytes(leaf_cert.public_bytes(serialization.Encoding.PEM))
+        key_path.write_bytes(
+            leaf_key.private_bytes(
+                serialization.Encoding.PEM,
+                serialization.PrivateFormat.TraditionalOpenSSL,
+                serialization.NoEncryption(),
+            )
+        )
 
-        def get_extra_info(self, name):
-            return None
+        server_ssl_ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        server_ssl_ctx.load_cert_chain(cert_path, key_path)
+        server_ssl_ctx.sni_callback = _sni_cb
 
-        async def read(self, max_bytes, timeout=None):
+        recorded_request = {}
+
+        async def handle_client(reader, writer):
+            peer = writer.get_extra_info("peername")
+            recorded_request["peer"] = peer
+            data = await reader.read(2048)
+            recorded_request["raw"] = data.decode("utf-8", errors="replace")
+            body = b'{"models":["m"]}'
             resp = (
                 b"HTTP/1.1 200 OK\r\n"
-                b"Content-Length: 15\r\n"
+                b"Content-Length: " + str(len(body)).encode("ascii") + b"\r\n"
                 b"Content-Type: application/json\r\n"
-                b"\r\n"
-                b'{"models": []}'
+                b"\r\n" + body
             )
-            return resp
+            writer.write(resp)
+            await writer.drain()
+            writer.close()
+            await writer.wait_closed()
 
-        recorded["raw_request"] = ""
+        server = await asyncio.start_server(
+            handle_client,
+            host="127.0.0.1",
+            port=0,
+            ssl=server_ssl_ctx,
+        )
+        server_port = server.sockets[0].getsockname()[1]
 
-        async def write(self, buffer, timeout=None):
-            recorded["raw_request"] += buffer.decode("utf-8", errors="replace")
+        try:
+            # Pinned transport specifies provider.test -> 127.0.0.1 with custom CA verification
+            transport = create_pinned_async_transport("provider.test", ["127.0.0.1"], verify=str(ca_path))
 
-    async def fake_connect_tcp(target_ip, target_port, **kw):
-        recorded["dial_ip"] = target_ip
-        recorded["dial_port"] = target_port
-        return FakeSocketStream(target_ip, target_port)
+            # Real TLS verification against custom CA (verify=str(ca_path)), NO verify=False!
+            async with httpx.AsyncClient(transport=transport) as client:
+                resp = await client.get(f"https://provider.test:{server_port}/v1/models")
+                assert resp.status_code == 200
+                assert resp.json() == {"models": ["m"]}
 
-    backend._auto_backend.connect_tcp = fake_connect_tcp
+            # 1. Connected to 127.0.0.1
+            assert recorded_request["peer"][0] == "127.0.0.1"
+            # 2. TLS SNI callback observed provider.test
+            assert "provider.test" in recorded_sni
+            # 3. Host header preserves provider.test:<port>
+            assert f"host: provider.test:{server_port}" in recorded_request["raw"].lower()
+            # 4. Global socket.getaddrinfo untouched
+            assert std_socket.getaddrinfo is orig_getaddrinfo
 
-    async with httpx.AsyncClient(transport=transport, verify=False) as client:
-        res = await client.get(f"https://{pinned_host}/v1/models")
-        assert res.status_code == 200
-
-    # Assertions on connection contract:
-    # 1. TCP dial dialed the pinned IP
-    assert recorded["dial_ip"] == pinned_ip
-    assert recorded["dial_port"] == port
-    # 2. TLS SNI matched the original hostname
-    assert recorded["sni"] == pinned_host
-    # 3. HTTP Host header matched the original hostname
-    assert f"host: {pinned_host}" in recorded["raw_request"].lower()
-    # 4. Global socket.getaddrinfo remains unmutated
-    assert std_socket.getaddrinfo is orig_getaddrinfo
+        finally:
+            server.close()
+            await server.wait_closed()
 
 
 @pytest.mark.anyio
@@ -954,14 +1054,14 @@ def test_chat_drive_idempotency_and_zero_pollution_on_error(monkeypatch):
         # Exact zero transcript pollution
         assert len(sess.memory.messages) == before_fail
 
-        # Part 3: Corrupted PDF upload maps to 422 with zero transcript pollution
+        # Part 3: Corrupted PDF and Corrupted PPTX upload map to 422 with zero transcript pollution
         from backend.agent.attachment_router import ACTION_CHAT
         async def _force_chat(*a, **k):
             return ACTION_CHAT
         monkeypatch.setattr(router, "classify_intent", _force_chat)
 
         before_corrupt = len(sess.memory.messages)
-        resp_corrupt = client.post(
+        resp_corrupt_pdf = client.post(
             "/api/chat/drive",
             data={
                 "message": "解析这篇论文",
@@ -970,7 +1070,33 @@ def test_chat_drive_idempotency_and_zero_pollution_on_error(monkeypatch):
             },
             files=[("files", ("corrupt.pdf", b"not-a-valid-pdf-content", "application/pdf"))],
         )
-        assert resp_corrupt.status_code == 422
+        assert resp_corrupt_pdf.status_code == 422
+        assert len(sess.memory.messages) == before_corrupt
+
+        resp_corrupt_pptx = client.post(
+            "/api/chat/drive",
+            data={
+                "message": "解析这个课件",
+                "session_id": sid,
+                "request_id": "req_corrupt_pptx",
+            },
+            files=[("files", ("corrupt.pptx", b"not-a-valid-pptx-binary", "application/vnd.openxmlformats-officedocument.presentationml.presentation"))],
+        )
+        assert resp_corrupt_pptx.status_code == 422
+        assert len(sess.memory.messages) == before_corrupt
+
+        # Part 4: Empty attachment (0 bytes) is rejected with 400 EMPTY_ATTACHMENT
+        resp_empty = client.post(
+            "/api/chat/drive",
+            data={
+                "message": "这是空文件",
+                "session_id": sid,
+                "request_id": "req_empty_file",
+            },
+            files=[("files", ("empty.pdf", b"", "application/pdf"))],
+        )
+        assert resp_empty.status_code == 400
+        assert "EMPTY_ATTACHMENT" in resp_empty.text
         assert len(sess.memory.messages) == before_corrupt
     finally:
         session_manager.delete_session(sid)
@@ -1124,6 +1250,47 @@ async def test_chat_drive_rejects_conversation_reset_during_request():
         assert "CONVERSATION_RESET_DURING_REQUEST" in str(body)
         # Session transcript remains empty after reset
         assert len(sess.memory.messages) == 0
+    finally:
+        session_manager.delete_session(sid)
+
+
+@pytest.mark.anyio
+async def test_session_snapshot_persists_completed_requests_across_restart():
+    """Gate B: SessionSnapshot must serialize completed_requests and conversation_generation,
+
+    and restore them with re-validated budgets so that lost-response recovery works
+    even after a process restart.
+    """
+    from backend.session.snapshot import session_to_snapshot, snapshot_to_session
+    from backend.session.session import CompletedRequestRecord
+
+    sid = "test_snapshot_journal_restart"
+    sess = session_manager.get_or_create(sid)
+    try:
+        sess.conversation_generation = 3
+        sess.completed_requests["req_1"] = CompletedRequestRecord(
+            request_id="req_1",
+            fingerprint="fp_1",
+            response={"turn": {"turn_id": "t1"}, "success": True},
+            admitted_generation=3,
+            size_bytes=50,
+        )
+
+        snapshot = await sess.snapshot_for_persistence()
+        assert snapshot.conversation_generation == 3
+        assert len(snapshot.completed_requests) == 1
+        assert snapshot.completed_requests[0]["request_id"] == "req_1"
+
+        # Restore into a fresh session instance
+        restored = snapshot_to_session(snapshot)
+        assert restored.conversation_generation == 3
+        assert "req_1" in restored.completed_requests
+        rec = restored.completed_requests["req_1"]
+        assert rec.request_id == "req_1"
+        assert rec.fingerprint == "fp_1"
+        assert rec.response == {"turn": {"turn_id": "t1"}, "success": True}
+        assert rec.admitted_generation == 3
+        assert rec.size_bytes > 0
     finally:
         session_manager.delete_session(sid)
 # ---------------------------------------------------------------------------

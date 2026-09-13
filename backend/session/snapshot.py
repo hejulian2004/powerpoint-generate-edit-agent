@@ -25,6 +25,8 @@ class SessionSnapshot:
     # Persisted manual context-compression anchor (raw transcript is untouched).
     compressed_anchor: Optional[Dict[str, Any]] = None
     compression_through_index: int = 0
+    conversation_generation: int = 0
+    completed_requests: List[Dict[str, Any]] = field(default_factory=list)
     checkpoints: List[Dict[str, Any]] = field(default_factory=list)
     created_at: str = ""
     updated_at: str = ""
@@ -43,12 +45,26 @@ class WorkspaceSnapshot:
 # ----------------------------------------------------------------------
 
 def session_to_snapshot(session: Any) -> SessionSnapshot:
-    """Captures only persistent state from a live session.
+    """Captures persistent state from a live session.
 
     Ephemeral state (locks, sockets, active Agent turn, pending confirmations,
-    the idempotency cache) is deliberately excluded (contract P1/P2).
+    in-flight requests) is deliberately excluded. Completed replay journal entries
+    and conversation_generation ARE persisted to ensure exactly-once semantics
+    survive restarts.
     """
     mem = session.memory
+
+    completed = []
+    if hasattr(session, "completed_requests") and session.completed_requests:
+        for r in list(session.completed_requests.values()):
+            completed.append({
+                "request_id": r.request_id,
+                "fingerprint": r.fingerprint,
+                "response": copy.deepcopy(r.response),
+                "admitted_generation": r.admitted_generation,
+                "size_bytes": r.size_bytes,
+            })
+
     return SessionSnapshot(
         session_id=session.session_id,
         presentation=session.document.presentation.model_dump(),
@@ -58,6 +74,8 @@ def session_to_snapshot(session: Any) -> SessionSnapshot:
         subagent_memories={name: m.to_dict() for name, m in mem.subagent_memories.items()},
         compressed_anchor=copy.deepcopy(mem.compressed_anchor),
         compression_through_index=mem.compression_through_index,
+        conversation_generation=getattr(session, "conversation_generation", 0) or 0,
+        completed_requests=completed,
         checkpoints=session.checkpoint_service.to_snapshots(),
         created_at=session.created_at.isoformat(),
         updated_at=session.updated_at.isoformat(),
@@ -66,9 +84,16 @@ def session_to_snapshot(session: Any) -> SessionSnapshot:
 
 def snapshot_to_session(snapshot: SessionSnapshot) -> Any:
     """Reconstructs a live session from durable state (used on restore/restart)."""
+    import json
     from .factory import SessionFactory
     from ..agent.memory import AgentMemory
     from ..agent.subagents.memory import SubagentSessionMemory
+    from .session import (
+        CompletedRequestRecord,
+        MAX_COMPLETED_REQUESTS,
+        MAX_COMPLETED_REQUEST_BYTES,
+        MAX_COMPLETED_REQUEST_RECORD_BYTES,
+    )
 
     session = SessionFactory.restore(snapshot, init_baseline=False)
     session.memory.messages = copy.deepcopy(snapshot.messages)
@@ -81,5 +106,39 @@ def snapshot_to_session(snapshot: SessionSnapshot) -> Any:
     session.memory.compression_through_index = int(
         getattr(snapshot, "compression_through_index", 0) or 0
     )
+    session.conversation_generation = int(getattr(snapshot, "conversation_generation", 0) or 0)
+
+    # Re-validate and recalculate completed_requests budgets independently on restore
+    session.completed_requests.clear()
+    total_bytes = 0
+    for item in getattr(snapshot, "completed_requests", []) or []:
+        req_id = item.get("request_id")
+        fingerprint = item.get("fingerprint")
+        resp = item.get("response")
+        admitted_gen = item.get("admitted_generation", 0)
+        if not req_id or not fingerprint or not isinstance(resp, dict):
+            continue
+        try:
+            actual_size = len(
+                json.dumps(resp, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+            )
+        except Exception:
+            continue
+        if actual_size > MAX_COMPLETED_REQUEST_RECORD_BYTES:
+            continue
+
+        # Check total budget
+        if total_bytes + actual_size > MAX_COMPLETED_REQUEST_BYTES or len(session.completed_requests) >= MAX_COMPLETED_REQUESTS:
+            break
+
+        total_bytes += actual_size
+        session.completed_requests[req_id] = CompletedRequestRecord(
+            request_id=req_id,
+            fingerprint=fingerprint,
+            response=resp,
+            admitted_generation=admitted_gen,
+            size_bytes=actual_size,
+        )
+
     session.checkpoint_service.restore_from_snapshots(snapshot.checkpoints)
     return session

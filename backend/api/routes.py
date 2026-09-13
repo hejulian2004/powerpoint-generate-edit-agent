@@ -1294,8 +1294,11 @@ async def chat_with_attachments(
             content = await read_upload_bounded(upload, max_bytes=max_single)
         except PayloadTooLarge as exc:
             raise HTTPException(status_code=413, detail=f"{exc.code}: {exc}")
-        if not content:
-            continue
+        if len(content) == 0:
+            raise HTTPException(
+                status_code=400,
+                detail=f"EMPTY_ATTACHMENT: 附件《{safe}》内容为空 (0 字节)",
+            )
         total_bytes += len(content)
         if total_bytes > max_total:
             raise HTTPException(
@@ -1403,28 +1406,47 @@ async def chat_with_attachments(
             admitted_generation=admitted_generation,
         )
         if request_id and is_first_executor and execution_fut is not None:
+            # Build compact canonical replay response to guarantee bounded journal size
+            # and prevent oversized presentation IR blobs from inflating the journal.
+            compact_res = {
+                "success": res.get("success", True),
+                "action": res.get("action"),
+                "session_id": session.session_id,
+                "message": res.get("message"),
+                "turn": res.get("turn"),
+                "dispositions": res.get("dispositions"),
+                "document_epoch": res.get("document_epoch") or session.document_epoch,
+                "version": res.get("version") or session.document.presentation.version,
+                "active_slide_id": res.get("active_slide_id") or session.active_slide_id,
+                "source_filename": res.get("source_filename"),
+                "page_count": res.get("page_count"),
+                "summary": res.get("summary"),
+            }
+            # Strip None values
+            compact_res = {k: v for k, v in compact_res.items() if v is not None}
+
             async with session.request_journal_lock:
-                session.in_flight_requests.pop(request_id, None)
                 if session.conversation_generation == admitted_generation:
                     session.record_completed_request(
                         request_id=request_id,
                         fingerprint=req_fingerprint,
-                        response=res,
+                        response=compact_res,
                         admitted_generation=admitted_generation,
                     )
-            execution_fut.set_result(RequestOutcome(ok=True, response=res))
+                session.in_flight_requests.pop(request_id, None)
+                execution_fut.set_result(RequestOutcome(ok=True, response=res))
         return res
     except HTTPException as exc:
         if request_id and is_first_executor and execution_fut is not None:
             async with session.request_journal_lock:
+                execution_fut.set_result(RequestOutcome(ok=False, status_code=exc.status_code, detail=exc.detail))
                 session.in_flight_requests.pop(request_id, None)
-            execution_fut.set_result(RequestOutcome(ok=False, status_code=exc.status_code, detail=exc.detail))
         raise
     except Exception as exc:
         if request_id and is_first_executor and execution_fut is not None:
             async with session.request_journal_lock:
+                execution_fut.set_result(RequestOutcome(ok=False, status_code=500, detail=str(exc)))
                 session.in_flight_requests.pop(request_id, None)
-            execution_fut.set_result(RequestOutcome(ok=False, status_code=500, detail=str(exc)))
         raise
 
 

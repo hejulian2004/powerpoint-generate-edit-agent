@@ -47,24 +47,9 @@ from .services.history import HistoryService
 from .services.memory import MemoryService
 from .services.plan_confirmation import PlanConfirmationService
 
-__all__ = [
-    "CHECKPOINT_NOT_FOUND",
-    "COMPLETED_MUTATION_LIMIT",
-    "DOCUMENT_EPOCH_MISMATCH",
-    "ExportSnapshot",
-    "MISSING_REPLACEMENT_STAMP",
-    "PPTSession",
-    "ReplacementResult",
-    "STALE_GENERATION",
-    "STALE_MUTATION",
-    "RequestOutcome",
-    "RequestExecution",
-    "CompletedRequestRecord",
-]
-
-
 MAX_COMPLETED_REQUESTS = 32
-MAX_COMPLETED_REQUEST_BYTES = 16 * 1024 * 1024  # 16 MB
+MAX_COMPLETED_REQUEST_BYTES = 32 * 1024 * 1024  # 32 MiB
+MAX_COMPLETED_REQUEST_RECORD_BYTES = 16 * 1024 * 1024  # 16 MiB
 
 
 @dataclass
@@ -89,6 +74,25 @@ class CompletedRequestRecord:
     response: Dict[str, Any]
     admitted_generation: int
     size_bytes: int = 0
+
+
+__all__ = [
+    "CHECKPOINT_NOT_FOUND",
+    "COMPLETED_MUTATION_LIMIT",
+    "DOCUMENT_EPOCH_MISMATCH",
+    "ExportSnapshot",
+    "MISSING_REPLACEMENT_STAMP",
+    "PPTSession",
+    "ReplacementResult",
+    "STALE_GENERATION",
+    "STALE_MUTATION",
+    "RequestOutcome",
+    "RequestExecution",
+    "CompletedRequestRecord",
+    "MAX_COMPLETED_REQUESTS",
+    "MAX_COMPLETED_REQUEST_BYTES",
+    "MAX_COMPLETED_REQUEST_RECORD_BYTES",
+]
 
 
 class PPTSession:
@@ -373,18 +377,16 @@ class PPTSession:
         return await self.document.snapshot_for_export()
 
     async def snapshot_for_persistence(self) -> SessionSnapshot:
-        """Atomically captures durable state under both state locks.
+        """Atomically captures durable state under the strict lock hierarchy:
 
-        A persistence flush must observe a consistent revision AND a complete
-        conversational turn: the document lock prevents a half-applied mutation,
-        while the conversation lock prevents a half-written user/assistant turn
-        from being persisted. Lock order matches ``run_turn``
-        (``conversation_lock`` -> ``document.mutation_lock``). Ephemeral state is
-        excluded (contract P1/P2).
+        conversation_lock -> document.mutation_lock -> request_journal_lock.
+        A persistence flush must observe a consistent revision, complete conversational
+        turn, and consistent completed replay journal state at the exact same moment.
         """
         async with self.memory.conversation_lock:
             async with self.document.mutation_lock:
-                return session_to_snapshot(self)
+                async with self.request_journal_lock:
+                    return session_to_snapshot(self)
 
     # ------------------------------------------------------------------
     # Cursor
@@ -478,9 +480,16 @@ class PPTSession:
         if not request_id:
             return
         try:
-            size_bytes = len(json.dumps(response, ensure_ascii=False).encode("utf-8"))
+            size_bytes = len(
+                json.dumps(response, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+            )
         except Exception:
             size_bytes = 1024
+
+        # Per-record hard ceiling
+        if size_bytes > MAX_COMPLETED_REQUEST_RECORD_BYTES:
+            logger.warning("Completed response for %s exceeds %s bytes, skipping journal", request_id, MAX_COMPLETED_REQUEST_RECORD_BYTES)
+            return
 
         record = CompletedRequestRecord(
             request_id=request_id,
