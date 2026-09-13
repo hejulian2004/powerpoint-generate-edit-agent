@@ -84,7 +84,12 @@ class _FakeLLM:
     [
         ("paper.PDF", None, KIND_PDF),
         ("deck.pptx", None, KIND_PPTX),
-        ("slides.ppt", None, KIND_PPTX),
+        # The importer only supports OOXML .pptx; legacy/macro variants are not
+        # advertised as importable (capability contract matches upload_pptx).
+        ("slides.ppt", None, KIND_UNKNOWN),
+        ("slides.pptm", None, KIND_UNKNOWN),
+        ("blob", "application/vnd.openxmlformats-officedocument.presentationml.presentation", KIND_PPTX),
+        ("blob", "application/vnd.ms-powerpoint", KIND_UNKNOWN),
         ("figure.png", None, KIND_IMAGE),
         ("notes.md", None, KIND_TEXT),
         ("blob", "application/pdf", KIND_PDF),
@@ -181,17 +186,67 @@ def test_chat_drive_image_insert(monkeypatch):
     monkeypatch.setattr(
         router, "classify_intent", lambda llm, message, kinds: _async_return(ACTION_IMAGE)
     )
+    active = session.document.presentation.slides[0].id
     resp = client.post(
         "/api/chat/drive",
-        data={"message": "把这张图放到当前页", "session_id": "default", **_stamps(session)},
+        data={
+            "message": "把这张图放到当前页",
+            "session_id": "default",
+            "ui_context": json.dumps({"active_slide_id": active}),
+            **_stamps(session),
+        },
         files=[("files", ("figure.png", PNG_BYTES, "image/png"))],
     )
     assert resp.status_code == 200, resp.text
     body = resp.json()
     assert body["action"] == ACTION_IMAGE
     session = session_manager.get_session("default")
-    slide = session.document.presentation.slides[0]
+    slide = session.document.presentation.get_slide(active)
     assert any(e.type == "image" for e in slide.elements)
+
+
+def test_chat_drive_image_insert_uses_client_active_slide(monkeypatch):
+    """Slide navigation is client-local: the image goes to ui_context.active_slide_id,
+    never to the possibly-stale server session cursor."""
+    session = _seed_default_demo()
+    monkeypatch.setattr(
+        router, "classify_intent", lambda llm, message, kinds: _async_return(ACTION_IMAGE)
+    )
+    target = session.document.presentation.slides[0].id
+    stale_cursor = session.document.presentation.slides[1].id
+    session.set_active_slide(stale_cursor)
+    resp = client.post(
+        "/api/chat/drive",
+        data={
+            "message": "把这张图放到当前页",
+            "session_id": "default",
+            "ui_context": json.dumps({"active_slide_id": target}),
+            **_stamps(session),
+        },
+        files=[("files", ("figure.png", PNG_BYTES, "image/png"))],
+    )
+    assert resp.status_code == 200, resp.text
+    session = session_manager.get_session("default")
+    pres = session.document.presentation
+    assert any(e.type == "image" for e in pres.get_slide(target).elements)
+    assert not any(e.type == "image" for e in pres.get_slide(stale_cursor).elements)
+
+
+def test_chat_drive_image_insert_without_ui_context_fails_closed(monkeypatch):
+    session = _seed_default_demo()
+    monkeypatch.setattr(
+        router, "classify_intent", lambda llm, message, kinds: _async_return(ACTION_IMAGE)
+    )
+    before = len(session.document.presentation.slides[0].elements)
+    resp = client.post(
+        "/api/chat/drive",
+        data={"message": "把这张图放到当前页", "session_id": "default", **_stamps(session)},
+        files=[("files", ("figure.png", PNG_BYTES, "image/png"))],
+    )
+    assert resp.status_code == 400
+    assert "UI_CONTEXT_TARGET_INVALID" in resp.text
+    session = session_manager.get_session("default")
+    assert len(session.document.presentation.slides[0].elements) == before
 
 
 def test_chat_drive_image_insert_requires_stamp(monkeypatch):
@@ -214,11 +269,13 @@ def test_chat_drive_image_insert_stale_stamp_is_rejected(monkeypatch):
         router, "classify_intent", lambda llm, message, kinds: _async_return(ACTION_IMAGE)
     )
     elements_before = len(session.document.presentation.slides[0].elements)
+    active = session.document.presentation.slides[0].id
     resp = client.post(
         "/api/chat/drive",
         data={
             "message": "把这张图放到当前页",
             "session_id": "default",
+            "ui_context": json.dumps({"active_slide_id": active}),
             "expected_epoch": session.document_epoch,
             # The client's observed revision is behind the live deck.
             "expected_revision": session.document.presentation.version + 100,
@@ -401,7 +458,7 @@ def test_chat_with_attachments_text_uses_reasoning_and_keeps_transcript_clean():
             "kind": KIND_TEXT,
         }
     ]
-    context = asyncio.run(build_attachment_context(session, attachments))
+    context = asyncio.run(build_attachment_context(attachments))
     result = asyncio.run(
         runtime.chat_with_attachments(session, "总结一下", context)
     )
@@ -426,7 +483,7 @@ def test_chat_with_attachments_image_uses_vision_role():
             "kind": KIND_IMAGE,
         }
     ]
-    context = asyncio.run(build_attachment_context(session, attachments))
+    context = asyncio.run(build_attachment_context(attachments))
     assert context.has_images is True
     result = asyncio.run(
         runtime.chat_with_attachments(session, "这张图是什么风格", context)
@@ -467,7 +524,7 @@ def test_chat_with_attachments_pdf_digest_reaches_model():
         }
     ]
     context = asyncio.run(
-        build_attachment_context(session, attachments, analyze_pdf=fake_analyze)
+        build_attachment_context(attachments, analyze_pdf=fake_analyze)
     )
     assert "A Paper" in context.text_digest
     result = asyncio.run(
@@ -497,3 +554,43 @@ def test_chat_drive_chat_answers_with_attachment_in_context(monkeypatch):
     assert body["action"] == ACTION_CHAT
     assert body["message"] == "根据大纲，内容是 A、B、C"
     assert "产品大纲" in json.dumps(spy.calls[0]["messages"], ensure_ascii=False)
+
+
+def _pptx_attachment(name: str = "template.pptx") -> list:
+    return [
+        {
+            "name": name,
+            "content_type": (
+                "application/vnd.openxmlformats-officedocument.presentationml.presentation"
+            ),
+            "content": b"not really a pptx",
+            "kind": KIND_PPTX,
+        }
+    ]
+
+
+def test_pptx_parse_failure_reports_error_and_never_uses_current_deck():
+    """A failed PPTX parse must be reported explicitly; it must NEVER be silently
+    substituted by the session's current deck (wrong-document misattribution)."""
+
+    def _explode(content, name):
+        raise ValueError("not a pptx")
+
+    context = asyncio.run(
+        build_attachment_context(_pptx_attachment(), parse_pptx=_explode)
+    )
+    assert "附件解析失败" in context.text_digest
+    assert "template.pptx" in context.text_digest
+
+
+def test_pptx_parse_success_digest_comes_from_the_attached_file():
+    class _FakePres:
+        title = "Attached Deck Title"
+        slides = []
+
+    context = asyncio.run(
+        build_attachment_context(
+            _pptx_attachment(), parse_pptx=lambda content, name: _FakePres()
+        )
+    )
+    assert "Attached Deck Title" in context.text_digest

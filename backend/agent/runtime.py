@@ -177,91 +177,103 @@ class AgentRuntime:
         # on the session (S3/S9). AgentRuntime is a stateless engine, so it seeds
         # the graph from the session and writes subagent continuity back after.
         session_memory = session.memory if session is not None else None
-        seeded_subagent_memories = (
-            {name: mem.to_dict() for name, mem in session_memory.subagent_memories.items()}
-            if session_memory is not None
-            else {}
-        )
-
-        # 0. Atomic admission: validate the request CAS AND install the exclusive
-        #    Agent turn lease inside ONE `document.mutation_lock` critical section.
-        #    There is then no window for a GUI mutation to commit between a passing
-        #    CAS and the freeze being installed. The lock protects admission only;
-        #    it is released before the transcript is appended and the LLM runs.
-        #    Any admission failure appends no transcript, mutates no memory, emits
-        #    no `document_frozen`, and never invokes the graph.
-        live_epoch = session.document.epoch if session is not None else None
-        live_revision = pres.version if pres is not None else None
-        turn_id = f"turn_{uuid.uuid4().hex[:10]}"
-        admitted = False
-        if session is not None:
-            admission_error: Optional[str] = None
-            async with session.document.mutation_lock:
-                live_epoch = session.document.epoch
-                live_revision = pres.version
-                if transport is not None:
-                    try:
-                        session.connection.assert_current(
-                            transport.websocket, transport.connection_generation
-                        )
-                    except ConnectionTakenOver:
-                        admission_error = STALE_CONNECTION
-                if admission_error is not None:
-                    pass
-                elif request_document_epoch is not None and request_document_epoch != live_epoch:
-                    admission_error = "request_epoch_mismatch"
-                elif request_base_revision is not None and request_base_revision != live_revision:
-                    admission_error = "request_stale"
-                elif ctx.invalid_targets(pres):
-                    # The requesting client targeted a slide/element that no longer
-                    # exists. Fail closed before the lease is installed so no tool
-                    # ever executes against a silently retargeted element.
-                    admission_error = UI_CONTEXT_TARGET_INVALID
-                else:
-                    try:
-                        session.agent_execution.begin_turn(
-                            turn_id,
-                            document_epoch=live_epoch,
-                            base_revision=live_revision,
-                            kind="agent",
-                        )
-                        admitted = True
-                    except AgentTurnInProgress:
-                        admission_error = AGENT_TURN_IN_PROGRESS
-            if admission_error is not None:
-                return await self._reject_turn(
-                    on_event,
-                    code=admission_error,
-                    message=_ADMISSION_MESSAGES.get(admission_error, "本次指令未执行。"),
-                    version=live_revision,
-                    document_epoch=live_epoch,
-                )
-        elif ctx.invalid_targets(pres):
-            # Session-less callers (tests, direct runtime use) still fail closed on
-            # stale UI targets: no graph invocation, no tool execution.
-            return await self._reject_turn(
-                on_event,
-                code=UI_CONTEXT_TARGET_INVALID,
-                message=_ADMISSION_MESSAGES[UI_CONTEXT_TARGET_INVALID],
-                version=live_revision,
-                document_epoch=live_epoch,
-            )
-
-        turn_epoch = request_document_epoch if request_document_epoch is not None else live_epoch
-        turn_revision = request_base_revision if request_base_revision is not None else live_revision
 
         # Every path that reads the transcript to build model context, or writes
         # the transcript / compression anchor, is serialized by the session's
-        # conversation lock. The LLM call itself is inside the lock so a
-        # concurrent turn can never answer a stale snapshot. This lock is
-        # independent of document.mutation_lock / the agent edit lease, so it
-        # never blocks GUI PPT editing.
+        # conversation lock. Admission installs the exclusive agent edit lease, so
+        # it MUST happen INSIDE this lock: otherwise a read-only attachment chat
+        # holding the conversation would make a queued agent turn freeze the
+        # document (rejecting GUI edits) before that turn can actually start.
+        # Lock order is always conversation_lock -> document.mutation_lock; no
+        # path ever takes them in the reverse order. This lock is independent of
+        # document.mutation_lock / the agent edit lease, so it never blocks GUI
+        # PPT editing by itself.
         conversation_lock = (
             session.memory.conversation_lock
             if session is not None and hasattr(session, "memory")
-            else nullcontext()
+            else None
         )
-        async with conversation_lock:
+        if conversation_lock is not None:
+            await conversation_lock.acquire()
+        turn_id = f"turn_{uuid.uuid4().hex[:10]}"
+        admitted = False
+        try:
+            # 0. Atomic admission: validate the request CAS AND install the
+            #    exclusive Agent turn lease inside ONE `document.mutation_lock`
+            #    critical section, under the conversation lock. There is then no
+            #    window for a GUI mutation to commit between a passing CAS and the
+            #    freeze being installed. The document lock protects admission only;
+            #    it is released before the transcript is appended and the LLM runs.
+            #    Any admission failure appends no transcript, mutates no memory,
+            #    emits no `document_frozen`, and never invokes the graph.
+            live_epoch = session.document.epoch if session is not None else None
+            live_revision = pres.version if pres is not None else None
+            if session is not None:
+                admission_error: Optional[str] = None
+                async with session.document.mutation_lock:
+                    live_epoch = session.document.epoch
+                    live_revision = pres.version
+                    if transport is not None:
+                        try:
+                            session.connection.assert_current(
+                                transport.websocket, transport.connection_generation
+                            )
+                        except ConnectionTakenOver:
+                            admission_error = STALE_CONNECTION
+                    if admission_error is not None:
+                        pass
+                    elif request_document_epoch is not None and request_document_epoch != live_epoch:
+                        admission_error = "request_epoch_mismatch"
+                    elif request_base_revision is not None and request_base_revision != live_revision:
+                        admission_error = "request_stale"
+                    elif ctx.invalid_targets(pres):
+                        # The requesting client targeted a slide/element that no
+                        # longer exists. Fail closed before the lease is installed
+                        # so no tool ever executes against a silently retargeted
+                        # element.
+                        admission_error = UI_CONTEXT_TARGET_INVALID
+                    else:
+                        try:
+                            session.agent_execution.begin_turn(
+                                turn_id,
+                                document_epoch=live_epoch,
+                                base_revision=live_revision,
+                                kind="agent",
+                            )
+                            admitted = True
+                        except AgentTurnInProgress:
+                            admission_error = AGENT_TURN_IN_PROGRESS
+                if admission_error is not None:
+                    return await self._reject_turn(
+                        on_event,
+                        code=admission_error,
+                        message=_ADMISSION_MESSAGES.get(admission_error, "本次指令未执行。"),
+                        version=live_revision,
+                        document_epoch=live_epoch,
+                    )
+            elif ctx.invalid_targets(pres):
+                # Session-less callers (tests, direct runtime use) still fail
+                # closed on stale UI targets: no graph invocation, no tool
+                # execution.
+                return await self._reject_turn(
+                    on_event,
+                    code=UI_CONTEXT_TARGET_INVALID,
+                    message=_ADMISSION_MESSAGES[UI_CONTEXT_TARGET_INVALID],
+                    version=live_revision,
+                    document_epoch=live_epoch,
+                )
+
+            turn_epoch = request_document_epoch if request_document_epoch is not None else live_epoch
+            turn_revision = request_base_revision if request_base_revision is not None else live_revision
+
+            # Conversation memory is read under the lock too, so a concurrent
+            # rework/compression writer can never mutate subagent continuity
+            # mid-turn.
+            seeded_subagent_memories = (
+                {name: mem.to_dict() for name, mem in session_memory.subagent_memories.items()}
+                if session_memory is not None
+                else {}
+            )
             # 1. Evaluate context tokens & execute auto-compression at >= 90% threshold.
             #    AgentRuntime is the single owner of the conversation transcript: the
             #    user turn is appended exactly once here (transports must not do it),
@@ -415,11 +427,17 @@ class AgentRuntime:
                     "version": pres.version,
                     "error": str(e)
                 }
-            finally:
-                # Release the lease on the happy path, on exception, and on
-                # cancellation (a `finally` always runs for CancelledError).
-                if session is not None and admitted:
-                    session.agent_execution.end_turn(turn_id)
+        finally:
+            # Release the lease on the happy path, on exception, and on
+            # cancellation (a `finally` always runs for CancelledError). This
+            # outer finally spans admission AND the graph, so a cancellation
+            # while queued on the conversation lock can never leak a lease.
+            if session is not None and admitted:
+                session.agent_execution.end_turn(turn_id)
+            # Release the conversation lock LAST so no next turn can observe a
+            # half-written transcript.
+            if conversation_lock is not None:
+                conversation_lock.release()
 
     # ------------------------------------------------------------------
     # Manual context compression (user-triggered slash command)
@@ -826,6 +844,21 @@ class AgentRuntime:
             approved_plan=record.get("plan", ""),
             record_user_message=False,
         )
+        if result.get("turn_rejected"):
+            # The resumed turn was terminally invalidated (stale request stamp or
+            # the captured UI target vanished). Surface the rejection instead of
+            # reporting a false success.
+            if on_event:
+                await _emit(
+                    on_event,
+                    {
+                        "type": "plan_resolved",
+                        "plan_id": plan_id,
+                        "success": False,
+                        "error": result.get("error"),
+                    },
+                )
+            return {"success": False, "plan_id": plan_id, **result}
         if on_event:
             await _emit(
                 on_event,

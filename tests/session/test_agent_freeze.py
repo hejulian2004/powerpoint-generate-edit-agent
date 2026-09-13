@@ -11,10 +11,7 @@ from backend.agent.runtime import AgentRuntime
 from backend.ir.models import PresentationIR, SlideIR, TextContentIR, TextElementIR
 from backend.protocol.presentation import build_canonical_snapshot
 from backend.session.factory import SessionFactory
-from backend.session.services.agent_execution import (
-    AGENT_TURN_IN_PROGRESS,
-    AgentExecutionService,
-)
+from backend.session.services.agent_execution import AgentExecutionService
 
 
 def _pres() -> PresentationIR:
@@ -222,7 +219,10 @@ def test_gui_write_is_frozen_when_agent_admits_first():
     asyncio.run(_run())
 
 
-def test_second_agent_turn_is_rejected_without_polluting_transcript():
+def test_concurrent_agent_turns_serialize_without_polluting_transcript():
+    """Admission now happens inside the conversation lock, so a second run_turn
+    queues behind the first instead of rejecting: it must not append to the
+    transcript or install its own lease while the first still owns the turn."""
     async def _run():
         session = SessionFactory.create(_pres(), session_id="freeze_second")
         runtime = AgentRuntime()
@@ -231,8 +231,9 @@ def test_second_agent_turn_is_rejected_without_polluting_transcript():
 
         class _SpyGraph:
             async def ainvoke(self, state, config=None):
-                started.set()
-                await release.wait()
+                if not started.is_set():
+                    started.set()
+                    await release.wait()
                 return {"final_summary": "ok", "tool_results": []}
 
         runtime.graph = _SpyGraph()
@@ -243,14 +244,24 @@ def test_second_agent_turn_is_rejected_without_polluting_transcript():
         await started.wait()
         assert len(session.messages) == 1
 
-        second = await runtime.run_turn(
+        second = asyncio.create_task(runtime.run_turn(
             "second", session.pres, session.history, session=session
-        )
-        assert second.get("error") == AGENT_TURN_IN_PROGRESS
+        ))
+        await asyncio.sleep(0.01)
+        # Queued: the second turn has neither written nor frozen anything new.
         assert len(session.messages) == 1
+        assert session.agent_execution.is_frozen is True
 
         release.set()
-        await first
+        await asyncio.gather(first, second)
+
+        assert [m["role"] for m in session.messages] == [
+            "user",
+            "assistant",
+            "user",
+            "assistant",
+        ]
+        assert session.agent_execution.is_frozen is False
 
     asyncio.run(_run())
 

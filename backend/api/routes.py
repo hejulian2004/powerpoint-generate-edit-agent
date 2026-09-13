@@ -1165,15 +1165,20 @@ async def chat_with_attachments(
         if not request_epoch or request_revision is None:
             raise HTTPException(status_code=409, detail="MISSING_REPLACEMENT_STAMP")
 
+    # The requesting client's UI context is parsed exactly once and shared by
+    # every action. It carries the client-local active slide (slide navigation
+    # is client-owned), which the image path must honor instead of the possibly
+    # stale server-side session cursor.
+    from ..agent.uicontext import UIContext
+
+    try:
+        parsed_ui = json.loads(ui_context) if ui_context else None
+    except (TypeError, ValueError):
+        parsed_ui = None
+    ui = UIContext.from_any(parsed_ui)
+
     if action == ACTION_CHAT:
         from ..agent.attachment_context import build_attachment_context
-        from ..agent.uicontext import UIContext
-
-        try:
-            parsed_ui = json.loads(ui_context) if ui_context else None
-        except (TypeError, ValueError):
-            parsed_ui = None
-        ui = UIContext.from_any(parsed_ui)
 
         async def _analyze_pdf(name: str, content_type: Optional[str], content: bytes):
             return await analyze_paper(
@@ -1183,7 +1188,6 @@ async def chat_with_attachments(
             )
 
         attachment_context = await build_attachment_context(
-            session,
             attachments,
             ui_context=ui,
             analyze_pdf=_analyze_pdf,
@@ -1242,6 +1246,14 @@ async def chat_with_attachments(
         target = _first(KIND_PPTX)
         if target is None:
             raise HTTPException(status_code=400, detail="PPTX_REQUIRED_FOR_IMPORT")
+        # Defense-in-depth: the importer only reads OOXML .pptx. A legacy .ppt /
+        # macro .pptm (or an OOXML MIME with a legacy name) must fail with a clear
+        # contract error rather than a confusing capability mismatch.
+        if not (target.get("name") or "").lower().endswith(".pptx"):
+            raise HTTPException(
+                status_code=400,
+                detail="UNSUPPORTED_PPTX_FORMAT: 仅支持 .pptx 文件",
+            )
         imported = await upload_pptx(
             file=_as_upload_file(target["name"], target["content_type"], target["content"]),
             session_id=session.session_id,
@@ -1295,16 +1307,21 @@ async def chat_with_attachments(
             f"data:{mime};base64," + base64.b64encode(target["content"]).decode("ascii")
         )
         presentation = session.document.presentation
-        active = session.active_slide_id
-        if not active and presentation.slides:
-            active = presentation.slides[0].id
+        # Insert into the slide the CLIENT currently has open. Slide navigation
+        # is client-local, so the server-side session cursor can be stale; the
+        # request ui_context is the source of truth. Fail closed (no silent
+        # retarget to the session cursor or first slide) when it is missing or
+        # points at a slide that no longer exists.
+        active = ui.active_slide_id
+        if not active or presentation.get_slide(active) is None:
+            raise HTTPException(status_code=400, detail="UI_CONTEXT_TARGET_INVALID")
         result = await execute_direct_batch(
             session,
             [
                 {
                     "name": "add_image",
                     "arguments": {
-                        "slide_id": active or "",
+                        "slide_id": active,
                         "src": data_uri,
                         "alt_text": target["name"],
                         "x": 340.0,

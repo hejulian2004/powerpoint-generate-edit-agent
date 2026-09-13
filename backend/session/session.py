@@ -331,14 +331,18 @@ class PPTSession:
         return await self.document.snapshot_for_export()
 
     async def snapshot_for_persistence(self) -> SessionSnapshot:
-        """Atomically captures durable state under the document mutation lock.
+        """Atomically captures durable state under both state locks.
 
-        Persistence flushes must observe a consistent revision: taking the lock
-        prevents a concurrent commit from interleaving a half-applied mutation
-        with the snapshot. Ephemeral state is excluded (contract P1/P2).
+        A persistence flush must observe a consistent revision AND a complete
+        conversational turn: the document lock prevents a half-applied mutation,
+        while the conversation lock prevents a half-written user/assistant turn
+        from being persisted. Lock order matches ``run_turn``
+        (``conversation_lock`` -> ``document.mutation_lock``). Ephemeral state is
+        excluded (contract P1/P2).
         """
-        async with self.document.mutation_lock:
-            return session_to_snapshot(self)
+        async with self.memory.conversation_lock:
+            async with self.document.mutation_lock:
+                return session_to_snapshot(self)
 
     # ------------------------------------------------------------------
     # Cursor
