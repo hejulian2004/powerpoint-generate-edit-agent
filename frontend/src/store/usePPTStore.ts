@@ -13,7 +13,8 @@ import type {
   PPTEditorState,
   PatchRecord,
   MutationStatus,
-  ContextUsageData
+  ContextUsageData,
+  PendingTurn
 } from '../types/editor'
 import type { CanonicalSnapshot, UIContextWire } from '../types/protocol'
 import {
@@ -26,6 +27,7 @@ import {
   syncTransform,
   translateElement
 } from '../editor/geometry/adapter'
+import { authFetch, getWebSocketProtocols } from '../utils/auth'
 
 // Terminal generation statuses (paper generation is REST-initiated, so the
 // store must clear its own thinking lifecycle when one of these arrives).
@@ -573,6 +575,7 @@ interface PPTState {
   activeRightTab: 'copilot' | 'inspector'
   editingElementId: string | null
   messages: ChatMessage[]
+  pendingTurn: PendingTurn | null
   wsConnected: boolean
   isAgentThinking: boolean
   thinkingStatus: string
@@ -760,6 +763,7 @@ export const usePPTStore = create<PPTState>((set, get) => ({
       timestamp: Date.now()
     }
   ],
+  pendingTurn: null,
   wsConnected: false,
   isAgentThinking: false,
   thinkingStatus: '',
@@ -906,7 +910,7 @@ export const usePPTStore = create<PPTState>((set, get) => ({
         ? localStorage.getItem('ppt_session_hint')
         : null
       const query = hint ? `?hint=${encodeURIComponent(hint)}` : ''
-      const res = await fetch(`/api/workspace/bootstrap${query}`)
+      const res = await authFetch(`/api/workspace/bootstrap${query}`)
       if (!res.ok) {
         throw new Error(`workspace bootstrap failed: ${res.status}`)
       }
@@ -1603,7 +1607,8 @@ export const usePPTStore = create<PPTState>((set, get) => ({
     const host = window.location.host
     const wsUrl = `${protocol}//${host}/ws?session_id=${sessionId}`
 
-    const ws = new WebSocket(wsUrl)
+    const protocols = getWebSocketProtocols()
+    const ws = protocols ? new WebSocket(wsUrl, protocols) : new WebSocket(wsUrl)
 
     ws.onopen = () => {
       set({ wsConnected: true, ws, sessionTakenOver: false })
@@ -1614,6 +1619,18 @@ export const usePPTStore = create<PPTState>((set, get) => ({
 
     ws.onclose = (event) => {
       const code = (event as CloseEvent | undefined)?.code
+      // 4401: Unauthorized. Stop reconnecting and flag auth required.
+      if (code === 4401) {
+        set({
+          ws: null,
+          wsConnected: false,
+          inFlightMutationId: null,
+          inFlightMessage: null,
+          mutationStatus: 'idle'
+        })
+        window.alert('WebSocket 认证失败 (4401)：请检查设置中的 API Token。已停止自动重连。')
+        return
+      }
       // Newest-tab-wins: a superseded tab must never auto-reconnect (that would
       // fight the tab that took over the workspace).
       if (get().sessionTakenOver || code === 4001) {
@@ -2342,14 +2359,16 @@ export const usePPTStore = create<PPTState>((set, get) => ({
       editing_element_id: current.editingElementId
     }
 
-    addMessage({
-      id: `user_${Date.now()}`,
-      role: 'user',
-      content: text.trim() || `（已附加 ${files.length} 个文件）`,
-      timestamp: Date.now()
-    })
-
+    // Gate 5: Ephemeral pendingTurn only. Durable messages are committed ONLY upon
+    // successful response with the server-owned canonical turn DTO.
+    const requestId = `req_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`
     set({
+      pendingTurn: {
+        id: requestId,
+        text: text.trim() || `（已附加 ${files.length} 个文件）`,
+        files: files.map((f) => f.name),
+        timestamp: Date.now()
+      },
       isAgentThinking: true,
       thinkingStatus: '正在识别附件与处理意图...',
       activeRightTab: 'copilot'
@@ -2358,66 +2377,91 @@ export const usePPTStore = create<PPTState>((set, get) => ({
     const formData = new FormData()
     formData.append('message', text)
     formData.append('session_id', current.sessionId)
+    formData.append('request_id', requestId)
     formData.append('expected_epoch', current.documentEpoch ?? '')
     formData.append('expected_revision', String(current.confirmedRevision))
     formData.append('ui_context', JSON.stringify(uiContext))
     for (const file of files) formData.append('files', file, file.name)
 
     try {
-      const res = await fetch('/api/chat/drive', { method: 'POST', body: formData })
+      const res = await authFetch('/api/chat/drive', { method: 'POST', body: formData })
       const data = await res.json().catch(() => null)
       if (!res.ok) {
         const detail = data?.detail || data?.error || `HTTP ${res.status}`
         throw new Error(typeof detail === 'string' ? detail : JSON.stringify(detail))
       }
-      // No attachment pipeline applies: the server answered a read-only
-      // question about the attachment with its content in context. Use that
-      // reply directly; forwarding only the text would drop the attachment.
-      if (data?.action === 'chat') {
-        set({ isAgentThinking: false, thinkingStatus: '' })
-        const reply = typeof data?.message === 'string' ? data.message.trim() : ''
-        if (reply) {
-          addMessage({
-            id: `assistant_${Date.now()}`,
-            role: 'assistant',
-            content: reply,
-            timestamp: Date.now()
-          })
-        } else if (text.trim()) {
-          await get().sendChatMessage(text, { skipLocalEcho: true })
-        } else {
-          addMessage({
-            id: `assistant_${Date.now()}`,
-            role: 'assistant',
-            content: '已收到附件，请告诉我你想如何处理它。',
-            timestamp: Date.now()
-          })
-        }
-        return
-      }
+
       if (data?.presentation) {
         get().adoptCanonicalSnapshot(data)
       }
-      addMessage({
-        id: `assistant_${Date.now()}`,
-        role: 'assistant',
-        content: attachmentResultMessage(data?.action),
-        timestamp: Date.now()
-      })
-      set({
-        isAgentThinking: false,
-        thinkingStatus: '',
-        visualRemediation: null,
-        generationStage: null
-      })
+
+      // Fallback if reply is empty and client text exists, forward to WS chat
+      if (data?.action === 'chat' && !data?.turn && !data?.message && text.trim()) {
+        set({ pendingTurn: null, isAgentThinking: false, thinkingStatus: '' })
+        await get().sendChatMessage(text, { skipLocalEcho: false })
+        return
+      }
+
+      // Adopt canonical turn from server if present
+      if (data?.turn?.user && data?.turn?.assistant) {
+        const userTurn = data.turn.user
+        const asstTurn = data.turn.assistant
+        set((state) => ({
+          messages: [
+            ...state.messages,
+            {
+              id: userTurn.id || `user_${Date.now()}`,
+              role: 'user',
+              content: userTurn.content || text,
+              timestamp: userTurn.timestamp || Date.now()
+            },
+            {
+              id: asstTurn.id || `assistant_${Date.now()}`,
+              role: 'assistant',
+              content: asstTurn.content || data?.message || attachmentResultMessage(data?.action),
+              timestamp: asstTurn.timestamp || Date.now()
+            }
+          ],
+          pendingTurn: null,
+          isAgentThinking: false,
+          thinkingStatus: '',
+          visualRemediation: null,
+          generationStage: null
+        }))
+      } else {
+        // Fallback if older server format
+        const reply = typeof data?.message === 'string' ? data.message.trim() : ''
+        set((state) => ({
+          messages: [
+            ...state.messages,
+            {
+              id: `user_${Date.now()}`,
+              role: 'user',
+              content: text.trim() || `（已附加 ${files.length} 个文件）`,
+              timestamp: Date.now()
+            },
+            {
+              id: `assistant_${Date.now()}`,
+              role: 'assistant',
+              content: reply || attachmentResultMessage(data?.action),
+              timestamp: Date.now()
+            }
+          ],
+          pendingTurn: null,
+          isAgentThinking: false,
+          thinkingStatus: '',
+          visualRemediation: null,
+          generationStage: null
+        }))
+      }
     } catch (err) {
-      addMessage({
-        id: `assistant_${Date.now()}`,
-        role: 'assistant',
-        content: `附件处理失败：${err instanceof Error ? err.message : String(err)}`,
-        timestamp: Date.now()
+      // Clear pendingTurn without writing any dirty durable message to messages array!
+      set({
+        pendingTurn: null,
+        isAgentThinking: false,
+        thinkingStatus: ''
       })
-      set({ isAgentThinking: false, thinkingStatus: '' })
+      window.alert(`附件处理失败：${err instanceof Error ? err.message : String(err)}`)
     }
   },
 

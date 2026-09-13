@@ -76,6 +76,10 @@ def render_pdf_pages(
     Cache short-circuiting lives in ``cache.load_or_render``.
     """
     import pypdfium2 as pdfium
+    from ..security.budgets import (
+        PayloadTooLarge,
+        validate_pdf_geometry_and_raster_budget,
+    )
 
     path = Path(pdf_path)
     if not path.exists():
@@ -95,12 +99,21 @@ def render_pdf_pages(
         raise PaperRenderError(f"Failed to open PDF '{path}': {exc}") from exc
 
     page_count = 0
+    cumulative_pixels = 0
     try:
         page_count = len(doc)
         for page_index in range(page_count):
             page_number = page_index + 1
             try:
                 page = doc[page_index]
+                # Fail-closed points and raster pixel budget check before rasterization
+                w_pt, h_pt = page.get_size()
+                expected_w, expected_h, cumulative_pixels = (
+                    validate_pdf_geometry_and_raster_budget(
+                        w_pt, h_pt, active_dpi, cumulative_pixels=cumulative_pixels
+                    )
+                )
+
                 bitmap = page.render(scale=scale)
                 image = bitmap.to_pil()
                 filename = f"page_{page_number:03d}.{fmt}"
@@ -121,6 +134,9 @@ def render_pdf_pages(
                         sha256=sha256_bytes(out_path.read_bytes()),
                     )
                 )
+            except PayloadTooLarge as exc:
+                # Security budget violation is fatal and fail-closed
+                raise PaperRenderError(f"Page {page_number} exceeded budget: {exc}") from exc
             except Exception as exc:
                 logger.warning("Page %s render failed: %s", page_number, exc)
                 warnings.append(f"page_{page_number:03d}: render failed ({exc})")

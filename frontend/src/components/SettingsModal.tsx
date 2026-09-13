@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react'
-import { X, Check, Key, Server, Cpu, RefreshCw, AlertCircle } from 'lucide-react'
+import { X, Check, Key, Server, Cpu, RefreshCw, AlertCircle, Shield } from 'lucide-react'
 import { usePPTStore } from '../store/usePPTStore'
+import { authFetch, getApiToken, setApiToken } from '../utils/auth'
 
 interface ModelFieldProps {
   label: string
@@ -48,6 +49,7 @@ export const SettingsModal: React.FC = () => {
 
   const [baseUrl, setBaseUrl] = useState('https://api.openai.com/v1')
   const [apiKey, setApiKey] = useState('')
+  const [pptApiToken, setPptApiToken] = useState(getApiToken())
   const [defaultModel, setDefaultModel] = useState('gpt-4o')
   const [reasoningModel, setReasoningModel] = useState('gpt-4o')
   const [visionModel, setVisionModel] = useState('gpt-4o')
@@ -63,7 +65,8 @@ export const SettingsModal: React.FC = () => {
 
   useEffect(() => {
     if (settingsOpen) {
-      fetch('/api/settings')
+      setPptApiToken(getApiToken())
+      authFetch('/api/settings')
         .then((r) => r.json())
         .then((data) => {
           if (data.openai_base_url) setBaseUrl(data.openai_base_url)
@@ -84,7 +87,7 @@ export const SettingsModal: React.FC = () => {
     setFetchingModels(true)
     setFetchError('')
     try {
-      const res = await fetch('/api/models', {
+      const res = await authFetch('/api/models', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ base_url: baseUrl, api_key: apiKey || undefined })
@@ -105,8 +108,9 @@ export const SettingsModal: React.FC = () => {
   const handleSave = async (e: React.FormEvent) => {
     e.preventDefault()
     setSaving(true)
+    setApiToken(pptApiToken)
     try {
-      const res = await fetch('/api/settings', {
+      const res = await authFetch('/api/settings', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -192,6 +196,23 @@ export const SettingsModal: React.FC = () => {
                 点击「获取模型列表」后，各模型右侧将出现下拉选择框；未获取到模型时也可直接手动输入。
               </p>
             )}
+          </div>
+
+          <div>
+            <label className="flex items-center gap-1.5 text-xs font-semibold text-secondary mb-1.5">
+              <Shield className="w-3.5 h-3.5 text-muted" />
+              <span>PPT-Agent 访问凭证 (PPT_API_TOKEN)</span>
+            </label>
+            <input
+              type="password"
+              value={pptApiToken}
+              onChange={(e) => setPptApiToken(e.target.value)}
+              placeholder="若后端绑定非 127.0.0.1 远程暴露，请输入对应的安全 API Token"
+              className="w-full bg-subtle border border-line-strong rounded-lg px-3 py-2 text-xs text-main focus:outline-none focus:border-blue-500 font-tabular font-medium"
+            />
+            <p className="mt-1 text-[10px] text-muted">
+              保存在当前标签页会话内存中，支持刷新保留，绝不持久化到长期本地存储。
+            </p>
           </div>
 
           <div>

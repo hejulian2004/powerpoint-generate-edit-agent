@@ -431,34 +431,23 @@ async def list_models(payload: Dict[str, Any] = Body(default={})):
     from ..security.outbound import (
         OutboundURLPolicy,
         OutboundURLRejected,
-        pinned_dns,
+        create_pinned_async_transport,
     )
 
-    raw_base = payload.get("base_url") or settings.openai_base_url
+    # PR #28 Strict Key Isolation:
+    # If the payload explicitly provides a base_url, NEVER inherit the server-saved key.
+    # The server key is ONLY attached when base_url is omitted (probing the configured endpoint).
+    caller_base = (payload.get("base_url") or "").strip()
+    caller_key = (payload.get("api_key") or "").strip()
+    if caller_base:
+        raw_base = caller_base
+        api_key = caller_key  # strictly zero inheritance
+    else:
+        raw_base = settings.openai_base_url
+        api_key = caller_key or settings.openai_api_key
+
     if not raw_base:
         raise HTTPException(status_code=400, detail="Base URL is required")
-
-    # Key isolation: only inherit the saved key when probing the configured
-    # default host. A custom provider must present its own key (or none).
-    def _host_of(url: str) -> str:
-        try:
-            from urllib.parse import urlparse as _up
-
-            return (_up(str(url)).hostname or "").lower()
-        except Exception:
-            return ""
-
-    configured_host = _host_of(settings.openai_base_url)
-    requested_host = _host_of(raw_base)
-    caller_key = (payload.get("api_key") or "").strip()
-    if caller_key:
-        api_key = caller_key
-    elif requested_host and configured_host and requested_host == configured_host:
-        api_key = settings.openai_api_key
-    elif not payload.get("base_url"):
-        api_key = settings.openai_api_key
-    else:
-        api_key = ""
 
     try:
         normalized, validated_host, validated_ips = OutboundURLPolicy.validate(
@@ -478,21 +467,17 @@ async def list_models(payload: Dict[str, Any] = Body(default={})):
         headers["Authorization"] = f"Bearer {api_key}"
 
     try:
-        if validated_ips:
-            with pinned_dns(validated_host, validated_ips):
-                async with httpx.AsyncClient(
-                    timeout=15.0, follow_redirects=False
-                ) as client:
-                    resp = await client.get(url, headers=headers)
-                    resp.raise_for_status()
-                    data = resp.json()
-        else:
-            async with httpx.AsyncClient(
-                timeout=15.0, follow_redirects=False
-            ) as client:
-                resp = await client.get(url, headers=headers)
-                resp.raise_for_status()
-                data = resp.json()
+        transport = (
+            create_pinned_async_transport(validated_host, validated_ips)
+            if validated_ips
+            else None
+        )
+        async with httpx.AsyncClient(
+            transport=transport, timeout=15.0, follow_redirects=False
+        ) as client:
+            resp = await client.get(url, headers=headers)
+            resp.raise_for_status()
+            data = resp.json()
     except HTTPException:
         raise
     except httpx.HTTPStatusError as e:
@@ -963,11 +948,14 @@ async def analyze_paper(
     if not content:
         raise HTTPException(status_code=400, detail="EMPTY_PDF: uploaded file is empty")
 
-    # Page-count budget BEFORE full parse/raster/vision (cheap header read).
+    # Page-count budget BEFORE full parse/raster/vision (canonical PDFium read).
     try:
-        validate_pdf_page_budget(get_pdf_page_count(content))
+        page_cnt = get_pdf_page_count(content)
+        validate_pdf_page_budget(page_cnt)
     except PayloadTooLarge as exc:
         raise HTTPException(status_code=413, detail=f"{exc.code}: {exc}")
+    except Exception as exc:
+        raise HTTPException(status_code=422, detail=f"PDF_UNREADABLE: {exc}")
 
     import tempfile
     from pathlib import Path as _Path
@@ -994,36 +982,41 @@ async def analyze_paper(
             raise HTTPException(status_code=422, detail=f"PAPER_PARSE_FAILED: {exc}")
 
         try:
-            render_result, cache_dir = load_or_render(pdf_path, force=force)
-        except Exception as exc:
-            raise HTTPException(status_code=422, detail=f"PAPER_RENDER_FAILED: {exc}")
-
-        llm = getattr(store.agent_runtime, "llm", None)
-        vision_model = resolve_vision_model(llm)
-        expected_fingerprint = compute_analysis_fingerprint(vision_model)
-        analysis_cache_hit = False
-        visual_ir = None
-        if not force:
-            cached = load_visual_ir(cache_dir, expected_fingerprint=expected_fingerprint)
-            if cached is not None and cached.source_sha256 == render_result.pdf_sha256:
-                visual_ir = cached
-                analysis_cache_hit = True
-        # The on-disk name is always input.pdf; restore the sanitized client
-        # name purely as display metadata (never a path).
-        try:
-            paper_ir.source_filename = safe_name
-        except Exception:
-            pass
-        if visual_ir is None:
             async with VisionWorkLimiter.semaphore():
-                visual_ir = await analyze_paper_visual(
-                    paper_ir,
-                    render_result.assets,
-                    llm_client=llm,
-                    crop_output_dir=str(crops_dir(cache_dir)),
-                    source_sha256=render_result.pdf_sha256,
-                )
-            save_visual_ir(visual_ir, cache_dir)
+                try:
+                    render_result, cache_dir = load_or_render(pdf_path, force=force)
+                except Exception as exc:
+                    raise HTTPException(status_code=422, detail=f"PAPER_RENDER_FAILED: {exc}")
+
+                llm = getattr(store.agent_runtime, "llm", None)
+                vision_model = resolve_vision_model(llm)
+                expected_fingerprint = compute_analysis_fingerprint(vision_model)
+                analysis_cache_hit = False
+                visual_ir = None
+                if not force:
+                    cached = load_visual_ir(cache_dir, expected_fingerprint=expected_fingerprint)
+                    if cached is not None and cached.source_sha256 == render_result.pdf_sha256:
+                        visual_ir = cached
+                        analysis_cache_hit = True
+                # The on-disk name is always input.pdf; restore the sanitized client
+                # name purely as display metadata (never a path).
+                try:
+                    paper_ir.source_filename = safe_name
+                except Exception:
+                    pass
+                if visual_ir is None:
+                    visual_ir = await analyze_paper_visual(
+                        paper_ir,
+                        render_result.assets,
+                        llm_client=llm,
+                        crop_output_dir=str(crops_dir(cache_dir)),
+                        source_sha256=render_result.pdf_sha256,
+                    )
+                    save_visual_ir(visual_ir, cache_dir)
+        except HTTPException:
+            raise
+        except Exception as exc:
+            raise HTTPException(status_code=422, detail=f"PAPER_ANALYSIS_FAILED: {exc}")
         try:
             visual_ir.source_filename = safe_name
         except Exception:
@@ -1243,6 +1236,7 @@ async def chat_with_attachments(
     expected_epoch: Optional[str] = Form(None),
     expected_revision: Optional[int] = Form(None),
     ui_context: str = Form(""),
+    request_id: Optional[str] = Form(None),
     files: Optional[List[UploadFile]] = File(None),
 ):
     """Unified entry point for chat messages that carry attachments.
@@ -1358,12 +1352,12 @@ async def chat_with_attachments(
         if not request_epoch or request_revision is None:
             raise HTTPException(status_code=409, detail="MISSING_REPLACEMENT_STAMP")
 
-    async def _commit_mutating_turn(
-        provenance: List[Dict[str, Any]],
-        assistant_summary: str,
+    async def _commit_turn(
         turn_action: str,
-    ) -> None:
-        """Atomically appends UserTurn+AssistantTurn (provenance only)."""
+        assistant_summary: str,
+        provenance: List[Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        """Atomically appends UserTurn+AssistantTurn (provenance only, idempotent)."""
         user_brief = (message or "").strip()[:500] or "（附件操作）"
         prov_lines = "; ".join(
             f"{p.get('name')}[{p.get('kind')},{p.get('size_bytes')}B]"
@@ -1372,11 +1366,12 @@ async def chat_with_attachments(
         user_content = f"[{turn_action}] {user_brief}"
         if prov_lines:
             user_content += f"（附件: {prov_lines[:1000]}）"
-        async with session.memory.conversation_lock:
-            session.add_message(role="user", content=user_content)
-            session.add_message(role="assistant", content=assistant_summary[:2000])
-            if hasattr(session, "schedule_persist"):
-                session.schedule_persist()
+        return await session.commit_conversation_turn(
+            request_id=request_id or "",
+            user_content=user_content,
+            assistant_content=assistant_summary[:2000],
+            provenance=provenance,
+        )
 
     def _provenance_for(action_name: str, status: str = "consumed") -> List[Dict[str, Any]]:
         out: List[Dict[str, Any]] = []
@@ -1447,11 +1442,17 @@ async def chat_with_attachments(
                 status_code=502,
                 detail=f"LLM_PROVIDER_ERROR: 附件问答的模型推理失败：{result.get('detail') or 'unknown'}",
             )
+        turn_dto = result.get("turn") or await _commit_turn(
+            ACTION_CHAT,
+            result.get("reply", ""),
+            _provenance_for(ACTION_CHAT),
+        )
         return {
             "success": True,
             "action": ACTION_CHAT,
             "session_id": session.session_id,
             "message": result.get("reply", ""),
+            "turn": turn_dto,
             "dispositions": disposition_plan,
         }
 
@@ -1478,11 +1479,11 @@ async def chat_with_attachments(
                 "expected_revision": request_revision,
             }
         )
-        await _commit_mutating_turn(
-            _provenance_for(ACTION_PAPER),
+        turn_dto = await _commit_turn(
+            ACTION_PAPER,
             f"已根据论文《{analysis.get('source_filename')}》"
             f"（共 {analysis.get('page_count')} 页）生成演示文稿",
-            ACTION_PAPER,
+            _provenance_for(ACTION_PAPER),
         )
         return {
             "success": True,
@@ -1490,6 +1491,7 @@ async def chat_with_attachments(
             "session_id": session.session_id,
             "source_filename": analysis.get("source_filename"),
             "page_count": analysis.get("page_count"),
+            "turn": turn_dto,
             "dispositions": disposition_plan,
             **generated,
         }
@@ -1512,12 +1514,17 @@ async def chat_with_attachments(
             expected_epoch=request_epoch,
             expected_revision=request_revision,
         )
-        await _commit_mutating_turn(
-            _provenance_for(ACTION_IMPORT),
-            f"已导入 PPTX《{target.get('name')}》并替换当前文档",
+        turn_dto = await _commit_turn(
             ACTION_IMPORT,
+            f"已导入 PPTX《{target.get('name')}》并替换当前文档",
+            _provenance_for(ACTION_IMPORT),
         )
-        return {"action": ACTION_IMPORT, "dispositions": disposition_plan, **imported}
+        return {
+            "action": ACTION_IMPORT,
+            "turn": turn_dto,
+            "dispositions": disposition_plan,
+            **imported,
+        }
 
     if action == ACTION_TEXT:
         target = _first(KIND_TEXT)
@@ -1546,10 +1553,10 @@ async def chat_with_attachments(
                 "expected_revision": request_revision,
             }
         )
-        await _commit_mutating_turn(
-            _provenance_for(ACTION_TEXT),
-            f"已根据文本附件《{target.get('name')}》生成演示文稿",
+        turn_dto = await _commit_turn(
             ACTION_TEXT,
+            f"已根据文本附件《{target.get('name')}》生成演示文稿",
+            _provenance_for(ACTION_TEXT),
         )
         return {
             "success": True,
@@ -1557,6 +1564,7 @@ async def chat_with_attachments(
             "session_id": session.session_id,
             "summary": normalized.get("summary"),
             "warnings": normalized.get("warnings") or [],
+            "turn": turn_dto,
             "dispositions": disposition_plan,
             **generated,
         }
@@ -1624,15 +1632,16 @@ async def chat_with_attachments(
             ),
             session_id=session.session_id,
         )
-        await _commit_mutating_turn(
-            _provenance_for(ACTION_IMAGE),
-            f"已将图片《{target.get('name')}》插入当前页",
+        turn_dto = await _commit_turn(
             ACTION_IMAGE,
+            f"已将图片《{target.get('name')}》插入当前页",
+            _provenance_for(ACTION_IMAGE),
         )
         return {
             "success": True,
             "action": ACTION_IMAGE,
             "session_id": session.session_id,
+            "turn": turn_dto,
             "dispositions": disposition_plan,
             **build_canonical_snapshot(session),
         }

@@ -701,17 +701,18 @@ def _pptx_attachment(name: str = "template.pptx") -> list:
 
 
 def test_pptx_parse_failure_reports_error_and_never_uses_current_deck():
-    """A failed PPTX parse must be reported explicitly; it must NEVER be silently
-    substituted by the session's current deck (wrong-document misattribution)."""
+    """A failed PPTX parse must fail-closed with ValueError; it must NEVER be silently
+
+    substituted by the session's current deck (wrong-document misattribution).
+    """
 
     def _explode(content, name):
         raise ValueError("not a pptx")
 
-    context = asyncio.run(
-        build_attachment_context(_pptx_attachment(), parse_pptx=_explode)
-    )
-    assert "附件解析失败" in context.text_digest
-    assert "template.pptx" in context.text_digest
+    with pytest.raises(ValueError, match="PPTX_PARSE_FAILED"):
+        asyncio.run(
+            build_attachment_context(_pptx_attachment(), parse_pptx=_explode)
+        )
 
 
 def test_pptx_parse_success_digest_comes_from_the_attached_file():

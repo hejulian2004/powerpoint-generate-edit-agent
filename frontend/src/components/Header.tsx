@@ -4,6 +4,7 @@ import {
   Layers, Sparkles
 } from 'lucide-react'
 import { usePPTStore } from '../store/usePPTStore'
+import { authFetch } from '../utils/auth'
 
 export const Header: React.FC = () => {
   const {
@@ -83,7 +84,7 @@ export const Header: React.FC = () => {
         expected_epoch: documentEpoch ?? '',
         expected_revision: String(confirmedRevision)
       })
-      const res = await fetch(`/api/upload?${params.toString()}`, {
+      const res = await authFetch(`/api/upload?${params.toString()}`, {
         method: 'POST',
         body: formData
       })
@@ -107,25 +108,42 @@ export const Header: React.FC = () => {
       return
     }
     // PR #28 Phase 1: export defaults to fail-closed on lossy write-back.
-    // Probe first; only after explicit user consent retry with allow_lossy.
+    // Use authenticated fetch + Blob download to preserve auth header (never window.location.href).
     const base = `/api/export?session_id=${encodeURIComponent(sessionId)}`
+    const downloadBlob = async (url: string) => {
+      const resp = await authFetch(url, { method: 'GET' })
+      if (!resp.ok) {
+        throw resp
+      }
+      const blob = await resp.blob()
+      const blobUrl = window.URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = blobUrl
+      a.download = `${presentation?.title || 'presentation'}.pptx`
+      document.body.appendChild(a)
+      a.click()
+      document.body.removeChild(a)
+      window.URL.revokeObjectURL(blobUrl)
+    }
+
     try {
-      const probe = await fetch(base, { method: 'GET' })
-      if (probe.ok) {
-        window.location.href = base
+      try {
+        await downloadBlob(base)
         return
+      } catch (err: any) {
+        if (err?.status === 409) {
+          const ok = window.confirm(
+            '当前文档包含导出时会降级的内容（例如原生表格将转为图形，不可逆）。仍要继续导出吗？'
+          )
+          if (!ok) return
+          await downloadBlob(`${base}&allow_lossy=true`)
+          return
+        }
+        throw err
       }
-      if (probe.status === 409) {
-        const ok = window.confirm(
-          '当前文档包含导出时会降级的内容（例如原生表格将转为图形，不可逆）。仍要继续导出吗？'
-        )
-        if (!ok) return
-        window.location.href = `${base}&allow_lossy=true`
-        return
-      }
-      throw new Error(`导出失败 (${probe.status})`)
-    } catch (err) {
-      alert(`导出失败: ${err}`)
+    } catch (err: any) {
+      const detail = err?.statusText || err?.message || String(err)
+      alert(`导出失败: ${detail}`)
     }
   }
 
