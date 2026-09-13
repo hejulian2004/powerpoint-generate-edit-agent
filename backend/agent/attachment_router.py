@@ -155,6 +155,105 @@ _ACTION_REQUIRED_KIND = {
 }
 
 
+# ---- Explicit disposition contract (PR #28 Phase 2) --------------------------
+# Every attachment in a mutating request must receive a disposition. A mutating
+# action executes ONLY when every disposition is "consume"; otherwise the
+# request fails closed with UNPROCESSED_ATTACHMENTS instead of silently
+# dropping files.
+DISPOSITION_CONSUME = "consume"
+DISPOSITION_UNSUPPORTED = "unsupported"
+DISPOSITION_UNUSED = "unused"
+
+
+def build_disposition_plan(attachments: List[dict], action: str) -> List[dict]:
+    """Assigns one disposition per attachment for ``action``.
+
+    - ACTION_CHAT: supported kinds -> consume (read-only); unknown -> unsupported.
+      Never produces "unused": mixed chat requests are answered with an
+      explicit not-read notice, all-unsupported is rejected upstream.
+    - Mutating actions: the FIRST attachment of the required kind is consumed;
+      every other attachment (extra same-kind, other kinds, unknown) is
+      marked unused/unsupported so the caller sees exactly what was ignored.
+    """
+    plan: List[dict] = []
+    if action == ACTION_CHAT:
+        for idx, att in enumerate(attachments):
+            kind = att.get("kind")
+            name = att.get("name") or f"attachment_{idx}"
+            if kind == KIND_UNKNOWN:
+                plan.append({
+                    "attachment_id": att.get("attachment_id") or f"att_{idx}",
+                    "filename": name,
+                    "kind": kind,
+                    "disposition": DISPOSITION_UNSUPPORTED,
+                    "action": action,
+                    "reason": "格式不受支持，未纳入只读上下文",
+                })
+            else:
+                plan.append({
+                    "attachment_id": att.get("attachment_id") or f"att_{idx}",
+                    "filename": name,
+                    "kind": kind,
+                    "disposition": DISPOSITION_CONSUME,
+                    "action": action,
+                    "reason": "已纳入只读附件上下文",
+                })
+        return plan
+
+    required = _ACTION_REQUIRED_KIND.get(action)
+    consumed_first = False
+    for idx, att in enumerate(attachments):
+        kind = att.get("kind")
+        name = att.get("name") or f"attachment_{idx}"
+        aid = att.get("attachment_id") or f"att_{idx}"
+        if kind == KIND_UNKNOWN:
+            plan.append({
+                "attachment_id": aid,
+                "filename": name,
+                "kind": kind,
+                "disposition": DISPOSITION_UNSUPPORTED,
+                "action": action,
+                "reason": f"{action} 无法处理该格式",
+            })
+        elif kind == required and not consumed_first:
+            consumed_first = True
+            plan.append({
+                "attachment_id": aid,
+                "filename": name,
+                "kind": kind,
+                "disposition": DISPOSITION_CONSUME,
+                "action": action,
+                "reason": "已消费",
+            })
+        elif kind == required and consumed_first:
+            plan.append({
+                "attachment_id": aid,
+                "filename": name,
+                "kind": kind,
+                "disposition": DISPOSITION_UNUSED,
+                "action": action,
+                "reason": f"{action} 仅支持单个 {required} 附件，多余文件未消费",
+            })
+        else:
+            plan.append({
+                "attachment_id": aid,
+                "filename": name,
+                "kind": kind,
+                "disposition": DISPOSITION_UNUSED,
+                "action": action,
+                "reason": f"{action} 不消费 {kind} 附件",
+            })
+    return plan
+
+
+def disposition_all_consumed(plan: List[dict]) -> bool:
+    return bool(plan) and all(d.get("disposition") == DISPOSITION_CONSUME for d in plan)
+
+
+def unprocessed_attachments(plan: List[dict]) -> List[dict]:
+    return [d for d in plan if d.get("disposition") != DISPOSITION_CONSUME]
+
+
 async def classify_intent(
     llm_client: Any,
     message: str,
@@ -208,12 +307,18 @@ __all__ = [
     "ACTION_PAPER",
     "ACTION_TEXT",
     "ATTACHMENT_ACTIONS",
+    "DISPOSITION_CONSUME",
+    "DISPOSITION_UNUSED",
+    "DISPOSITION_UNSUPPORTED",
     "KIND_IMAGE",
     "KIND_PDF",
     "KIND_PPTX",
     "KIND_TEXT",
     "KIND_UNKNOWN",
+    "build_disposition_plan",
     "classify_intent",
     "detect_kind",
+    "disposition_all_consumed",
     "fallback_action",
+    "unprocessed_attachments",
 ]
