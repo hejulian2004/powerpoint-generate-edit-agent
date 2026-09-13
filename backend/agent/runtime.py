@@ -565,6 +565,11 @@ class AgentRuntime:
             )
             role = "vision" if has_images else "reasoning"
 
+            # PR #28 Phase 2: separate inference failure from parse failure.
+            # An LLM/provider exception must NOT be disguised as a normal
+            # assistant turn ("附件内容读取失败"). It returns a structured
+            # provider error with NO transcript write, so the route can emit
+            # 502 LLM_PROVIDER_ERROR without polluting durable memory.
             try:
                 response = await self.llm.chat_completion(
                     model_messages, role=role, max_tokens=2000
@@ -572,7 +577,13 @@ class AgentRuntime:
                 reply = response["choices"][0]["message"].get("content", "") or ""
             except Exception as exc:
                 logger.error("Attachment chat LLM call failed: %s", exc)
-                reply = f"附件内容读取失败：{exc}"
+                return {
+                    "error": "LLM_PROVIDER_ERROR",
+                    "detail": str(exc),
+                    "role": role,
+                    "has_images": has_images,
+                    "usage": usage_report.to_dict(),
+                }
 
             # Use the session-level writer so the workspace `updated_at`
             # timestamp advances exactly like a normal turn (the transcript

@@ -261,7 +261,17 @@ class PresentationStore:
 
         Expensive parsing runs outside the mutation lock; the caller commits the
         result through `session.commit_replacement(...)`.
+
+        PR #28 Phase 0 defense-in-depth: OOXML zip budgets are enforced here
+        as well, so read-only chat paths that bypass the REST pre-check cannot
+        be used for zip-bomb DoS.
         """
+        from ..security.budgets import validate_ooxml_zip_budget
+        from ..security.upload_names import sanitize_upload_name
+
+        filename = sanitize_upload_name(filename, fallback="imported.pptx")
+        # May raise PayloadTooLarge (a ValueError); callers surface it as 413/422.
+        validate_ooxml_zip_budget(data)
         with tempfile.NamedTemporaryFile(suffix=".pptx", delete=False) as tmp:
             tmp.write(data)
             tmp_path = tmp.name

@@ -1251,7 +1251,14 @@ async def chat_with_attachments(
     (paper -> deck, pptx -> import, image -> insert, text -> source material).
     Only the dispatch happens here; every action reuses the same tested pipeline
     as its dedicated REST endpoint.
+
+    PR #28 Phase 2: this route is the single durable turn owner. Every branch
+    commits a structured UserTurn+AssistantTurn (provenance only, never binary)
+    under ``conversation_lock``; failures never write fake assistant success.
+    Mutating actions require 100% disposition (fail-closed, no silent drops).
     """
+    import hashlib
+
     from ..agent.attachment_router import (
         ACTION_CHAT,
         ACTION_IMAGE,
@@ -1262,30 +1269,73 @@ async def chat_with_attachments(
         KIND_PDF,
         KIND_PPTX,
         KIND_TEXT,
+        build_disposition_plan,
         classify_intent,
         detect_kind,
+        disposition_all_consumed,
+        unprocessed_attachments,
     )
+    from ..security.budgets import PayloadTooLarge, read_upload_bounded
+    from ..security.upload_names import sanitize_upload_name
 
     session = _resolve_session(session_id or None)
 
+    # ---- Bounded ingestion (before any parse/raster/vision) ----
+    max_single = int(settings.max_upload_file_bytes)
+    max_total = int(settings.max_total_attachment_bytes)
+    max_count = int(settings.max_attachment_count)
+    incoming = [u for u in (files or []) if u is not None and u.filename]
+    if len(incoming) > max_count:
+        raise HTTPException(
+            status_code=413,
+            detail=f"TOO_MANY_ATTACHMENTS: 最多 {max_count} 个附件",
+        )
     attachments: List[Dict[str, Any]] = []
-    for upload in files or []:
-        if upload is None or not upload.filename:
-            continue
-        content = await upload.read()
+    total_bytes = 0
+    for idx, upload in enumerate(incoming):
+        safe = sanitize_upload_name(upload.filename, fallback=f"attachment_{idx}")
+        try:
+            content = await read_upload_bounded(upload, max_bytes=max_single)
+        except PayloadTooLarge as exc:
+            raise HTTPException(status_code=413, detail=f"{exc.code}: {exc}")
         if not content:
             continue
+        total_bytes += len(content)
+        if total_bytes > max_total:
+            raise HTTPException(
+                status_code=413,
+                detail=f"TOTAL_ATTACHMENTS_TOO_LARGE: 附件总和超过 {max_total} 字节上限",
+            )
         attachments.append(
             {
-                "name": upload.filename,
+                "attachment_id": f"att_{idx}",
+                "name": safe,
                 "content_type": upload.content_type,
                 "content": content,
-                "kind": detect_kind(upload.filename, upload.content_type),
+                "size_bytes": len(content),
+                "sha256": hashlib.sha256(content).hexdigest(),
+                "kind": detect_kind(safe, upload.content_type),
             }
         )
 
     kinds = [a["kind"] for a in attachments]
     action = await classify_intent(getattr(store.agent_runtime, "llm", None), message, kinds)
+
+    # Explicit disposition: every attachment gets consume/unsupported/unused.
+    # Mutating actions proceed ONLY when 100% are consumed.
+    disposition_plan = build_disposition_plan(attachments, action)
+    if action in (ACTION_PAPER, ACTION_IMPORT, ACTION_TEXT, ACTION_IMAGE):
+        if not disposition_all_consumed(disposition_plan):
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "error": "UNPROCESSED_ATTACHMENTS",
+                    "message": "部分附件未被消费，已拒绝执行以避免静默丢文件",
+                    "action": action,
+                    "dispositions": disposition_plan,
+                    "unprocessed": unprocessed_attachments(disposition_plan),
+                },
+            )
 
     # A single immutable request stamp is frozen BEFORE dispatch and shared by
     # every mutating action (paper/import/text/image). Preprocessing (PDF vision,
@@ -1297,6 +1347,39 @@ async def chat_with_attachments(
     if action in (ACTION_PAPER, ACTION_IMPORT, ACTION_TEXT, ACTION_IMAGE):
         if not request_epoch or request_revision is None:
             raise HTTPException(status_code=409, detail="MISSING_REPLACEMENT_STAMP")
+
+    async def _commit_mutating_turn(
+        provenance: List[Dict[str, Any]],
+        assistant_summary: str,
+        turn_action: str,
+    ) -> None:
+        """Atomically appends UserTurn+AssistantTurn (provenance only)."""
+        user_brief = (message or "").strip()[:500] or "（附件操作）"
+        prov_lines = "; ".join(
+            f"{p.get('name')}[{p.get('kind')},{p.get('size_bytes')}B]"
+            for p in provenance
+        )
+        user_content = f"[{turn_action}] {user_brief}"
+        if prov_lines:
+            user_content += f"（附件: {prov_lines[:1000]}）"
+        async with session.memory.conversation_lock:
+            session.add_message(role="user", content=user_content)
+            session.add_message(role="assistant", content=assistant_summary[:2000])
+            if hasattr(session, "schedule_persist"):
+                session.schedule_persist()
+
+    def _provenance_for(action_name: str, status: str = "consumed") -> List[Dict[str, Any]]:
+        out: List[Dict[str, Any]] = []
+        for a in attachments:
+            out.append({
+                "name": a.get("name"),
+                "kind": a.get("kind"),
+                "sha256": a.get("sha256"),
+                "size_bytes": a.get("size_bytes"),
+                "action": action_name,
+                "status": status,
+            })
+        return out
 
     # The requesting client's UI context is parsed exactly once and shared by
     # every action. It carries the client-local active slide (slide navigation
@@ -1348,11 +1431,18 @@ async def chat_with_attachments(
             ui_context=ui,
             on_event=_on_chat_event,
         )
+        # PR #28 Phase 2: inference failure is 502, never success:true.
+        if isinstance(result, dict) and result.get("error") == "LLM_PROVIDER_ERROR":
+            raise HTTPException(
+                status_code=502,
+                detail=f"LLM_PROVIDER_ERROR: 附件问答的模型推理失败：{result.get('detail') or 'unknown'}",
+            )
         return {
             "success": True,
             "action": ACTION_CHAT,
             "session_id": session.session_id,
             "message": result.get("reply", ""),
+            "dispositions": disposition_plan,
         }
 
     def _first(kind: str) -> Optional[Dict[str, Any]]:
@@ -1362,6 +1452,8 @@ async def chat_with_attachments(
         target = _first(KIND_PDF)
         if target is None:
             raise HTTPException(status_code=400, detail="PDF_REQUIRED_FOR_PAPER")
+        # Long-running work runs WITHOUT holding conversation_lock (Phase 2);
+        # the transcript is committed atomically only after success.
         analysis = await analyze_paper(
             file=_as_upload_file(target["name"], target["content_type"], target["content"]),
             session_id=session.session_id,
@@ -1376,12 +1468,19 @@ async def chat_with_attachments(
                 "expected_revision": request_revision,
             }
         )
+        await _commit_mutating_turn(
+            _provenance_for(ACTION_PAPER),
+            f"已根据论文《{analysis.get('source_filename')}》"
+            f"（共 {analysis.get('page_count')} 页）生成演示文稿",
+            ACTION_PAPER,
+        )
         return {
             "success": True,
             "action": ACTION_PAPER,
             "session_id": session.session_id,
             "source_filename": analysis.get("source_filename"),
             "page_count": analysis.get("page_count"),
+            "dispositions": disposition_plan,
             **generated,
         }
 
@@ -1403,7 +1502,12 @@ async def chat_with_attachments(
             expected_epoch=request_epoch,
             expected_revision=request_revision,
         )
-        return {"action": ACTION_IMPORT, **imported}
+        await _commit_mutating_turn(
+            _provenance_for(ACTION_IMPORT),
+            f"已导入 PPTX《{target.get('name')}》并替换当前文档",
+            ACTION_IMPORT,
+        )
+        return {"action": ACTION_IMPORT, "dispositions": disposition_plan, **imported}
 
     if action == ACTION_TEXT:
         target = _first(KIND_TEXT)
@@ -1432,12 +1536,18 @@ async def chat_with_attachments(
                 "expected_revision": request_revision,
             }
         )
+        await _commit_mutating_turn(
+            _provenance_for(ACTION_TEXT),
+            f"已根据文本附件《{target.get('name')}》生成演示文稿",
+            ACTION_TEXT,
+        )
         return {
             "success": True,
             "action": ACTION_TEXT,
             "session_id": session.session_id,
             "summary": normalized.get("summary"),
             "warnings": normalized.get("warnings") or [],
+            "dispositions": disposition_plan,
             **generated,
         }
 
@@ -1504,10 +1614,16 @@ async def chat_with_attachments(
             ),
             session_id=session.session_id,
         )
+        await _commit_mutating_turn(
+            _provenance_for(ACTION_IMAGE),
+            f"已将图片《{target.get('name')}》插入当前页",
+            ACTION_IMAGE,
+        )
         return {
             "success": True,
             "action": ACTION_IMAGE,
             "session_id": session.session_id,
+            "dispositions": disposition_plan,
             **build_canonical_snapshot(session),
         }
 
