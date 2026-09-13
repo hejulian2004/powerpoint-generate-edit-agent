@@ -56,8 +56,9 @@ def test_roundtrip_deck_fidelity(deck_name: str, tmp_path: Path):
     assert len(orig_pres.slides) > 0
 
     # 2. Export IR to temporary round-trip PPTX
+    # (benchmarks explicitly opt into lossy; PR #28 default is fail-closed).
     out_path = tmp_path / f"roundtrip_{deck_name}"
-    export_pptx(orig_pres, str(out_path))
+    export_pptx(orig_pres, str(out_path), allow_lossy=True)
     assert out_path.exists()
 
     # 3. Re-import round-trip PPTX to IR
@@ -167,7 +168,8 @@ def test_roundtrip_table_flattening_is_declared_lossy(tmp_path: Path):
     assert any("table" in w and "lossy" in w for w in caps.lossy_warnings())
 
     out_file = tmp_path / "table_deck.pptx"
-    export_pptx(pres, str(out_file))
+    # Table write-back is lossy; benchmarks explicitly opt in (PR #28).
+    export_pptx(pres, str(out_file), allow_lossy=True)
 
     re_pres = import_pptx(str(out_file))
     re_slide = re_pres.slides[0]

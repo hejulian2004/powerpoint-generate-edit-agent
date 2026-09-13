@@ -102,7 +102,12 @@ def test_generate_route_returns_409_when_document_edited_during_generation(monke
 
     res = client.post(
         "/api/pptspec/generate",
-        json={"normalization_id": norm_id, "session_id": sid},
+        json={
+            "normalization_id": norm_id,
+            "session_id": sid,
+            "expected_epoch": session.document_epoch,
+            "expected_revision": session.document.presentation.version,
+        },
     )
     assert res.status_code == 409
     assert "STALE_GENERATION" in res.json()["detail"]

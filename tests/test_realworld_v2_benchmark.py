@@ -59,7 +59,8 @@ def test_real_world_v2_deck_fidelity(deck_path: str, tmp_path: Path):
     assert len(orig_pres.slides) > 0, f"Deck {deck_path} has no slides"
 
     out_path = tmp_path / f"roundtrip_{deck_name}"
-    export_pptx(orig_pres, str(out_path))
+    # Benchmarks explicitly opt into lossy write-back (PR #28 fail-closed default).
+    export_pptx(orig_pres, str(out_path), allow_lossy=True)
     assert out_path.exists()
 
     recon_pres = import_pptx(str(out_path))
