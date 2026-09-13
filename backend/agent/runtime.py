@@ -563,8 +563,11 @@ class AgentRuntime:
                 logger.error("Attachment chat LLM call failed: %s", exc)
                 reply = f"附件内容读取失败：{exc}"
 
-            memory.add_message(role="user", content=user_message or "（已附加文件）")
-            memory.add_message(role="assistant", content=reply)
+            # Use the session-level writer so the workspace `updated_at`
+            # timestamp advances exactly like a normal turn (the transcript
+            # itself lives on `session.memory`).
+            session.add_message(role="user", content=user_message or "（已附加文件）")
+            session.add_message(role="assistant", content=reply)
             if hasattr(session, "schedule_persist"):
                 session.schedule_persist()
 

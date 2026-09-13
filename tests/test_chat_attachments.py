@@ -88,6 +88,8 @@ class _FakeLLM:
         # advertised as importable (capability contract matches upload_pptx).
         ("slides.ppt", None, KIND_UNKNOWN),
         ("slides.pptm", None, KIND_UNKNOWN),
+        ("report.docx", None, KIND_UNKNOWN),
+        ("archive.zip", None, KIND_UNKNOWN),
         ("blob", "application/vnd.openxmlformats-officedocument.presentationml.presentation", KIND_PPTX),
         ("blob", "application/vnd.ms-powerpoint", KIND_UNKNOWN),
         ("figure.png", None, KIND_IMAGE),
@@ -287,18 +289,65 @@ def test_chat_drive_image_insert_stale_stamp_is_rejected(monkeypatch):
     assert len(session.document.presentation.slides[0].elements) == elements_before
 
 
-def test_chat_drive_unknown_only_returns_chat(monkeypatch):
-    _seed_default_demo()
+@pytest.mark.parametrize(
+    "name,content_type",
+    [
+        ("old.ppt", "application/vnd.ms-powerpoint"),
+        ("macro.pptm", "application/vnd.ms-powerpoint.presentation.macroEnabled.12"),
+        ("report.docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document"),
+        ("archive.zip", "application/zip"),
+        ("blob.bin", "application/octet-stream"),
+    ],
+)
+def test_chat_drive_unknown_only_is_rejected_before_llm(monkeypatch, name, content_type):
+    """An attachment the backend cannot read must be rejected explicitly.
+
+    It must never silently fall through to a text-only LLM turn, which could
+    produce a plausible fabricated answer about a file the model never saw.
+    """
+    session = _seed_default_demo()
+    spy = _SpyLLM("不应被调用")
+    monkeypatch.setattr(store.agent_runtime, "llm", spy)
+    messages_before = list(session.memory.messages)
+    ir_before = session.document.presentation.model_dump()
+
+    resp = client.post(
+        "/api/chat/drive",
+        data={"message": "这个文件讲什么", "session_id": "default"},
+        files=[("files", (name, b"\x00\x01\x02", content_type))],
+    )
+
+    assert resp.status_code == 415, resp.text
+    assert "UNSUPPORTED_ATTACHMENT_TYPE" in resp.text
+    # No LLM call, no transcript append, no document mutation.
+    assert spy.calls == []
+    assert session.memory.messages == messages_before
+    assert session.document.presentation.model_dump() == ir_before
+
+
+def test_chat_drive_unknown_plus_supported_still_answers(monkeypatch):
+    """The reject rule is scoped to a fully unreadable context: one supported
+    attachment alongside an unknown one still reaches the model."""
+    session = _seed_default_demo()
+    spy = _SpyLLM("根据大纲，内容是 A、B、C")
+    monkeypatch.setattr(store.agent_runtime, "llm", spy)
     monkeypatch.setattr(
         router, "classify_intent", lambda llm, message, kinds: _async_return(ACTION_CHAT)
     )
+
     resp = client.post(
         "/api/chat/drive",
-        data={"message": "这是什么", "session_id": "default"},
-        files=[("files", ("blob.bin", b"\x00\x01", "application/octet-stream"))],
+        data={"message": "总结一下", "session_id": "default"},
+        files=[
+            ("files", ("old.ppt", b"\x00\x01", "application/vnd.ms-powerpoint")),
+            ("files", ("outline.txt", "产品大纲：A、B、C".encode("utf-8"), "text/plain")),
+        ],
     )
-    assert resp.status_code == 200
+
+    assert resp.status_code == 200, resp.text
     assert resp.json()["action"] == ACTION_CHAT
+    assert len(spy.calls) == 1
+    assert "产品大纲" in json.dumps(spy.calls[0]["messages"], ensure_ascii=False)
 
 
 def test_chat_drive_paper_requires_pdf(monkeypatch):
@@ -469,6 +518,28 @@ def test_chat_with_attachments_text_uses_reasoning_and_keeps_transcript_clean():
     assert "产品大纲" in json.dumps(spy.calls[0]["messages"], ensure_ascii=False)
     # Durable transcript stores plain text only - no digest.
     assert [m["content"] for m in session.memory.messages] == ["总结一下", "这是摘要"]
+
+
+def test_attachment_chat_advances_session_updated_at():
+    """Attachment Q&A persists through the session-level writer so workspace
+    freshness (`updated_at`) tracks it like any other turn."""
+    session = _new_session("sess_attach_updated")
+    before = session.updated_at
+    runtime = AgentRuntime(llm_client=_SpyLLM("ok"))
+    context = asyncio.run(
+        build_attachment_context(
+            [
+                {
+                    "name": "outline.txt",
+                    "content_type": "text/plain",
+                    "content": "产品大纲".encode("utf-8"),
+                    "kind": KIND_TEXT,
+                }
+            ]
+        )
+    )
+    asyncio.run(runtime.chat_with_attachments(session, "总结", context))
+    assert session.updated_at > before
 
 
 def test_chat_with_attachments_image_uses_vision_role():
