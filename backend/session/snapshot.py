@@ -27,6 +27,7 @@ class SessionSnapshot:
     compression_through_index: int = 0
     conversation_generation: int = 0
     completed_requests: List[Dict[str, Any]] = field(default_factory=list)
+    completed_tombstones: List[Dict[str, Any]] = field(default_factory=list)
     checkpoints: List[Dict[str, Any]] = field(default_factory=list)
     created_at: str = ""
     updated_at: str = ""
@@ -65,6 +66,16 @@ def session_to_snapshot(session: Any) -> SessionSnapshot:
                 "size_bytes": r.size_bytes,
             })
 
+    tombstones = []
+    if hasattr(session, "completed_tombstones") and session.completed_tombstones:
+        for t in list(session.completed_tombstones.values()):
+            tombstones.append({
+                "request_id": t.request_id,
+                "fingerprint": t.fingerprint,
+                "admitted_generation": t.admitted_generation,
+                "completed_at": t.completed_at,
+            })
+
     return SessionSnapshot(
         session_id=session.session_id,
         presentation=session.document.presentation.model_dump(),
@@ -76,6 +87,7 @@ def session_to_snapshot(session: Any) -> SessionSnapshot:
         compression_through_index=mem.compression_through_index,
         conversation_generation=getattr(session, "conversation_generation", 0) or 0,
         completed_requests=completed,
+        completed_tombstones=tombstones,
         checkpoints=session.checkpoint_service.to_snapshots(),
         created_at=session.created_at.isoformat(),
         updated_at=session.updated_at.isoformat(),
@@ -90,9 +102,11 @@ def snapshot_to_session(snapshot: SessionSnapshot) -> Any:
     from ..agent.subagents.memory import SubagentSessionMemory
     from .session import (
         CompletedRequestRecord,
+        RequestTombstone,
         MAX_COMPLETED_REQUESTS,
         MAX_COMPLETED_REQUEST_BYTES,
         MAX_COMPLETED_REQUEST_RECORD_BYTES,
+        MAX_COMPLETED_TOMBSTONES,
     )
 
     session = SessionFactory.restore(snapshot, init_baseline=False)
@@ -107,6 +121,23 @@ def snapshot_to_session(snapshot: SessionSnapshot) -> Any:
         getattr(snapshot, "compression_through_index", 0) or 0
     )
     session.conversation_generation = int(getattr(snapshot, "conversation_generation", 0) or 0)
+
+    # Restore Tier 2 Durable Tombstones
+    session.completed_tombstones.clear()
+    for item in getattr(snapshot, "completed_tombstones", []) or []:
+        req_id = item.get("request_id")
+        fingerprint = item.get("fingerprint")
+        admitted_gen = item.get("admitted_generation", 0)
+        completed_at = item.get("completed_at", "")
+        if req_id and fingerprint:
+            if len(session.completed_tombstones) >= MAX_COMPLETED_TOMBSTONES:
+                session.completed_tombstones.popitem(last=False)
+            session.completed_tombstones[req_id] = RequestTombstone(
+                request_id=req_id,
+                fingerprint=fingerprint,
+                admitted_generation=admitted_gen,
+                completed_at=completed_at,
+            )
 
     # Re-validate and recalculate completed_requests budgets independently on restore
     session.completed_requests.clear()
@@ -126,6 +157,14 @@ def snapshot_to_session(snapshot: SessionSnapshot) -> Any:
             continue
         if actual_size > MAX_COMPLETED_REQUEST_RECORD_BYTES:
             continue
+
+        # Also ensure every completed request has a tombstone
+        if req_id not in session.completed_tombstones:
+            session.completed_tombstones[req_id] = RequestTombstone(
+                request_id=req_id,
+                fingerprint=fingerprint,
+                admitted_generation=admitted_gen,
+            )
 
         # Check total budget
         if total_bytes + actual_size > MAX_COMPLETED_REQUEST_BYTES or len(session.completed_requests) >= MAX_COMPLETED_REQUESTS:

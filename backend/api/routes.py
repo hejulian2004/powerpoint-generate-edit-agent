@@ -450,13 +450,14 @@ async def list_models(payload: Dict[str, Any] = Body(default={})):
         raise HTTPException(status_code=400, detail="Base URL is required")
 
     try:
+        OutboundURLPolicy.enforce_credential_scheme(raw_base, api_key)
         normalized, validated_host, validated_ips = OutboundURLPolicy.validate(
             raw_base,
             trusted_hosts=settings.trusted_provider_host_set or None,
         )
     except OutboundURLRejected as exc:
         code = getattr(exc, "code", "OUTBOUND_REJECTED")
-        if code in ("OUTBOUND_SSRF_BLOCKED", "OUTBOUND_HOST_NOT_TRUSTED"):
+        if code in ("OUTBOUND_SSRF_BLOCKED", "OUTBOUND_HOST_NOT_TRUSTED", "OUTBOUND_HTTPS_REQUIRED"):
             raise HTTPException(status_code=403, detail=f"{code}: {exc}")
         raise HTTPException(status_code=400, detail=f"{code}: {exc}")
 
@@ -1456,6 +1457,16 @@ async def chat_with_attachments(
                     is_recovery_executor = True
 
             if not is_recovery_executor and cached_record is None:
+                # Check Tier 2 durable tombstones (expired replay cache)
+                tombstone = session.get_request_tombstone(request_id)
+                if tombstone is not None:
+                    if tombstone.fingerprint != req_fingerprint:
+                        raise HTTPException(status_code=409, detail="REQUEST_ID_PAYLOAD_MISMATCH")
+                    raise HTTPException(
+                        status_code=409,
+                        detail="REPLAY_EXPIRED: Request has already been executed and its replay window has expired; duplicate execution rejected.",
+                    )
+
                 # Check short-lived failed requests cache
                 now = time.monotonic()
                 failed_rec = session.failed_requests.get(request_id)

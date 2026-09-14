@@ -126,31 +126,37 @@ class SQLiteRepository:
             )
             self._write_workspace_sync(workspace_snapshot)
 
-    # -- async API (single writer) --
+    # -- async API (single writer, cancellation-safe) --
+
+    async def _run_exclusive(self, func, *args):
+        async with self._lock:
+            loop = asyncio.get_running_loop()
+            fut = loop.run_in_executor(None, func, *args)
+            try:
+                return await asyncio.shield(fut)
+            except asyncio.CancelledError:
+                # If outer coroutine is cancelled, we MUST NOT release self._lock
+                # while the worker thread is still executing against self._conn.
+                await fut
+                raise
 
     async def save(self, snapshot: SessionSnapshot) -> None:
-        async with self._lock:
-            await asyncio.to_thread(self._save_sync, snapshot)
+        await self._run_exclusive(self._save_sync, snapshot)
 
     async def load(self, session_id: str) -> Optional[SessionSnapshot]:
-        async with self._lock:
-            return await asyncio.to_thread(self._load_sync, session_id)
+        return await self._run_exclusive(self._load_sync, session_id)
 
     async def delete(self, session_id: str) -> None:
-        async with self._lock:
-            await asyncio.to_thread(self._delete_sync, session_id)
+        await self._run_exclusive(self._delete_sync, session_id)
 
     async def list_ids(self) -> List[str]:
-        async with self._lock:
-            return await asyncio.to_thread(self._list_ids_sync)
+        return await self._run_exclusive(self._list_ids_sync)
 
     async def load_workspace(self) -> WorkspaceSnapshot:
-        async with self._lock:
-            return await asyncio.to_thread(self._load_workspace_sync)
+        return await self._run_exclusive(self._load_workspace_sync)
 
     async def save_workspace(self, snapshot: WorkspaceSnapshot) -> None:
-        async with self._lock:
-            await asyncio.to_thread(self._write_workspace, snapshot)
+        await self._run_exclusive(self._write_workspace, snapshot)
 
     def _write_workspace(self, snapshot: WorkspaceSnapshot) -> None:
         with self._conn:
@@ -161,9 +167,7 @@ class SQLiteRepository:
         session_snapshot: SessionSnapshot,
         workspace_snapshot: WorkspaceSnapshot,
     ) -> None:
-        async with self._lock:
-            await asyncio.to_thread(self._switch_sync, session_snapshot, workspace_snapshot)
+        await self._run_exclusive(self._switch_sync, session_snapshot, workspace_snapshot)
 
     async def close(self) -> None:
-        async with self._lock:
-            await asyncio.to_thread(self._conn.close)
+        await self._run_exclusive(self._conn.close)

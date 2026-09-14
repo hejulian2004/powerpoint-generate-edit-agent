@@ -277,6 +277,174 @@ class FactualTextField:
     fact_type: str
     content: str
     context: str
+    provenance_type: str = "factual_claim"  # factual_claim | source_paraphrase | editorial_label | layout_instruction
+    evidence_id: Optional[str] = None
+
+
+EDITORIAL_LABELS = {
+    "cover", "title", "agenda", "outline", "table of contents", "overview",
+    "background", "motivation", "problem statement", "related work",
+    "methodology", "method", "proposed method", "architecture",
+    "system architecture", "system overview", "framework", "model",
+    "experiments", "experiment", "experimental setup", "experimental results", "results", "result",
+    "evaluation", "ablation study", "discussion", "conclusion", "conclusions",
+    "future work", "summary", "references", "appendix", "q&a", "questions",
+    "thank you", "thanks", "performance", "metrics", "metric", "case study", "benchmark",
+    "implementation details", "specs", "loss", "equation", "res", "arch",
+    "table", "fig", "figure", "chart", "tbl", "t", "bg", "introduction", "intro", "findings",
+    "presentation", "slide",
+    # Chinese
+    "封面", "标题", "目录", "概述", "大纲", "研究背景", "背景", "动机",
+    "问题定义", "相关工作", "方法", "本文方法", "方法概述", "架构设计",
+    "系统架构", "核心架构", "模型框架", "实验", "实验设计", "实验评估",
+    "实验结果", "实验分析", "消融实验", "结果分析", "讨论", "结论", "总结",
+    "总结与展望", "未来工作", "参考文献", "致谢", "问答", "性能评估", "指标分析",
+    "案例分析", "落地应用", "演示概述", "学术论文汇报", "实验分析与讨论",
+    "论文汇报", "项目汇报", "汇报", "汇报总结",
+}
+
+_SLIDE_NUMBER_LABEL_RE = re.compile(
+    r"^(slide\s*\d+|第\s*\d+\s*页|part\s*\d+|phase\s*\d+|section\s*\d+|第[一二三四五六七八九十]+\s*(部分|章|节))$",
+    re.IGNORECASE,
+)
+
+UNGROUNDED_STRONG_CLAIMS = [
+    "全面超越", "彻底解决", "完美解决", "首创", "最佳", "最强", "无可比拟",
+    "遥遥领先", "彻底消除", "全面领先",
+    "outperforms all", "surpasses all", "state-of-the-art across all",
+    "revolutionary", "best-in-class", "unmatched", "completely solves",
+    "zero error", "zero false positive", "flawless",
+]
+
+
+EDITORIAL_WORDS = {
+    "cover", "title", "agenda", "outline", "table", "of", "contents", "overview",
+    "background", "motivation", "problem", "statement", "related", "work",
+    "methodology", "method", "methods", "proposed", "architecture",
+    "system", "framework", "model", "approach", "layout", "instruction", "instructions",
+    "experiments", "experiment", "experimental", "setup", "results", "result",
+    "key", "findings", "finding",
+    "evaluation", "ablation", "study", "discussion", "conclusion", "conclusions",
+    "future", "summary", "references", "appendix", "q&a", "questions",
+    "thank", "you", "thanks", "performance", "metrics", "metric", "case", "benchmark",
+    "implementation", "details", "specs", "loss", "equation", "res", "arch",
+    "fig", "figure", "chart", "tbl", "t", "bg", "introduction", "intro",
+    "presentation", "slide", "analysis", "design", "test", "tests",
+    # Chinese
+    "封面", "标题", "目录", "概述", "大纲", "研究背景", "背景", "动机",
+    "问题定义", "相关工作", "方法", "本文方法", "方法概述", "架构设计",
+    "系统架构", "核心架构", "模型框架", "实验", "实验设计", "实验评估",
+    "实验结果", "实验分析", "消融实验", "结果分析", "讨论", "结论", "总结",
+    "总结与展望", "未来工作", "参考文献", "致谢", "问答", "性能评估", "指标分析",
+    "案例分析", "落地应用", "演示概述", "学术论文汇报", "实验分析与讨论",
+    "论文汇报", "项目汇报", "汇报", "汇报总结", "核心结果", "关键结果", "关键结论",
+    "设计", "分析", "架构", "模型", "研究", "评估", "测试",
+}
+
+
+def classify_text_provenance(text: str) -> str:
+    """Classify text into ProvenanceType:
+
+    - 'editorial_label': structural presentation labels or presentation metadata
+    - 'layout_instruction': formatting/layout directives
+    - 'factual_claim': substantive factual assertions requiring evidence backing
+    - 'source_paraphrase': descriptive synthesis of source content
+    """
+    if not text or not text.strip():
+        return "editorial_label"
+    clean = text.strip().lower()
+    stripped = re.sub(r"^(\d+[\.\:\-\s]+|[一二三四五六七八九十]+[、\.\:\-\s]+)", "", clean).strip()
+    if stripped in EDITORIAL_LABELS or clean in EDITORIAL_LABELS:
+        return "editorial_label"
+    if _SLIDE_NUMBER_LABEL_RE.match(stripped) or _SLIDE_NUMBER_LABEL_RE.match(clean):
+        return "editorial_label"
+
+    # Multi-word editorial compound label check (e.g. "Method Overview", "Key Results")
+    words = re.findall(r"\b[a-z]+\b", clean)
+    if words and all(w in EDITORIAL_WORDS for w in words):
+        return "editorial_label"
+
+    # Generic editorial intent prefixes
+    generic_intents = ("introduce ", "present ", "summarize ", "overview of ", "describe ", "discuss ")
+    if any(clean.startswith(gi) for gi in generic_intents):
+        return "editorial_label"
+    generic_zh = ("介绍", "展示", "概述", "阐述", "汇报", "说明")
+    if len(clean) <= 10 and any(clean.startswith(gz) for gz in generic_zh):
+        return "editorial_label"
+    return "factual_claim"
+
+
+def validate_narrative_provenance(
+    text: str,
+    raw_input: str,
+    slide: Optional[SlideRequest],
+    spec: CanonicalPPTSpec,
+    field_name: str = "title",
+) -> Tuple[bool, str]:
+    """Validates that a slide title or objective has factual provenance.
+
+    - Editorial labels are exempt from grounding.
+    - Substantive claims/paraphrases MUST not introduce ungrounded strong/superlative claims.
+    - If a substantive claim/paraphrase is made, it must be grounded in raw_input or referenced evidence.
+    """
+    if not text or not text.strip():
+        return True, ""
+
+    raw_lower = (raw_input or "").lower()
+    text_lower = text.lower()
+
+    # 1. Reject ungrounded strong/superlative claims
+    for phrase in UNGROUNDED_STRONG_CLAIMS:
+        if phrase.lower() in text_lower and phrase.lower() not in raw_lower:
+            return False, f"Unsubstantiated claim phrase '{phrase}' in {field_name} '{text}' is not grounded in raw input."
+
+    ptype = classify_text_provenance(text)
+    if ptype == "editorial_label":
+        return True, ""
+
+    # 2. Check direct grounding in raw input
+    if is_text_grounded(text, raw_input):
+        return True, ""
+
+    # Check source_document title/metadata
+    if spec.source_document and spec.source_document.title:
+        if is_text_grounded(text, spec.source_document.title):
+            return True, ""
+
+    # 3. If substantive and not directly in raw_input, verify backing evidence exists
+    if slide is not None:
+        if not slide.evidence_refs:
+            return False, f"Substantive {field_name} '{text}' has no referenced evidence in slide '{slide.id}'."
+
+        # Collect text from referenced evidence
+        ref_ev_texts = []
+        for ref_id in slide.evidence_refs:
+            ev = spec.get_evidence(ref_id)
+            if ev:
+                if isinstance(ev, ClaimEvidence):
+                    ref_ev_texts.append(ev.content)
+                elif isinstance(ev, QuoteEvidence):
+                    ref_ev_texts.append(ev.content)
+                elif isinstance(ev, MetricEvidence):
+                    ref_ev_texts.extend([ev.name, str(ev.value), ev.method or ""])
+                elif isinstance(ev, MetricGroupEvidence):
+                    ref_ev_texts.append(ev.group_name)
+                    for m in ev.metrics:
+                        ref_ev_texts.extend([m.name, str(m.value)])
+                elif isinstance(ev, TableEvidence):
+                    ref_ev_texts.append(ev.caption or "")
+                elif isinstance(ev, FigureReferenceEvidence):
+                    ref_ev_texts.append(ev.caption or "")
+
+        combined_evidence_str = (raw_input + " " + " ".join(ref_ev_texts)).lower()
+        rem = extract_non_numeric_semantic_text(text)
+        if rem:
+            tokens = [t.strip() for t in re.split(r"[\s\:\,\.\;，。：]+", rem) if len(t.strip()) >= 2]
+            for tok in tokens:
+                if tok.lower() not in combined_evidence_str:
+                    return False, f"Factual term '{tok}' in {field_name} '{text}' is not grounded in raw input or referenced evidence."
+
+    return True, ""
 
 
 def extract_non_numeric_semantic_text(text: str) -> str:
@@ -996,6 +1164,49 @@ class TruthfulnessValidator:
                 errors.append(err)
                 if self.strict:
                     raise UnsupportedTextualFactError(fact_type=tf.fact_type, content=tf.content, context=tf.context)
+
+        # 4b. Narrative Provenance Guard (Slide Title & Objective Grounding)
+        # Prevents qualitative hallucinations, unsupported strong claims (e.g. '全面超越'),
+        # and ungrounded substantive titles/objectives from entering presentation output.
+        if spec.presentation and spec.presentation.title:
+            p_valid, p_err = validate_narrative_provenance(
+                spec.presentation.title, raw_input, None, spec, field_name="presentation_title"
+            )
+            if not p_valid:
+                errors.append(f"UNSUPPORTED_NARRATIVE_CLAIM: {p_err}")
+                if self.strict:
+                    raise UnsupportedTextualFactError(
+                        fact_type="presentation_title",
+                        content=spec.presentation.title,
+                        context="presentation.title",
+                    )
+
+        for slide in spec.slides:
+            if slide.title:
+                t_valid, t_err = validate_narrative_provenance(
+                    slide.title, raw_input, slide, spec, field_name="slide_title"
+                )
+                if not t_valid:
+                    errors.append(f"UNSUPPORTED_NARRATIVE_CLAIM: {t_err}")
+                    if self.strict:
+                        raise UnsupportedTextualFactError(
+                            fact_type="slide_title",
+                            content=slide.title,
+                            context=f"Slide '{slide.id}' title",
+                        )
+
+            if slide.objective:
+                o_valid, o_err = validate_narrative_provenance(
+                    slide.objective, raw_input, slide, spec, field_name="slide_objective"
+                )
+                if not o_valid:
+                    errors.append(f"UNSUPPORTED_NARRATIVE_CLAIM: {o_err}")
+                    if self.strict:
+                        raise UnsupportedTextualFactError(
+                            fact_type="slide_objective",
+                            content=slide.objective,
+                            context=f"Slide '{slide.id}' objective",
+                        )
 
         # 5. Source Locator & Contextual Binding Guard
         # Enforces that figure/table labels, references, and page citations exist in raw input

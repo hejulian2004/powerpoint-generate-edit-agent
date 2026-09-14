@@ -314,3 +314,96 @@ def test_restart_after_commit_rejects_lost_ack_replay(tmp_path):
         await workspace2.close()
 
     asyncio.run(_run())
+
+
+def test_debounce_cancellation_race_preserves_single_writer_and_latest_state(tmp_path):
+    """P0 race regression test: in-flight SQLite save is never cancelled,
+
+    max_concurrent_sqlite_writers is strictly 1 at all times, and the DB
+    always converges to the latest generation snapshot.
+    """
+    import threading
+
+    async def _run():
+        db = tmp_path / "concurrency_race.db"
+        repo = SQLiteRepository(db)
+
+        concurrent_writers = 0
+        max_concurrent_writers = 0
+        count_lock = threading.Lock()
+
+        save1_entered = threading.Event()
+        save1_release = threading.Event()
+        first_call = True
+
+        orig_save_sync = repo._save_sync
+
+        def _instrumented_save_sync(snapshot):
+            nonlocal concurrent_writers, max_concurrent_writers, first_call
+            with count_lock:
+                concurrent_writers += 1
+                if concurrent_writers > max_concurrent_writers:
+                    max_concurrent_writers = concurrent_writers
+            try:
+                if first_call:
+                    first_call = False
+                    save1_entered.set()
+                    # Block the first worker thread
+                    save1_release.wait(timeout=5)
+                return orig_save_sync(snapshot)
+            finally:
+                with count_lock:
+                    concurrent_writers -= 1
+
+        repo._save_sync = _instrumented_save_sync
+
+        session = SessionFactory.create(_pres(title="version_1"), session_id="sess_p0_race")
+        service = SessionPersistenceService(
+            repo, lambda sid: session if sid == "sess_p0_race" else None,
+            debounce_seconds=0.01,
+        )
+        session.persistence = service
+
+        # 1. Schedule initial persist (generation 1) -> enters worker thread and blocks
+        session.schedule_persist()
+        # Wait for thread to enter _save_sync
+        for _ in range(100):
+            if save1_entered.is_set():
+                break
+            await asyncio.sleep(0.01)
+        assert save1_entered.is_set(), "First save did not enter instrumented _save_sync"
+
+        # 2. While the first save is still blocked in its OS thread, mutate to version_2
+        session.pres.title = "version_2"
+        session.pres.version += 1
+        session.schedule_persist()
+
+        # 3. Fire persist_session_now concurrently while save 1 is in-flight
+        persist_task = asyncio.create_task(service.persist_session_now("sess_p0_race"))
+        await asyncio.sleep(0.05)
+
+        # At this point, save 1 is in-flight, persist_now is waiting for the session lock.
+        # Ensure max_concurrent_writers is still 1
+        with count_lock:
+            assert max_concurrent_writers == 1
+
+        # 4. Release save 1
+        save1_release.set()
+        await asyncio.wait_for(persist_task, timeout=2.0)
+
+        # Verify writer invariant was preserved across the entire race
+        with count_lock:
+            assert max_concurrent_writers == 1
+            assert concurrent_writers == 0
+
+        # 5. Reload from SQLite and verify version_2 is what was durably stored
+        loaded = await repo.load("sess_p0_race")
+        assert loaded is not None
+        assert loaded.presentation["title"] == "version_2"
+        assert loaded.presentation["version"] == session.pres.version
+
+        await service.close()
+        await repo.close()
+
+    asyncio.run(_run())
+

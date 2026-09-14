@@ -131,15 +131,33 @@ def create_pinned_async_transport(
     """Creates an httpx.AsyncHTTPTransport whose TCP dialer connects only to allowed_ips.
 
     Request-scoped, avoids monkey-patching process-global socket.getaddrinfo.
+    Fails fast with RuntimeError if httpcore internals change.
     """
     import httpcore
     import httpx
 
+    try:
+        from httpcore._backends.auto import AutoBackend
+    except ImportError as exc:
+        raise RuntimeError(
+            f"CRITICAL_SSRF_GUARD_FAILURE: httpcore internal AutoBackend missing: {exc}"
+        )
+
     backend = PinnedAsyncNetworkBackend(host, allowed_ips)
-    pool = httpcore.AsyncConnectionPool(network_backend=backend, ssl_context=httpx.create_ssl_context(verify=verify))  # type: ignore[arg-type]
-    transport = httpx.AsyncHTTPTransport(verify=verify)
-    transport._pool = pool
-    return transport
+    try:
+        pool = httpcore.AsyncConnectionPool(
+            network_backend=backend,
+            ssl_context=httpx.create_ssl_context(verify=verify),
+        )  # type: ignore[arg-type]
+        transport = httpx.AsyncHTTPTransport(verify=verify)
+        if not hasattr(transport, "_pool"):
+            raise AttributeError("httpx.AsyncHTTPTransport has no _pool attribute")
+        transport._pool = pool
+        return transport
+    except Exception as exc:
+        raise RuntimeError(
+            f"CRITICAL_SSRF_GUARD_FAILURE: Failed to construct pinned transport with httpcore: {exc}"
+        )
 
 
 class OutboundURLPolicy:
@@ -175,10 +193,32 @@ class OutboundURLPolicy:
         return raw.rstrip("/"), host, port
 
     @classmethod
+    def enforce_credential_scheme(
+        cls,
+        base_url: str,
+        api_key: Optional[str] = None,
+        allow_private_for_tests: bool = False,
+    ) -> None:
+        """Enforces that any outbound target carrying an API key uses HTTPS."""
+        if not api_key or not str(api_key).strip():
+            return
+        raw = str(base_url or "").strip()
+        parsed = urlparse(raw)
+        scheme = (parsed.scheme or "").lower()
+        host = (parsed.hostname or "").lower()
+        is_loopback = host in ("localhost", "127.0.0.1", "::1")
+        if scheme != "https" and not (is_loopback and allow_private_for_tests):
+            raise OutboundURLRejected(
+                "OUTBOUND_HTTPS_REQUIRED",
+                f"携带 API 密钥的出站请求必须使用 HTTPS 加密传输，拒绝不安全的明文协议 {scheme!r}",
+            )
+
+    @classmethod
     def validate(
         cls,
         base_url: str,
         *,
+        api_key: Optional[str] = None,
         trusted_hosts: Optional[Set[str]] = None,
         allow_private_for_tests: bool = False,
     ) -> tuple[str, str, List[str]]:
@@ -189,9 +229,12 @@ class OutboundURLPolicy:
         HTTP connection inside ``pinned_dns(host, validated_ips)`` when the
         list is non-empty.
 
-        When ``trusted_hosts`` is non-empty, DNS hosts MUST be allowlisted;
-        this is the strict v1 mode when callers cannot guarantee pinning.
+        When ``api_key`` is present, enforces HTTPS encryption unless connecting
+        to local loopback in test/dev mode.
         """
+        if api_key:
+            cls.enforce_credential_scheme(base_url, api_key, allow_private_for_tests=allow_private_for_tests)
+
         normalized, host, port = cls.parse(base_url)
 
         # 1) Literal IP: judge directly, no DNS.

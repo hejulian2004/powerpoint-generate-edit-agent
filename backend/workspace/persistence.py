@@ -36,11 +36,23 @@ class SessionPersistenceService:
         # marker if no newer mutation landed while the save was in flight.
         # Correctness is derived from this dict, never from task liveness.
         self._dirty_generation: Dict[str, int] = {}
-        self._tasks: Dict[str, asyncio.Task] = {}
+        self._debounce_tasks: Dict[str, asyncio.Task] = {}
+        self._session_locks: Dict[str, asyncio.Lock] = {}
 
     @property
     def dirty_session_ids(self) -> Set[str]:
         return set(self._dirty_generation)
+
+    @property
+    def _tasks(self) -> Dict[str, asyncio.Task]:
+        return self._debounce_tasks
+
+    def _get_lock(self, sid: str) -> asyncio.Lock:
+        lock = self._session_locks.get(sid)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._session_locks[sid] = lock
+        return lock
 
     def schedule(self, session) -> None:
         sid = session.session_id
@@ -50,14 +62,20 @@ class SessionPersistenceService:
         except RuntimeError:
             # No loop (sync context): remain dirty; close()/flush_all() persist it.
             return
-        task = self._tasks.get(sid)
+        task = self._debounce_tasks.get(sid)
         if task is None or task.done():
-            self._tasks[sid] = asyncio.create_task(
-                self._debounced(sid), name=f"persist:{sid}"
+            self._debounce_tasks[sid] = asyncio.create_task(
+                self._debounced(sid), name=f"persist_debounce:{sid}"
             )
 
     async def _debounced(self, sid: str) -> None:
-        await asyncio.sleep(self._debounce)
+        try:
+            await asyncio.sleep(self._debounce)
+        except asyncio.CancelledError:
+            return
+        finally:
+            if self._debounce_tasks.get(sid) is asyncio.current_task():
+                self._debounce_tasks.pop(sid, None)
         await self.flush_session_id(sid)
 
     async def flush(self, session) -> None:
@@ -66,54 +84,64 @@ class SessionPersistenceService:
     async def persist_session_now(self, sid: str) -> None:
         """Immediately captures a durable snapshot and writes to repository.
 
-        Cancels any in-flight debounce task for this session and absorbs it.
-        Only clears dirty marker if no newer mutation advanced the generation.
+        Cancels any pending debounce sleep timer, but never cancels active
+        repository writes. Serializes behind per-session write lock so in-flight
+        writes finish cleanly before capturing and persisting the latest state.
         """
         current = asyncio.current_task()
-        task = self._tasks.pop(sid, None)
-        if task is not None and task is not current and not task.done():
-            task.cancel()
-        generation = self._dirty_generation.get(sid, 0)
-        session = self._resolver(sid)
-        if session is None:
-            self._dirty_generation.pop(sid, None)
-            return
-        snapshot: SessionSnapshot = await session.snapshot_for_persistence()
-        await self._repo.save(snapshot)
-        if self._dirty_generation.get(sid, 0) <= generation:
-            self._dirty_generation.pop(sid, None)
+        timer = self._debounce_tasks.pop(sid, None)
+        if timer is not None and timer is not current and not timer.done():
+            timer.cancel()
+
+        lock = self._get_lock(sid)
+        async with lock:
+            generation = self._dirty_generation.get(sid, 0)
+            session = self._resolver(sid)
+            if session is None:
+                self._dirty_generation.pop(sid, None)
+                return
+            snapshot: SessionSnapshot = await session.snapshot_for_persistence()
+            await self._repo.save(snapshot)
+            if self._dirty_generation.get(sid, 0) <= generation:
+                self._dirty_generation.pop(sid, None)
 
     async def flush_session_id(self, sid: str) -> None:
         current = asyncio.current_task()
-        task = self._tasks.pop(sid, None)
-        if task is not None and task is not current and not task.done():
-            task.cancel()
+        timer = self._debounce_tasks.pop(sid, None)
+        if timer is not None and timer is not current and not timer.done():
+            timer.cancel()
+
         if sid not in self._dirty_generation:
             return
-        generation = self._dirty_generation[sid]
-        session = self._resolver(sid)
-        if session is None:
-            self._dirty_generation.pop(sid, None)
-            return
-        snapshot: SessionSnapshot = await session.snapshot_for_persistence()
-        await self._repo.save(snapshot)
-        # Only clear dirty if no newer mutation arrived during the save. If the
-        # generation advanced, the schedule() that bumped it already queued a
-        # follow-up flush (or a sync caller awaits flush_all), so the newer
-        # state is not lost.
-        if self._dirty_generation.get(sid) == generation:
-            self._dirty_generation.pop(sid, None)
+
+        lock = self._get_lock(sid)
+        async with lock:
+            if sid not in self._dirty_generation:
+                return
+            generation = self._dirty_generation[sid]
+            session = self._resolver(sid)
+            if session is None:
+                self._dirty_generation.pop(sid, None)
+                return
+            snapshot: SessionSnapshot = await session.snapshot_for_persistence()
+            await self._repo.save(snapshot)
+            # Only clear dirty if no newer mutation arrived during the save. If the
+            # generation advanced, the schedule() that bumped it already queued a
+            # follow-up flush (or a sync caller awaits flush_all), so the newer
+            # state is not lost.
+            if self._dirty_generation.get(sid) == generation:
+                self._dirty_generation.pop(sid, None)
 
     async def flush_all(self) -> None:
         for sid in list(self._dirty_generation):
             await self.flush_session_id(sid)
 
     async def close(self) -> None:
+        for task in list(self._debounce_tasks.values()):
+            if not task.done():
+                task.cancel()
+        self._debounce_tasks.clear()
         await self.flush_all()
         # A save in flight may have been superseded; drain once more so the
         # final committed generation reaches the repository on graceful close.
         await self.flush_all()
-        for task in self._tasks.values():
-            if not task.done():
-                task.cancel()
-        self._tasks.clear()

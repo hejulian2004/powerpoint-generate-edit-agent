@@ -54,6 +54,7 @@ from .services.plan_confirmation import PlanConfirmationService
 MAX_COMPLETED_REQUESTS = 32
 MAX_COMPLETED_REQUEST_BYTES = 32 * 1024 * 1024  # 32 MiB
 MAX_COMPLETED_REQUEST_RECORD_BYTES = 16 * 1024 * 1024  # 16 MiB
+MAX_COMPLETED_TOMBSTONES = 1024
 
 
 @dataclass
@@ -82,6 +83,14 @@ class CompletedRequestRecord:
 
 
 @dataclass
+class RequestTombstone:
+    request_id: str
+    fingerprint: str
+    admitted_generation: int
+    completed_at: str = ""
+
+
+@dataclass
 class FailedRequestRecord:
     request_id: str
     fingerprint: str
@@ -103,10 +112,12 @@ __all__ = [
     "RequestOutcome",
     "RequestExecution",
     "CompletedRequestRecord",
+    "RequestTombstone",
     "FailedRequestRecord",
     "MAX_COMPLETED_REQUESTS",
     "MAX_COMPLETED_REQUEST_BYTES",
     "MAX_COMPLETED_REQUEST_RECORD_BYTES",
+    "MAX_COMPLETED_TOMBSTONES",
 ]
 
 
@@ -154,6 +165,7 @@ class PPTSession:
         self.committed_turns: Dict[str, Dict[str, Any]] = {}  # request_id -> turn DTO
         self.conversation_generation: int = 0
         self.completed_requests: OrderedDict[str, CompletedRequestRecord] = OrderedDict()
+        self.completed_tombstones: OrderedDict[str, RequestTombstone] = OrderedDict()
         self.failed_requests: OrderedDict[str, FailedRequestRecord] = OrderedDict()
         self.in_flight_requests: Dict[str, RequestExecution] = {}
         self._request_journal_lock: Optional[asyncio.Lock] = None
@@ -485,6 +497,9 @@ class PPTSession:
     def get_completed_request(self, request_id: str) -> Optional[CompletedRequestRecord]:
         return self.completed_requests.get(request_id)
 
+    def get_request_tombstone(self, request_id: str) -> Optional[RequestTombstone]:
+        return self.completed_tombstones.get(request_id)
+
     def record_completed_request(
         self,
         request_id: str,
@@ -494,7 +509,11 @@ class PPTSession:
         durable: bool = False,
         schedule_persist: bool = True,
     ) -> CompletedRequestRecord:
-        """Records a completed request with double bounded budgets (count + total bytes)."""
+        """Records a completed request into two tiers:
+
+        Tier 1: Bounded response cache (count <= 32, bytes <= 32 MiB).
+        Tier 2: Compact durable tombstones (count <= 1024) to reject expired replay side-effects.
+        """
         if not request_id:
             raise ValueError("request_id is required")
         try:
@@ -523,11 +542,22 @@ class PPTSession:
             durable=durable,
         )
 
-        # Evict oldest if count exceeds MAX_COMPLETED_REQUESTS
+        # Tier 2: Record durable compact tombstone
+        tombstone = RequestTombstone(
+            request_id=request_id,
+            fingerprint=fingerprint,
+            admitted_generation=admitted_generation,
+            completed_at=datetime.now(timezone.utc).isoformat(),
+        )
+        while len(self.completed_tombstones) >= MAX_COMPLETED_TOMBSTONES:
+            self.completed_tombstones.popitem(last=False)
+        self.completed_tombstones[request_id] = tombstone
+
+        # Tier 1: Evict oldest if count exceeds MAX_COMPLETED_REQUESTS
         while len(self.completed_requests) >= MAX_COMPLETED_REQUESTS:
             self.completed_requests.popitem(last=False)
 
-        # Evict oldest if total bytes exceed MAX_COMPLETED_REQUEST_BYTES
+        # Tier 1: Evict oldest if total bytes exceed MAX_COMPLETED_REQUEST_BYTES
         current_bytes = sum(r.size_bytes for r in self.completed_requests.values()) + size_bytes
         while current_bytes > MAX_COMPLETED_REQUEST_BYTES and self.completed_requests:
             evicted = self.completed_requests.popitem(last=False)[1]
@@ -600,7 +630,7 @@ class PPTSession:
             }
             if request_id:
                 # Bounded cache of recently committed turns
-                if len(self.committed_turns) > 200:
+                if len(self.committed_turns) >= 200:
                     oldest = next(iter(self.committed_turns))
                     self.committed_turns.pop(oldest, None)
                 self.committed_turns[request_id] = turn_dto
@@ -629,6 +659,7 @@ class PPTSession:
                 self.conversation_generation += 1
                 self.committed_turns.clear()
                 self.completed_requests.clear()
+                self.completed_tombstones.clear()
                 self.failed_requests.clear()
             self.memory.clear_conversation()
             self.confirmations.clear()

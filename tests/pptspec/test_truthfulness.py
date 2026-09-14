@@ -859,3 +859,97 @@ def test_chinese_compact_table_locator():
         validate_truthfulness(raw_input, spec_tbl20, strict=True)
 
 
+def test_narrative_grounding_rejects_unsupported_qualitative_claims():
+    """Ensure qualitative hallucinations in slide titles (e.g. '全面超越') are rejected
+
+    even if they do not introduce unsupported numbers.
+    """
+    raw_input = """
+    We propose AnomalyAgent for industrial anomaly detection.
+    AnomalyAgent achieves an accuracy of 89.5% on MVTec AD.
+    """
+
+    # Hallucinated title claiming '全面超越' not in raw input
+    spec_hallucinated = CanonicalPPTSpec(
+        presentation=PresentationConfig(title="AnomalyAgent Paper"),
+        evidence=[MetricEvidence(id="m1", name="accuracy", value="89.5%")],
+        slides=[
+            SlideRequest(
+                id="s1",
+                type=SlideType.RESULT,
+                title="AnomalyAgent 实现了对现有工业异常检测方法的全面超越",
+                evidence_refs=["m1"],
+            )
+        ],
+    )
+
+    with pytest.raises(UnsupportedTextualFactError) as exc_info:
+        validate_truthfulness(raw_input, spec_hallucinated, strict=True)
+    assert "slide_title" in str(exc_info.value)
+
+    # Non-strict mode reports error
+    res = validate_truthfulness(raw_input, spec_hallucinated, strict=False)
+    assert res.valid is False
+    assert any("全面超越" in err for err in res.errors)
+
+
+def test_narrative_grounding_rejects_unsupported_objective_claims():
+    """Ensure ungrounded absolute assertions in slide objectives are rejected."""
+    raw_input = "We evaluate our proposed method on industrial anomaly detection."
+
+    spec_hallucinated_obj = CanonicalPPTSpec(
+        presentation=PresentationConfig(title="Presentation"),
+        evidence=[ClaimEvidence(id="c1", content="We evaluate our proposed method on industrial anomaly detection.")],
+        slides=[
+            SlideRequest(
+                id="s1",
+                type=SlideType.RESULT,
+                title="Result",
+                objective="展示本框架如何彻底解决小样本异常检测难题",
+                evidence_refs=["c1"],
+            )
+        ],
+    )
+
+    with pytest.raises(UnsupportedTextualFactError) as exc_info:
+        validate_truthfulness(raw_input, spec_hallucinated_obj, strict=True)
+    assert "slide_objective" in str(exc_info.value)
+
+
+def test_narrative_grounding_allows_editorial_labels_and_grounded_paraphrases():
+    """Ensure standard editorial labels ('研究背景', 'Results') and grounded phrases pass."""
+    raw_input = """
+    We propose AnomalyAgent for industrial anomaly detection.
+    Accuracy reaches 89.5%.
+    """
+
+    spec_valid = CanonicalPPTSpec(
+        presentation=PresentationConfig(title="AnomalyAgent Presentation"),
+        evidence=[MetricEvidence(id="m1", name="Accuracy", value="89.5%")],
+        slides=[
+            SlideRequest(
+                id="s1",
+                type=SlideType.TITLE,
+                title="封面",
+            ),
+            SlideRequest(
+                id="s2",
+                type=SlideType.RESULT,
+                title="研究背景",
+                objective="Introduce the paper",
+            ),
+            SlideRequest(
+                id="s3",
+                type=SlideType.RESULT,
+                title="Accuracy",
+                evidence_refs=["m1"],
+            ),
+        ],
+    )
+
+    res = validate_truthfulness(raw_input, spec_valid, strict=True)
+    assert res.valid is True
+    assert len(res.errors) == 0
+
+
+

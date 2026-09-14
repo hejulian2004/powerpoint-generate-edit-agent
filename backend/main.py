@@ -78,15 +78,25 @@ app.include_router(ws_router)
 # Mount frontend dist if built
 dist_dir = Path(__file__).resolve().parent.parent / "frontend" / "dist"
 if dist_dir.exists():
-    app.mount("/assets", StaticFiles(directory=str(dist_dir / "assets")), name="static_assets")
+    assets_dir = dist_dir / "assets"
+    if assets_dir.exists():
+        app.mount("/assets", StaticFiles(directory=str(assets_dir)), name="static_assets")
 
     @app.get("/{full_path:path}")
     async def serve_spa(full_path: str):
-        index_file = dist_dir / "index.html"
-        file_path = dist_dir / full_path
-        if full_path and file_path.exists() and file_path.is_file():
-            return FileResponse(file_path)
-        return FileResponse(index_file)
+        root = dist_dir.resolve()
+        candidate = (root / full_path).resolve()
+        if full_path and candidate.is_relative_to(root) and candidate.is_file():
+            return FileResponse(candidate)
+        index_file = root / "index.html"
+        if index_file.is_file():
+            return FileResponse(index_file)
+        return {
+            "status": "online",
+            "service": "PPT-Agent-Studio Backend API",
+            "docs": "/docs",
+            "websocket": "/ws"
+        }
 else:
     @app.get("/")
     async def index_placeholder():
