@@ -47,6 +47,10 @@ class WorkspaceManager:
     async def list_session_ids(self):
         return await self._repo.list_ids()
 
+    async def persist_session_now(self, session_id: str) -> None:
+        """Forces immediate durable flush of session_id to disk."""
+        await self._persistence.persist_session_now(session_id)
+
     async def _save_session(self, session) -> None:
         await self._repo.save(session_to_snapshot(session))
 

@@ -138,6 +138,7 @@ def snapshot_to_session(snapshot: SessionSnapshot) -> Any:
             response=resp,
             admitted_generation=admitted_gen,
             size_bytes=actual_size,
+            durable=True,
         )
 
     session.checkpoint_service.restore_from_snapshots(snapshot.checkpoints)

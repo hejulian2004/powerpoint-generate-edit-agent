@@ -7,10 +7,10 @@ Invariants:
   reserved / unspecified address rejects the whole URL.
 - Redirects are always disabled (``follow_redirects=False``) so a safe
   initial URL cannot 302 to an intranet target.
-- DNS-rebinding TOCTOU is closed by pinning: the validated address set is
-  enforced during the actual HTTP connection by temporarily constraining
-  ``socket.getaddrinfo`` to the validated IPs. Host header / TLS SNI keep
-  using the original hostname, so certificates keep validating.
+- DNS-rebinding TOCTOU is closed by request-scoped transport pinning via
+  ``create_pinned_async_transport()``: the network dialer connects exclusively
+  to the pre-validated IP set while preserving the original Host header and TLS
+  SNI, completely avoiding process-global ``socket.getaddrinfo`` mutations.
 
 If pinning cannot be applied (non-socket transports), callers must restrict
 custom providers to an explicit trusted-hostname allowlist instead of

@@ -15,6 +15,8 @@ import asyncio
 import io
 import json
 import zipfile
+from unittest.mock import patch
+from fastapi import HTTPException
 
 import pytest
 from fastapi.testclient import TestClient
@@ -299,9 +301,10 @@ async def test_pinned_async_transport_tls_sni_host_dial_verified():
 
         try:
             # Pinned transport specifies provider.test -> 127.0.0.1 with custom CA verification
-            transport = create_pinned_async_transport("provider.test", ["127.0.0.1"], verify=str(ca_path))
+            client_ssl_ctx = ssl.create_default_context(cafile=str(ca_path))
+            transport = create_pinned_async_transport("provider.test", ["127.0.0.1"], verify=client_ssl_ctx)
 
-            # Real TLS verification against custom CA (verify=str(ca_path)), NO verify=False!
+            # Real TLS verification against custom CA SSLContext, NO verify=False!
             async with httpx.AsyncClient(transport=transport) as client:
                 resp = await client.get(f"https://provider.test:{server_port}/v1/models")
                 assert resp.status_code == 200
@@ -1291,8 +1294,416 @@ async def test_session_snapshot_persists_completed_requests_across_restart():
         assert rec.response == {"turn": {"turn_id": "t1"}, "success": True}
         assert rec.admitted_generation == 3
         assert rec.size_bytes > 0
+        assert rec.durable is True
     finally:
         session_manager.delete_session(sid)
+
+
+@pytest.mark.anyio
+async def test_chat_drive_durable_flush_across_sqlite_restart(monkeypatch):
+    """Scenario 1: success -> SQLite flush -> restart -> retry
+
+    Pipeline executes exactly once, turn_id is identical, exact canonical turn preserved.
+    """
+    import backend.agent.attachment_router as router
+    import backend.api.routes as routes
+    from backend.workspace.manager import WorkspaceManager
+    from backend.workspace.persistence import SessionPersistenceService
+    from backend.session.snapshot import SessionSnapshot
+
+    class FakeRepo:
+        def __init__(self):
+            self.saved = {}
+        async def save(self, snapshot):
+            self.saved[snapshot.session_id] = snapshot
+        async def load(self, sid):
+            return self.saved.get(sid)
+        async def list_ids(self):
+            return list(self.saved.keys())
+        async def close(self):
+            pass
+
+    fake_repo = FakeRepo()
+    wm = WorkspaceManager(session_manager, fake_repo, debounce_seconds=0.01)
+    monkeypatch.setattr(routes, "get_workspace_manager", lambda: wm)
+
+    async def _force_text(*a, **k):
+        return "text_generate"
+
+    execution_count = 0
+    async def fake_normalize(payload):
+        nonlocal execution_count
+        execution_count += 1
+        return {
+            "valid": True,
+            "normalization_id": "nid_sqlite",
+            "summary": "s",
+            "warnings": [],
+            "errors": [],
+        }
+
+    async def fake_gen(payload):
+        return {"success": True, "session_id": payload["session_id"]}
+
+    sid = "test_sqlite_restart_sid"
+    sess = session_manager.get_or_create(sid)
+    sess.persistence = wm.persistence
+    req_id = "req_durable_sqlite_1"
+
+    try:
+        with patch.object(router, "classify_intent", _force_text), \
+             patch.object(routes, "api_normalize_pptspec", fake_normalize), \
+             patch.object(routes, "api_generate_from_pptspec", fake_gen):
+            resp1 = client.post(
+                "/api/chat/drive",
+                data={
+                    "message": "生成PPT",
+                    "session_id": sid,
+                    "request_id": req_id,
+                    "expected_epoch": sess.document_epoch,
+                    "expected_revision": sess.document.presentation.version,
+                },
+                files=[("files", ("test.txt", b"sample content", "text/plain"))],
+            )
+            assert resp1.status_code == 200
+            res1 = resp1.json()
+            turn1 = res1.get("turn")
+            assert turn1 is not None
+
+            # Verify saved into fake_repo immediately (durable flush executed)
+            assert sid in fake_repo.saved
+            saved_snap = fake_repo.saved[sid]
+            assert any(r["request_id"] == req_id for r in saved_snap.completed_requests)
+
+            # Simulate complete process crash & restart: delete session from memory, reload from repo
+            session_manager.delete_session(sid)
+            restored_sess = await wm.restore_session(sid)
+            assert restored_sess is not None
+            assert req_id in restored_sess.completed_requests
+            assert restored_sess.completed_requests[req_id].durable is True
+
+            # Retry with exact same request_id
+            resp2 = client.post(
+                "/api/chat/drive",
+                data={
+                    "message": "生成PPT",
+                    "session_id": sid,
+                    "request_id": req_id,
+                    "expected_epoch": restored_sess.document_epoch,
+                    "expected_revision": restored_sess.document.presentation.version,
+                },
+                files=[("files", ("test.txt", b"sample content", "text/plain"))],
+            )
+            assert resp2.status_code == 200
+            res2 = resp2.json()
+            # Pipeline executed exactly once
+            assert execution_count == 1
+            # Exact same turn_id received
+            assert res2.get("turn", {}).get("turn_id") == turn1.get("turn_id")
+    finally:
+        session_manager.delete_session(sid)
+
+
+@pytest.mark.anyio
+async def test_chat_drive_durable_flush_strictly_before_success(monkeypatch):
+    """Scenario 2: Durable flush in SQLite must complete strictly BEFORE HTTP success."""
+    import backend.agent.attachment_router as router
+    import backend.api.routes as routes
+    from backend.workspace.manager import WorkspaceManager
+
+    flush_completed = False
+    http_returned = False
+
+    class SpyRepo:
+        async def save(self, snapshot):
+            nonlocal flush_completed
+            # Assert HTTP success has NOT been returned yet
+            assert not http_returned
+            flush_completed = True
+        async def close(self):
+            pass
+
+    wm = WorkspaceManager(session_manager, SpyRepo(), debounce_seconds=0.01)
+    monkeypatch.setattr(routes, "get_workspace_manager", lambda: wm)
+
+    async def _force_text(*a, **k):
+        return "text_generate"
+
+    async def fake_normalize(payload):
+        return {"valid": True, "normalization_id": "nid_spy", "summary": "s", "warnings": [], "errors": []}
+
+    async def fake_gen(payload):
+        return {"success": True, "session_id": payload["session_id"]}
+
+    sid = "test_flush_order_sid"
+    sess = session_manager.get_or_create(sid)
+    sess.persistence = wm.persistence
+    req_id = "req_order_test_1"
+
+    try:
+        with patch.object(router, "classify_intent", _force_text), \
+             patch.object(routes, "api_normalize_pptspec", fake_normalize), \
+             patch.object(routes, "api_generate_from_pptspec", fake_gen):
+            resp = client.post(
+                "/api/chat/drive",
+                data={
+                    "message": "生成内容",
+                    "session_id": sid,
+                    "request_id": req_id,
+                    "expected_epoch": sess.document_epoch,
+                    "expected_revision": sess.document.presentation.version,
+                },
+                files=[("files", ("test.txt", b"sample content", "text/plain"))],
+            )
+            http_returned = True
+            assert resp.status_code == 200
+            assert flush_completed is True
+    finally:
+        session_manager.delete_session(sid)
+
+
+@pytest.mark.anyio
+async def test_chat_drive_reset_during_finalization_window_returns_409(monkeypatch):
+    """Scenario 3: reset after canonical commit / before or during finalization flush
+
+    Must return 409 CONVERSATION_RESET_DURING_REQUEST and no old turn reaches the new conversation.
+    """
+    import anyio
+    import backend.agent.attachment_router as router
+    import backend.api.routes as routes
+    from backend.workspace.manager import WorkspaceManager
+
+    sid = "test_reset_fence2_sid"
+    sess = session_manager.get_or_create(sid)
+    req_id = "req_reset_fence2"
+
+    async def _force_text(*a, **k):
+        return "text_generate"
+
+    async def fake_normalize(payload):
+        return {"valid": True, "normalization_id": "nid_f2", "summary": "s", "warnings": [], "errors": []}
+
+    async def fake_gen(payload):
+        return {"success": True, "session_id": payload["session_id"]}
+
+    # Simulate persist_session_now intercepting and triggering reset
+    async def fake_persist_now(sid_arg):
+        # User triggers reset right during the persistence window!
+        await sess.reset_conversation()
+
+    wm = WorkspaceManager(session_manager, None)
+    monkeypatch.setattr(routes, "get_workspace_manager", lambda: wm)
+    monkeypatch.setattr(wm, "persist_session_now", fake_persist_now)
+
+    try:
+        with patch.object(router, "classify_intent", _force_text), \
+             patch.object(routes, "api_normalize_pptspec", fake_normalize), \
+             patch.object(routes, "api_generate_from_pptspec", fake_gen):
+            resp = client.post(
+                "/api/chat/drive",
+                data={
+                    "message": "生成大纲",
+                    "session_id": sid,
+                    "request_id": req_id,
+                    "expected_epoch": sess.document_epoch,
+                    "expected_revision": sess.document.presentation.version,
+                },
+                files=[("files", ("test.txt", b"content", "text/plain"))],
+            )
+            assert resp.status_code == 409
+            assert "CONVERSATION_RESET_DURING_REQUEST" in resp.text
+            # Confirm session transcript is clean (no old turn in new conversation)
+            assert len(sess.memory.messages) == 0
+    finally:
+        session_manager.delete_session(sid)
+
+
+@pytest.mark.anyio
+async def test_chat_drive_concurrent_failure_cohort_deduplication():
+    """Scenario 4: Concurrent N callers with same request_id hitting failure
+
+    Must execute pipeline exactly once, and all callers receive identical error status & detail.
+    """
+    import anyio
+    import backend.agent.attachment_router as router
+    import backend.api.routes as routes
+
+    execution_count = 0
+    barrier = anyio.Event()
+
+    async def _force_fail(*a, **k):
+        nonlocal execution_count
+        execution_count += 1
+        barrier.set()
+        await anyio.sleep(0.05)
+        raise HTTPException(status_code=500, detail="Pipeline calculation failed")
+
+    sid = "test_cohort_fail_sid"
+    sess = session_manager.get_or_create(sid)
+    req_id = "req_cohort_fail"
+
+    results = []
+
+    async def client_call(caller_id: int):
+        if caller_id > 0:
+            await barrier.wait()
+        resp = await anyio.to_thread.run_sync(
+            lambda: client.post(
+                "/api/chat/drive",
+                data={"message": "失败测试", "session_id": sid, "request_id": req_id},
+                files=[("files", ("test.txt", b"foo", "text/plain"))],
+            )
+        )
+        results.append((caller_id, resp.status_code, resp.text))
+
+    try:
+        with patch.object(router, "classify_intent", _force_fail):
+            async with anyio.create_task_group() as tg:
+                for i in range(3):
+                    tg.start_soon(client_call, i)
+
+        assert execution_count == 1
+        assert len(results) == 3
+        # All callers received identical status (500)
+        assert all(r[1] == 500 for r in results)
+        # All callers received error detail mentioning failure
+        assert all("Pipeline calculation failed" in r[2] for r in results)
+    finally:
+        session_manager.delete_session(sid)
+
+
+@pytest.mark.anyio
+async def test_chat_drive_failure_cache_ttl_hit():
+    """Scenario 5: Retry inside failure TTL (5s) hits cache without pipeline rerun."""
+    import backend.agent.attachment_router as router
+
+    execution_count = 0
+
+    async def _force_fail(*a, **k):
+        nonlocal execution_count
+        execution_count += 1
+        raise HTTPException(status_code=500, detail="Failure cache test")
+
+    sid = "test_fail_cache_hit_sid"
+    sess = session_manager.get_or_create(sid)
+    req_id = "req_fail_cache_hit"
+
+    try:
+        with patch.object(router, "classify_intent", _force_fail):
+            resp1 = client.post(
+                "/api/chat/drive",
+                data={"message": "重试缓存", "session_id": sid, "request_id": req_id},
+                files=[("files", ("test.txt", b"foo", "text/plain"))],
+            )
+            assert resp1.status_code == 500
+            assert execution_count == 1
+
+            # Retry immediately (inside TTL)
+            resp2 = client.post(
+                "/api/chat/drive",
+                data={"message": "重试缓存", "session_id": sid, "request_id": req_id},
+                files=[("files", ("test.txt", b"foo", "text/plain"))],
+            )
+            assert resp2.status_code == 500
+            # Pipeline was NOT executed again!
+            assert execution_count == 1
+            assert "Failure cache test" in resp2.text
+    finally:
+        session_manager.delete_session(sid)
+
+
+@pytest.mark.anyio
+async def test_chat_drive_failure_cache_ttl_expired():
+    """Scenario 6: Retry after failure TTL expired is allowed to execute pipeline again."""
+    import time
+    import backend.agent.attachment_router as router
+
+    execution_count = 0
+
+    async def _force_fail(*a, **k):
+        nonlocal execution_count
+        execution_count += 1
+        raise HTTPException(status_code=500, detail=f"Failure run {execution_count}")
+
+    sid = "test_fail_cache_exp_sid"
+    sess = session_manager.get_or_create(sid)
+    req_id = "req_fail_cache_exp"
+
+    try:
+        with patch.object(router, "classify_intent", _force_fail):
+            resp1 = client.post(
+                "/api/chat/drive",
+                data={"message": "过期重试", "session_id": sid, "request_id": req_id},
+                files=[("files", ("test.txt", b"foo", "text/plain"))],
+            )
+            assert resp1.status_code == 500
+            assert execution_count == 1
+
+            # Manually expire the entry in sess.failed_requests
+            assert req_id in sess.failed_requests
+            sess.failed_requests[req_id].expire_at = time.monotonic() - 1.0
+
+            # Retry after expiration
+            resp2 = client.post(
+                "/api/chat/drive",
+                data={"message": "过期重试", "session_id": sid, "request_id": req_id},
+                files=[("files", ("test.txt", b"foo", "text/plain"))],
+            )
+            assert resp2.status_code == 500
+            # Pipeline was executed a second time
+            assert execution_count == 2
+    finally:
+        session_manager.delete_session(sid)
+
+
+@pytest.mark.anyio
+async def test_chat_drive_filename_less_multipart_retained():
+    """Scenario 7: multipart file with filename='' and non-empty bytes
+
+    Attachment count is preserved, sanitized fallback name is assigned, and disposition contains it.
+    """
+    import backend.agent.attachment_router as router
+    import backend.api.routes as routes
+
+    async def _force_text(*a, **k):
+        return "text_generate"
+
+    async def fake_normalize(payload):
+        return {"valid": True, "normalization_id": "nid_nameless", "summary": "s", "warnings": [], "errors": []}
+
+    async def fake_gen(payload):
+        return {"success": True, "session_id": payload["session_id"]}
+
+    sid = "test_nameless_upload_sid"
+    sess = session_manager.get_or_create(sid)
+
+    try:
+        with patch.object(router, "classify_intent", _force_text), \
+             patch.object(routes, "api_normalize_pptspec", fake_normalize), \
+             patch.object(routes, "api_generate_from_pptspec", fake_gen):
+            # Pass UploadFile directly to the route function to test filename="" behavior cleanly
+            from starlette.datastructures import UploadFile
+            uf = UploadFile(
+                filename="",
+                file=io.BytesIO(b"Hello world non-empty content"),
+                headers={"content-type": "text/plain"},
+            )
+            res = await routes.chat_with_attachments(
+                message="分析附件",
+                session_id=sid,
+                request_id="req_nameless",
+                expected_epoch=sess.document_epoch,
+                expected_revision=sess.document.presentation.version,
+                files=[uf],
+            )
+            dispositions = res.get("dispositions", [])
+            assert len(dispositions) == 1
+            # Fallback name was assigned (e.g. attachment_0)
+            assert "attachment_0" in dispositions[0]["filename"]
+            assert dispositions[0]["disposition"] == "consume"
+    finally:
+        session_manager.delete_session(sid)
+
 # ---------------------------------------------------------------------------
 
 @pytest.mark.anyio
