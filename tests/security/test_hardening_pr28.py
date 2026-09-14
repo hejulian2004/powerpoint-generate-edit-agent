@@ -770,7 +770,7 @@ def test_pptspec_generate_missing_stamp_with_valid_artifact():
             slides=[],
         )
         art = artifact_store.save(
-            session_id=sid, raw_input="hello", spec=spec, summary={}, asset_requirements=[]
+            session_id=sid, raw_input="CAS presentation", spec=spec, summary={}, asset_requirements=[]
         )
         resp = client.post(
             "/api/pptspec/generate",

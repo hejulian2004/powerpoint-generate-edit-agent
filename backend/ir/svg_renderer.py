@@ -40,12 +40,11 @@ _SAFE_COLOR_RE = re.compile(
     r"^(#[0-9a-fA-F]{3,8}|rgba?\([0-9.,\s%]+\)|hsla?\([0-9.,\s%]+\)|none|currentColor|[a-zA-Z0-9_\-]+)$"
 )
 _ALLOWED_DATA_IMAGE_RE = re.compile(
-    r"^data:image\/(png|jpeg|jpg|webp|gif|svg\+xml);base64,[A-Za-z0-9+/=]+$",
+    r"^data:image\/(png|jpeg|jpg|webp|gif);base64,[A-Za-z0-9+/=]+$",
     re.IGNORECASE,
 )
-_ALLOWED_URL_RE = re.compile(
-    r"^(https?://|/assets/|assets/|data/)[a-zA-Z0-9_.\-/%?=&#+]+$",
-    re.IGNORECASE,
+_ALLOWED_LOCAL_ASSET_RE = re.compile(
+    r"^/assets/[a-zA-Z0-9_\-.]+(/[a-zA-Z0-9_\-.]+)*$",
 )
 
 
@@ -83,10 +82,23 @@ def safe_font_family(name: Optional[str], default: str = "Segoe UI") -> str:
 
 
 def safe_image_src(src: Optional[str]) -> str:
+    """Enforces strict safety on SVG image sources:
+
+    - Base64 raster image data (png, jpeg, jpg, webp, gif). active SVG data URI is disallowed.
+    - Local /assets/<safe-path> without '..', '\\', '//', '%', '?', or '#'.
+    - Remote external URLs (http://, https://) are disallowed to ensure deterministic, self-contained preview.
+    """
     if not src:
         return ""
     s = str(src).strip()
-    if _ALLOWED_DATA_IMAGE_RE.match(s) or _ALLOWED_URL_RE.match(s):
+
+    # Reject path traversal, directory escape, query strings, and hashes
+    if any(bad in s for bad in ("..", "\\", "//", "%2e", "%2E", "%2f", "%2F", "?", "#")):
+        return ""
+
+    if _ALLOWED_DATA_IMAGE_RE.match(s):
+        return s
+    if _ALLOWED_LOCAL_ASSET_RE.match(s):
         return s
     return ""
 

@@ -15,13 +15,16 @@ from __future__ import annotations
 import asyncio
 import json
 import sqlite3
+import time
 from dataclasses import asdict
 from pathlib import Path
 from typing import List, Optional, Protocol, runtime_checkable
 
+from ..session.session import RequestTombstone
 from ..session.snapshot import SessionSnapshot, WorkspaceSnapshot
 
 DEFAULT_DB_PATH = Path(__file__).resolve().parents[2] / "data" / "workspace.db"
+IDEMPOTENCY_RETENTION_SECONDS = 7 * 86400  # 7 days authoritative retention
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS sessions (
@@ -34,6 +37,15 @@ CREATE TABLE IF NOT EXISTS workspace (
     last_active_session_id TEXT,
     session_ids            TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS request_tombstones (
+    session_id          TEXT NOT NULL,
+    request_id          TEXT NOT NULL,
+    fingerprint         TEXT NOT NULL,
+    admitted_generation INTEGER NOT NULL,
+    completed_at        REAL NOT NULL,
+    PRIMARY KEY (session_id, request_id)
+);
+CREATE INDEX IF NOT EXISTS idx_request_tombstones_expiry ON request_tombstones(completed_at);
 """
 
 
@@ -66,15 +78,63 @@ class SQLiteRepository:
 
     # -- sync primitives (must be called under self._lock via to_thread) --
 
-    def _save_sync(self, snapshot: SessionSnapshot) -> None:
+    def _save_sync(
+        self,
+        snapshot: SessionSnapshot,
+        pending_tombstones: Optional[List[RequestTombstone]] = None,
+    ) -> None:
         payload = json.dumps(asdict(snapshot), ensure_ascii=False)
+        now = time.time()
+        expiry_cutoff = now - IDEMPOTENCY_RETENTION_SECONDS
         with self._conn:
+            # 1. Atomic UPSERT session snapshot
             self._conn.execute(
                 "INSERT INTO sessions(session_id, payload, updated_at) VALUES(?,?,?) "
                 "ON CONFLICT(session_id) DO UPDATE SET "
                 "payload=excluded.payload, updated_at=excluded.updated_at",
                 (snapshot.session_id, payload, snapshot.updated_at),
             )
+            # 2. Atomic UPSERT pending tombstones in the same transaction
+            if pending_tombstones:
+                for t in pending_tombstones:
+                    try:
+                        c_at = float(t.completed_at) if t.completed_at else now
+                    except (ValueError, TypeError):
+                        c_at = now
+                    self._conn.execute(
+                        "INSERT INTO request_tombstones(session_id, request_id, fingerprint, admitted_generation, completed_at) "
+                        "VALUES(?,?,?,?,?) "
+                        "ON CONFLICT(session_id, request_id) DO UPDATE SET "
+                        "fingerprint=excluded.fingerprint, "
+                        "admitted_generation=excluded.admitted_generation, "
+                        "completed_at=excluded.completed_at",
+                        (snapshot.session_id, t.request_id, t.fingerprint, t.admitted_generation, c_at),
+                    )
+            # 3. Clean up tombstones older than 7 days
+            self._conn.execute(
+                "DELETE FROM request_tombstones WHERE completed_at < ?",
+                (expiry_cutoff,),
+            )
+
+    def _get_request_tombstone_sync(
+        self, session_id: str, request_id: str
+    ) -> Optional[RequestTombstone]:
+        now = time.time()
+        expiry_cutoff = now - IDEMPOTENCY_RETENTION_SECONDS
+        row = self._conn.execute(
+            "SELECT request_id, fingerprint, admitted_generation, completed_at "
+            "FROM request_tombstones "
+            "WHERE session_id=? AND request_id=? AND completed_at >= ?",
+            (session_id, request_id, expiry_cutoff),
+        ).fetchone()
+        if row is None:
+            return None
+        return RequestTombstone(
+            request_id=row[0],
+            fingerprint=row[1],
+            admitted_generation=row[2],
+            completed_at=str(row[3]),
+        )
 
     def _load_sync(self, session_id: str) -> Optional[SessionSnapshot]:
         row = self._conn.execute(
@@ -132,16 +192,34 @@ class SQLiteRepository:
         async with self._lock:
             loop = asyncio.get_running_loop()
             fut = loop.run_in_executor(None, func, *args)
-            try:
-                return await asyncio.shield(fut)
-            except asyncio.CancelledError:
-                # If outer coroutine is cancelled, we MUST NOT release self._lock
-                # while the worker thread is still executing against self._conn.
-                await fut
-                raise
+            cancelled = False
+            while not fut.done():
+                try:
+                    await asyncio.shield(fut)
+                except asyncio.CancelledError:
+                    cancelled = True
+                    continue
+            result = fut.result()
+            if cancelled:
+                raise asyncio.CancelledError()
+            return result
 
-    async def save(self, snapshot: SessionSnapshot) -> None:
-        await self._run_exclusive(self._save_sync, snapshot)
+    async def save(
+        self,
+        snapshot: SessionSnapshot,
+        pending_tombstones: Optional[List[RequestTombstone]] = None,
+    ) -> None:
+        if pending_tombstones is not None:
+            await self._run_exclusive(self._save_sync, snapshot, pending_tombstones)
+        else:
+            await self._run_exclusive(self._save_sync, snapshot)
+
+    async def get_request_tombstone(
+        self, session_id: str, request_id: str
+    ) -> Optional[RequestTombstone]:
+        return await self._run_exclusive(
+            self._get_request_tombstone_sync, session_id, request_id
+        )
 
     async def load(self, session_id: str) -> Optional[SessionSnapshot]:
         return await self._run_exclusive(self._load_sync, session_id)

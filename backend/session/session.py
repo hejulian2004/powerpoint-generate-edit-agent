@@ -166,6 +166,7 @@ class PPTSession:
         self.conversation_generation: int = 0
         self.completed_requests: OrderedDict[str, CompletedRequestRecord] = OrderedDict()
         self.completed_tombstones: OrderedDict[str, RequestTombstone] = OrderedDict()
+        self.pending_tombstones: Dict[str, RequestTombstone] = {}  # uncommitted write-set for atomic SQLite commit
         self.failed_requests: OrderedDict[str, FailedRequestRecord] = OrderedDict()
         self.in_flight_requests: Dict[str, RequestExecution] = {}
         self._request_journal_lock: Optional[asyncio.Lock] = None
@@ -404,7 +405,9 @@ class PPTSession:
     async def snapshot_for_export(self) -> ExportSnapshot:
         return await self.document.snapshot_for_export()
 
-    async def snapshot_for_persistence(self) -> SessionSnapshot:
+    async def snapshot_for_persistence(
+        self, with_pending_tombstones: bool = False
+    ) -> Union[SessionSnapshot, Tuple[SessionSnapshot, List[RequestTombstone]]]:
         """Atomically captures durable state under the strict lock hierarchy:
 
         conversation_lock -> document.mutation_lock -> request_journal_lock.
@@ -414,7 +417,16 @@ class PPTSession:
         async with self.memory.conversation_lock:
             async with self.document.mutation_lock:
                 async with self.request_journal_lock:
-                    return session_to_snapshot(self)
+                    snapshot = session_to_snapshot(self)
+                    if with_pending_tombstones:
+                        pending = list(self.pending_tombstones.values())
+                        return snapshot, pending
+                    return snapshot
+
+    def ack_persisted_tombstones(self, committed_ids: List[str]) -> None:
+        """Removes committed request IDs from pending_tombstones after DB transaction succeeds."""
+        for req_id in committed_ids:
+            self.pending_tombstones.pop(req_id, None)
 
     # ------------------------------------------------------------------
     # Cursor
@@ -542,16 +554,17 @@ class PPTSession:
             durable=durable,
         )
 
-        # Tier 2: Record durable compact tombstone
+        # Tier 2: Record durable compact tombstone in memory LRU cache and uncommitted write-set
         tombstone = RequestTombstone(
             request_id=request_id,
             fingerprint=fingerprint,
             admitted_generation=admitted_generation,
-            completed_at=datetime.now(timezone.utc).isoformat(),
+            completed_at=str(time.time()),
         )
         while len(self.completed_tombstones) >= MAX_COMPLETED_TOMBSTONES:
             self.completed_tombstones.popitem(last=False)
         self.completed_tombstones[request_id] = tombstone
+        self.pending_tombstones[request_id] = tombstone
 
         # Tier 1: Evict oldest if count exceeds MAX_COMPLETED_REQUESTS
         while len(self.completed_requests) >= MAX_COMPLETED_REQUESTS:
@@ -659,7 +672,8 @@ class PPTSession:
                 self.conversation_generation += 1
                 self.committed_turns.clear()
                 self.completed_requests.clear()
-                self.completed_tombstones.clear()
+                # Contract: completed_tombstones & pending_tombstones are session-scoped and 7-day durable;
+                # reset_conversation() NEVER deletes tombstones, preserving idempotency across resets.
                 self.failed_requests.clear()
             self.memory.clear_conversation()
             self.confirmations.clear()

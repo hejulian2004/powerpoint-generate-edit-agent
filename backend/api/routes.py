@@ -449,11 +449,20 @@ async def list_models(payload: Dict[str, Any] = Body(default={})):
     if not raw_base:
         raise HTTPException(status_code=400, detail="Base URL is required")
 
+    caller_supplied_base = bool(caller_base)
+    allow_private = (
+        not caller_supplied_base
+        and settings.app_env in {"dev", "test"}
+    )
+
     try:
-        OutboundURLPolicy.enforce_credential_scheme(raw_base, api_key)
+        OutboundURLPolicy.enforce_credential_scheme(
+            raw_base, api_key, allow_private_for_tests=allow_private
+        )
         normalized, validated_host, validated_ips = OutboundURLPolicy.validate(
             raw_base,
             trusted_hosts=settings.trusted_provider_host_set or None,
+            allow_private_for_tests=allow_private,
         )
     except OutboundURLRejected as exc:
         code = getattr(exc, "code", "OUTBOUND_REJECTED")
@@ -1458,7 +1467,16 @@ async def chat_with_attachments(
 
             if not is_recovery_executor and cached_record is None:
                 # Check Tier 2 durable tombstones (expired replay cache)
+                # First check in-memory LRU cache
                 tombstone = session.get_request_tombstone(request_id)
+                manager = get_workspace_manager()
+                if tombstone is None and manager is not None and getattr(manager, "repository", None) is not None:
+                    # In-memory miss -> authoritative lookup in SQLite request_tombstones under single-flight admission
+                    tombstone = await manager.repository.get_request_tombstone(session.session_id, request_id)
+                    if tombstone is not None:
+                        # Warm memory LRU cache
+                        session.completed_tombstones[request_id] = tombstone
+
                 if tombstone is not None:
                     if tombstone.fingerprint != req_fingerprint:
                         raise HTTPException(status_code=409, detail="REQUEST_ID_PAYLOAD_MISMATCH")

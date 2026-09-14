@@ -139,6 +139,27 @@ def test_svg_renderer_adversarial_injection_neutralized():
     )
     slide.add_element(img_elem_html)
 
+    # Remote URL image and active SVG data URI (both must be blocked)
+    img_elem_remote = ImageElementIR(
+        id="img_remote",
+        src="https://external.com/tracker.png",
+        x=350.0,
+        y=350.0,
+        width=100.0,
+        height=100.0,
+    )
+    slide.add_element(img_elem_remote)
+
+    img_elem_active_svg = ImageElementIR(
+        id="img_active_svg",
+        src="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciPjxzY3JpcHQ+YWxlcnQoMSk8L3NjcmlwdD48L3N2Zz4=",
+        x=500.0,
+        y=350.0,
+        width=100.0,
+        height=100.0,
+    )
+    slide.add_element(img_elem_active_svg)
+
     # Render to SVG
     svg_output = SVGRenderer.render_slide(slide)
 
@@ -162,6 +183,8 @@ def test_svg_renderer_adversarial_injection_neutralized():
         href = img.attrib.get("href", "")
         assert not href.startswith("javascript:"), f"Dangerous href: {href}"
         assert not href.startswith("data:text/html"), f"Dangerous data URI: {href}"
+        assert not href.startswith("https://"), f"Remote image URL not neutralized: {href}"
+        assert not href.startswith("data:image/svg+xml"), f"Active SVG data URI not neutralized: {href}"
 
     # 5. Normal text content was retained and properly escaped
     assert "Safe text with <script>alert(4)</script> & tags" in text_elem.text_content.paragraphs[0].runs[0].text
@@ -222,6 +245,64 @@ def test_two_tier_journal_tombstones_prevent_expired_replay_execution():
     assert restored_tombstone.fingerprint == "fp_initial"
 
 
+def test_sqlite_authoritative_tombstones_and_reset_conversation_retention(tmp_path):
+    """Ensure SQLite request_tombstones table is authoritative for 7 days,
+
+    persisted atomically with session snapshot, and survives reset_conversation().
+    """
+    import asyncio
+    from backend.session.factory import SessionFactory
+    from backend.workspace.repository import SQLiteRepository
+    from backend.workspace.persistence import SessionPersistenceService
+
+    async def _run():
+        db = tmp_path / "tombstone_auth.db"
+        repo = SQLiteRepository(db)
+
+        pres = PresentationIR(title="Atomic Tombstone Test")
+        session = SessionFactory.create(pres, session_id="sess_atomic_tombstone")
+        service = SessionPersistenceService(repo, lambda sid: session, debounce_seconds=60)
+        session.persistence = service
+
+        # 1. Record completed request
+        session.record_completed_request(
+            request_id="req_durable_1",
+            fingerprint="fp_durable_1",
+            response={"turn_id": "turn_1"},
+            admitted_generation=session.conversation_generation,
+            durable=True,
+        )
+
+        assert "req_durable_1" in session.pending_tombstones
+        assert session.get_request_tombstone("req_durable_1") is not None
+
+        # 2. Persist session now -> atomically commits snapshot and pending tombstones
+        await service.persist_session_now("sess_atomic_tombstone")
+        assert "req_durable_1" not in session.pending_tombstones
+
+        # 3. Query DB authoritative ledger directly
+        db_tombstone = await repo.get_request_tombstone("sess_atomic_tombstone", "req_durable_1")
+        assert db_tombstone is not None
+        assert db_tombstone.fingerprint == "fp_durable_1"
+
+        # 4. Simulate reset_conversation() -> clears transcript and completed_requests, but keeps tombstones
+        await session.reset_conversation()
+        assert session.get_completed_request("req_durable_1") is None
+        assert session.get_request_tombstone("req_durable_1") is not None
+
+        # 5. Evict memory tombstone to simulate cache miss and verify DB authoritative lookup
+        session.completed_tombstones.clear()
+        assert session.get_request_tombstone("req_durable_1") is None
+        db_cached = await repo.get_request_tombstone("sess_atomic_tombstone", "req_durable_1")
+        assert db_cached is not None
+        assert db_cached.fingerprint == "fp_durable_1"
+
+        await service.close()
+        await repo.close()
+
+    asyncio.run(_run())
+
+
 def test_outbound_enforces_https_with_api_key(monkeypatch):
     """Ensure HTTP is rejected when an API key is attached to outbound requests."""
     from backend.security.outbound import OutboundURLPolicy, OutboundURLRejected
@@ -246,6 +327,52 @@ def test_outbound_enforces_https_with_api_key(monkeypatch):
     norm, host, ips = OutboundURLPolicy.validate("https://public.example.com/v1", api_key="sk-secret-1234")
     assert host == "public.example.com"
     assert norm == "https://public.example.com/v1"
+
+
+def test_models_route_server_configured_loopback_vs_client_override(monkeypatch):
+    """Ensure /api/models allows server-configured loopback in dev/test,
+
+    but strictly rejects client-supplied loopback overrides with SSRF block.
+    """
+    from backend.config import settings
+    import httpx
+
+    class FakeClient:
+        def __init__(self, *args, **kwargs):
+            pass
+        async def __aenter__(self):
+            return self
+        async def __aexit__(self, *args):
+            pass
+        async def get(self, url, headers=None):
+            class FakeResp:
+                def raise_for_status(self):
+                    pass
+                def json(self):
+                    return {"data": [{"id": "local-model"}]}
+            return FakeResp()
+
+    monkeypatch.setattr(httpx, "AsyncClient", FakeClient)
+    monkeypatch.setattr(settings, "app_env", "dev")
+    monkeypatch.setattr(settings, "openai_base_url", "http://127.0.0.1:11434/v1")
+    monkeypatch.setattr(settings, "openai_api_key", "local-token")
+
+    client = TestClient(app)
+
+    # 1. Caller supplies no base_url -> uses server-configured loopback -> allowed in dev
+    res_server = client.post("/api/models", json={})
+    assert res_server.status_code == 200
+    assert "local-model" in res_server.json()["models"]
+
+    # 2. Caller explicitly supplies loopback base_url -> rejected with 403 (HTTPS required or SSRF blocked)
+    res_client = client.post("/api/models", json={"base_url": "http://127.0.0.1:11434/v1", "api_key": "some-key"})
+    assert res_client.status_code == 403
+    assert any(code in res_client.json()["detail"] for code in ("OUTBOUND_SSRF_BLOCKED", "OUTBOUND_HTTPS_REQUIRED"))
+
+    # 3. Caller explicitly supplies HTTPS loopback base_url -> rejected with SSRF blocked
+    res_client_https = client.post("/api/models", json={"base_url": "https://127.0.0.1:11434/v1", "api_key": "some-key"})
+    assert res_client_https.status_code == 403
+    assert "OUTBOUND_SSRF_BLOCKED" in res_client_https.json()["detail"]
 
 
 def test_pinned_async_transport_constructed_safely():

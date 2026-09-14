@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import pytest
 
 from backend.agent.mutation_gateway import STALE_MUTATION, MutationGateway
 from backend.ir.models import PresentationIR, SlideIR, TextContentIR, TextElementIR
@@ -406,4 +407,102 @@ def test_debounce_cancellation_race_preserves_single_writer_and_latest_state(tmp
         await repo.close()
 
     asyncio.run(_run())
+
+
+def test_run_exclusive_double_cancellation_preserves_lock_and_single_writer(tmp_path):
+    """P0 contract test: double cancellation on _run_exclusive never releases self._lock
+
+    prematurely while OS worker thread is still executing, and single writer is strictly preserved.
+    """
+    import threading
+    from backend.session.snapshot import SessionSnapshot
+
+    async def _run():
+        db = tmp_path / "double_cancel_race.db"
+        repo = SQLiteRepository(db)
+
+        concurrent_writers = 0
+        max_concurrent_writers = 0
+        count_lock = threading.Lock()
+
+        worker1_entered = threading.Event()
+        worker1_release = threading.Event()
+        worker2_entered = threading.Event()
+
+        orig_save_sync = repo._save_sync
+
+        def _instrumented_save_sync(snapshot: SessionSnapshot):
+            nonlocal concurrent_writers, max_concurrent_writers
+            with count_lock:
+                concurrent_writers += 1
+                if concurrent_writers > max_concurrent_writers:
+                    max_concurrent_writers = concurrent_writers
+            try:
+                if snapshot.session_id == "snap1":
+                    worker1_entered.set()
+                    worker1_release.wait(timeout=5.0)
+                elif snapshot.session_id == "snap2":
+                    worker2_entered.set()
+                return orig_save_sync(snapshot)
+            finally:
+                with count_lock:
+                    concurrent_writers -= 1
+
+        repo._save_sync = _instrumented_save_sync
+
+        snap1 = SessionSnapshot(session_id="snap1", presentation={"title": "s1"}, document_epoch="epoch1")
+        snap2 = SessionSnapshot(session_id="snap2", presentation={"title": "s2"}, document_epoch="epoch1")
+
+        # 1. Start task1 -> worker1 begins and blocks on worker1_release
+        task1 = asyncio.create_task(repo.save(snap1))
+        for _ in range(100):
+            if worker1_entered.is_set():
+                break
+            await asyncio.sleep(0.01)
+        assert worker1_entered.is_set()
+
+        # 2. First cancellation of task1
+        task1.cancel()
+        await asyncio.sleep(0.02)
+        assert not task1.done(), "task1 must NOT be done while worker1 thread is still running"
+
+        # 3. Second cancellation of task1 (double cancellation)
+        task1.cancel()
+        await asyncio.sleep(0.02)
+        assert not task1.done(), "task1 must NOT be done after second cancel while worker1 thread is still running"
+
+        # 4. Start task2 attempting to acquire repo lock and save snap2
+        task2 = asyncio.create_task(repo.save(snap2))
+        await asyncio.sleep(0.05)
+
+        # Assert task2 cannot enter _save_sync while worker1 is running under the lock
+        assert not worker2_entered.is_set(), "task2 must NOT enter _save_sync before worker1 releases the lock"
+        with count_lock:
+            assert max_concurrent_writers == 1
+            assert concurrent_writers == 1
+
+        # 5. Release worker1 so it finishes
+        worker1_release.set()
+
+        # task1 must complete by raising asyncio.CancelledError
+        with pytest.raises(asyncio.CancelledError):
+            await task1
+
+        # task2 can now acquire the lock and finish successfully
+        await asyncio.wait_for(task2, timeout=2.0)
+        assert worker2_entered.is_set()
+
+        with count_lock:
+            assert max_concurrent_writers == 1
+            assert concurrent_writers == 0
+
+        # Verify snap2 was saved properly
+        loaded2 = await repo.load("snap2")
+        assert loaded2 is not None
+        assert loaded2.presentation["title"] == "s2"
+
+        await repo.close()
+
+    asyncio.run(_run())
+
 

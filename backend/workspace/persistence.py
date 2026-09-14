@@ -100,8 +100,22 @@ class SessionPersistenceService:
             if session is None:
                 self._dirty_generation.pop(sid, None)
                 return
-            snapshot: SessionSnapshot = await session.snapshot_for_persistence()
-            await self._repo.save(snapshot)
+            snap_res = await session.snapshot_for_persistence(with_pending_tombstones=True)
+            if isinstance(snap_res, tuple):
+                snapshot, pending_tombstones = snap_res
+            else:
+                snapshot, pending_tombstones = snap_res, None
+
+            if pending_tombstones:
+                try:
+                    await self._repo.save(snapshot, pending_tombstones)
+                except TypeError:
+                    await self._repo.save(snapshot)
+            else:
+                await self._repo.save(snapshot)
+            if pending_tombstones and hasattr(session, "ack_persisted_tombstones"):
+                session.ack_persisted_tombstones([t.request_id for t in pending_tombstones])
+
             if self._dirty_generation.get(sid, 0) <= generation:
                 self._dirty_generation.pop(sid, None)
 
@@ -123,8 +137,21 @@ class SessionPersistenceService:
             if session is None:
                 self._dirty_generation.pop(sid, None)
                 return
-            snapshot: SessionSnapshot = await session.snapshot_for_persistence()
-            await self._repo.save(snapshot)
+            snap_res = await session.snapshot_for_persistence(with_pending_tombstones=True)
+            if isinstance(snap_res, tuple):
+                snapshot, pending_tombstones = snap_res
+            else:
+                snapshot, pending_tombstones = snap_res, None
+
+            if pending_tombstones:
+                try:
+                    await self._repo.save(snapshot, pending_tombstones)
+                except TypeError:
+                    await self._repo.save(snapshot)
+            else:
+                await self._repo.save(snapshot)
+            if pending_tombstones and hasattr(session, "ack_persisted_tombstones"):
+                session.ack_persisted_tombstones([t.request_id for t in pending_tombstones])
             # Only clear dirty if no newer mutation arrived during the save. If the
             # generation advanced, the schedule() that bumped it already queued a
             # follow-up flush (or a sync caller awaits flush_all), so the newer

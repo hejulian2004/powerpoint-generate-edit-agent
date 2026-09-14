@@ -329,7 +329,8 @@ EDITORIAL_WORDS = {
     "thank", "you", "thanks", "performance", "metrics", "metric", "case", "benchmark",
     "implementation", "details", "specs", "loss", "equation", "res", "arch",
     "fig", "figure", "chart", "tbl", "t", "bg", "introduction", "intro",
-    "presentation", "slide", "analysis", "design", "test", "tests",
+    "presentation", "slide", "analysis", "design", "test", "tests", "valid", "captions", "caption",
+    "hardware", "software", "system", "overview",
     # Chinese
     "封面", "标题", "目录", "概述", "大纲", "研究背景", "背景", "动机",
     "问题定义", "相关工作", "方法", "本文方法", "方法概述", "架构设计",
@@ -342,36 +343,91 @@ EDITORIAL_WORDS = {
 }
 
 
+_LAYOUT_INSTRUCTION_RE = re.compile(
+    r"\b(split\s+into\s+\d+\s+columns?|\d+\s*columns?|card\s*grid|two-column|three-column|grid\s*layout|"
+    r"header-content|split-screen|left-right|top-bottom|hero-metric|stat-callout|timeline-process|"
+    r"双栏|三栏|四栏|两栏|分栏|网格布局|卡片布局|左右对比|时间线|指标卡片|排版样式|布局结构)\b",
+    re.IGNORECASE,
+)
+
+_COMPARISON_OR_CLAIM_RE = re.compile(
+    r"\b(dominates?|outperforms?|surpasses?|exceeds?|beats?|higher\s+than|lower\s+than|superior\s+to|"
+    r"better\s+than|worse\s+than|improves?\s+by|reduces?\s+by|increases?\s+by|"
+    r"超越|领先|高于|低于|优于|胜过|提升了|降低了|相比|相较)\b",
+    re.IGNORECASE,
+)
+
+
+def _simple_morph_norm(word: str) -> str:
+    """Conservative English morphology normalization for semantic-token matching.
+
+    Handles common regular suffix variations: -ies -> -y, -es -> -, -s -> -, -ed -> -, -ing -> -.
+    """
+    w = word.lower().strip()
+    if len(w) <= 3:
+        return w
+    if w.endswith("ies") and len(w) > 4:
+        return w[:-3] + "y"
+    if w.endswith("ing") and len(w) > 5:
+        # e.g. improving -> improve, running -> run
+        base = w[:-3]
+        if base.endswith(("prov", "resolv", "declar", "requir", "achiev", "compar", "evaluat", "generat")):
+            return base + "e"
+        return base
+    if w.endswith("ed") and len(w) > 4:
+        # e.g. improved -> improve
+        base = w[:-2]
+        if base.endswith(("prov", "resolv", "declar", "requir", "achiev", "compar", "evaluat", "generat")):
+            return base + "e"
+        if base.endswith("i"):
+            return base[:-1] + "y"
+        return base
+    if w.endswith("es") and len(w) > 4 and not w.endswith(("ses", "xes", "zes", "ches", "shes")):
+        return w[:-1]
+    if w.endswith("s") and not w.endswith("ss") and len(w) > 3:
+        return w[:-1]
+    return w
+
+
 def classify_text_provenance(text: str) -> str:
     """Classify text into ProvenanceType:
 
-    - 'editorial_label': structural presentation labels or presentation metadata
+    - 'editorial_label': structural presentation labels or short metadata (<= 3 words)
     - 'layout_instruction': formatting/layout directives
-    - 'factual_claim': substantive factual assertions requiring evidence backing
-    - 'source_paraphrase': descriptive synthesis of source content
+    - 'factual_claim': substantive claims with metrics, comparison relations, or specific assertions
+    - 'source_paraphrase': descriptive narrative synthesis of source content
     """
     if not text or not text.strip():
         return "editorial_label"
     clean = text.strip().lower()
     stripped = re.sub(r"^(\d+[\.\:\-\s]+|[一二三四五六七八九十]+[、\.\:\-\s]+)", "", clean).strip()
+
+    # 1. Exact editorial label match
     if stripped in EDITORIAL_LABELS or clean in EDITORIAL_LABELS:
         return "editorial_label"
     if _SLIDE_NUMBER_LABEL_RE.match(stripped) or _SLIDE_NUMBER_LABEL_RE.match(clean):
         return "editorial_label"
 
-    # Multi-word editorial compound label check (e.g. "Method Overview", "Key Results")
-    words = re.findall(r"\b[a-z]+\b", clean)
-    if words and all(w in EDITORIAL_WORDS for w in words):
+    # Multi-word editorial compound label check (only if short: <= 3 words and all are editorial)
+    words = re.findall(r"\b[a-z\u4e00-\u9fa5]+\b", clean)
+    if words and len(words) <= 3 and all(w in EDITORIAL_WORDS for w in words):
         return "editorial_label"
 
-    # Generic editorial intent prefixes
-    generic_intents = ("introduce ", "present ", "summarize ", "overview of ", "describe ", "discuss ")
-    if any(clean.startswith(gi) for gi in generic_intents):
-        return "editorial_label"
-    generic_zh = ("介绍", "展示", "概述", "阐述", "汇报", "说明")
-    if len(clean) <= 10 and any(clean.startswith(gz) for gz in generic_zh):
-        return "editorial_label"
-    return "factual_claim"
+    # 2. Layout instruction check
+    if _LAYOUT_INSTRUCTION_RE.search(clean):
+        return "layout_instruction"
+
+    # 3. Factual claim vs Source paraphrase
+    # If it contains numbers/percentages, superlative/comparative claims, or comparison predicates, it's a factual claim
+    has_numeric = bool(_STRUCTURED_NUMERIC_RE.search(text))
+    has_comparison = bool(_COMPARISON_OR_CLAIM_RE.search(clean))
+    has_strong_claim = any(p.lower() in clean for p in UNGROUNDED_STRONG_CLAIMS)
+
+    if has_numeric or has_comparison or has_strong_claim:
+        return "factual_claim"
+
+    # Otherwise, substantive non-numeric narrative is categorized as source_paraphrase
+    return "source_paraphrase"
 
 
 def validate_narrative_provenance(
@@ -381,11 +437,14 @@ def validate_narrative_provenance(
     spec: CanonicalPPTSpec,
     field_name: str = "title",
 ) -> Tuple[bool, str]:
-    """Validates that a slide title or objective has factual provenance.
+    """Validates that a presentation title, slide title, or objective has provenance.
 
-    - Editorial labels are exempt from grounding.
-    - Substantive claims/paraphrases MUST not introduce ungrounded strong/superlative claims.
-    - If a substantive claim/paraphrase is made, it must be grounded in raw_input or referenced evidence.
+    - 'editorial_label': exempt from grounding.
+    - 'layout_instruction': strictly forbidden in user-visible content (titles, objectives).
+    - 'source_paraphrase': narrative synthesis, all semantic tokens must be grounded in raw input,
+      source document title, or referenced evidence.
+    - 'factual_claim': substantive factual assertions requiring backing evidence and evidence refs.
+    - Superlative/absolute claims are strictly forbidden unless literal in raw input.
     """
     if not text or not text.strip():
         return True, ""
@@ -393,56 +452,84 @@ def validate_narrative_provenance(
     raw_lower = (raw_input or "").lower()
     text_lower = text.lower()
 
-    # 1. Reject ungrounded strong/superlative claims
+    # 1. Reject ungrounded strong/superlative claims immediately
     for phrase in UNGROUNDED_STRONG_CLAIMS:
         if phrase.lower() in text_lower and phrase.lower() not in raw_lower:
             return False, f"Unsubstantiated claim phrase '{phrase}' in {field_name} '{text}' is not grounded in raw input."
 
     ptype = classify_text_provenance(text)
+
+    # 2. Reject layout instructions in visible fields
+    if ptype == "layout_instruction":
+        return False, f"Layout instruction '{text}' must not appear in user-visible {field_name}."
+
+    # 3. Exempt short editorial labels
     if ptype == "editorial_label":
         return True, ""
 
-    # 2. Check direct grounding in raw input
+    # 4. Direct full grounding in raw input or source_document title
     if is_text_grounded(text, raw_input):
         return True, ""
-
-    # Check source_document title/metadata
     if spec.source_document and spec.source_document.title:
         if is_text_grounded(text, spec.source_document.title):
             return True, ""
 
-    # 3. If substantive and not directly in raw_input, verify backing evidence exists
+    # 5. Build full reference context
+    # If slide is None (e.g. presentation.title), reference context is raw_input + source_doc + ALL spec evidence
+    # If slide is given, reference context is raw_input + source_doc + SLIDE referenced evidence
+    ref_ev_texts = []
     if slide is not None:
-        if not slide.evidence_refs:
-            return False, f"Substantive {field_name} '{text}' has no referenced evidence in slide '{slide.id}'."
+        if ptype == "factual_claim" and not slide.evidence_refs:
+            return False, f"Substantive {field_name} '{text}' makes factual claims but has no referenced evidence in slide '{slide.id}'."
+        target_ev_ids = slide.evidence_refs or []
+    else:
+        # Deck-level presentation title: check against all evidence in spec
+        target_ev_ids = [ev.id for ev in spec.evidence]
 
-        # Collect text from referenced evidence
-        ref_ev_texts = []
-        for ref_id in slide.evidence_refs:
-            ev = spec.get_evidence(ref_id)
-            if ev:
-                if isinstance(ev, ClaimEvidence):
-                    ref_ev_texts.append(ev.content)
-                elif isinstance(ev, QuoteEvidence):
-                    ref_ev_texts.append(ev.content)
-                elif isinstance(ev, MetricEvidence):
-                    ref_ev_texts.extend([ev.name, str(ev.value), ev.method or ""])
-                elif isinstance(ev, MetricGroupEvidence):
-                    ref_ev_texts.append(ev.group_name)
-                    for m in ev.metrics:
-                        ref_ev_texts.extend([m.name, str(m.value)])
-                elif isinstance(ev, TableEvidence):
-                    ref_ev_texts.append(ev.caption or "")
-                elif isinstance(ev, FigureReferenceEvidence):
-                    ref_ev_texts.append(ev.caption or "")
+    for ref_id in target_ev_ids:
+        ev = spec.get_evidence(ref_id)
+        if ev:
+            if isinstance(ev, ClaimEvidence):
+                ref_ev_texts.append(ev.content)
+            elif isinstance(ev, QuoteEvidence):
+                ref_ev_texts.append(ev.content)
+            elif isinstance(ev, MetricEvidence):
+                ref_ev_texts.extend([ev.name, str(ev.value), ev.method or ""])
+            elif isinstance(ev, MetricGroupEvidence):
+                ref_ev_texts.append(ev.group_name)
+                for m in ev.metrics:
+                    ref_ev_texts.extend([m.name, str(m.value)])
+            elif isinstance(ev, TableEvidence):
+                ref_ev_texts.append(ev.caption or "")
+            elif isinstance(ev, FigureReferenceEvidence):
+                ref_ev_texts.append(ev.caption or "")
 
-        combined_evidence_str = (raw_input + " " + " ".join(ref_ev_texts)).lower()
-        rem = extract_non_numeric_semantic_text(text)
-        if rem:
-            tokens = [t.strip() for t in re.split(r"[\s\:\,\.\;，。：]+", rem) if len(t.strip()) >= 2]
-            for tok in tokens:
-                if tok.lower() not in combined_evidence_str:
-                    return False, f"Factual term '{tok}' in {field_name} '{text}' is not grounded in raw input or referenced evidence."
+    source_title = (spec.source_document.title if spec.source_document else "") or ""
+    combined_context = f"{raw_input} {source_title} {' '.join(ref_ev_texts)}".lower()
+
+    # Normalize tokens for conservative morphological matching
+    context_tokens = set(re.findall(r"\b[a-z0-9\u4e00-\u9fa5]+\b", combined_context))
+    normalized_context_tokens = {_simple_morph_norm(t) for t in context_tokens} | context_tokens
+
+    rem = extract_non_numeric_semantic_text(text)
+    if rem:
+        tokens = [t.strip() for t in re.split(r"[\s\:\,\.\;，。：\(\)\[\]]+", rem) if len(t.strip()) >= 2]
+        # Standard English stopwords and meta-intent words
+        stopwords = {
+            "a", "an", "the", "for", "with", "and", "or", "to", "in", "on", "at", "of", "by", "as",
+            "that", "this", "these", "those", "from", "into", "over", "about", "why", "how", "what",
+            "when", "where", "which", "paper", "presentation", "deck", "slide", "slides", "discussion",
+            "overview", "summary", "introduction", "intro", "introduce", "study", "analysis", "report",
+            "present", "summarize", "describe", "discuss",
+            "汇报", "总结", "概述", "介绍", "分析", "讨论", "展示", "论文",
+        }
+        for tok in tokens:
+            tok_lower = tok.lower()
+            if tok_lower in stopwords:
+                continue
+            norm_tok = _simple_morph_norm(tok_lower)
+            if tok_lower not in context_tokens and norm_tok not in normalized_context_tokens and tok_lower not in combined_context:
+                return False, f"Factual/substantive term '{tok}' in {field_name} '{text}' is not grounded in raw input or referenced evidence."
 
     return True, ""
 

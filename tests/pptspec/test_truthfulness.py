@@ -952,4 +952,85 @@ def test_narrative_grounding_allows_editorial_labels_and_grounded_paraphrases():
     assert len(res.errors) == 0
 
 
+def test_narrative_grounding_rejects_verb_prefix_and_unsupported_title():
+    """Ensure verb prefixes like 'Summarize why ... dominates' cannot bypass grounding,
+
+    unsupported presentation titles are blocked, and layout instructions in titles are rejected.
+    """
+    raw_input = "We evaluate our proposed method on industrial anomaly detection."
+
+    # 1. Objective with verb prefix and comparative claim not in raw_input
+    spec_fake_obj = CanonicalPPTSpec(
+        presentation=PresentationConfig(title="Industrial Anomaly Detection"),
+        evidence=[ClaimEvidence(id="c1", content="We evaluate our proposed method on industrial anomaly detection.")],
+        slides=[
+            SlideRequest(
+                id="s1",
+                type=SlideType.RESULT,
+                title="Evaluation",
+                objective="Summarize why AnomalyAgent dominates every competing method",
+                evidence_refs=["c1"],
+            )
+        ],
+    )
+    with pytest.raises(UnsupportedTextualFactError) as exc_info:
+        validate_truthfulness(raw_input, spec_fake_obj, strict=True)
+    assert "slide_objective" in str(exc_info.value)
+
+    # 2. Unsupported presentation title with hallucinated framework name
+    spec_fake_title = CanonicalPPTSpec(
+        presentation=PresentationConfig(title="AnomalyAgent: A Universal Framework for Reliable Industrial Intelligence"),
+        evidence=[ClaimEvidence(id="c1", content="We evaluate our proposed method on industrial anomaly detection.")],
+        slides=[
+            SlideRequest(
+                id="s1",
+                type=SlideType.RESULT,
+                title="Evaluation",
+                evidence_refs=["c1"],
+            )
+        ],
+    )
+    with pytest.raises(UnsupportedTextualFactError) as exc_info:
+        validate_truthfulness(raw_input, spec_fake_title, strict=True)
+    assert "presentation_title" in str(exc_info.value)
+
+    # 3. Layout instruction in user-visible slide title
+    spec_layout_title = CanonicalPPTSpec(
+        presentation=PresentationConfig(title="Industrial Anomaly Detection"),
+        evidence=[ClaimEvidence(id="c1", content="We evaluate our proposed method on industrial anomaly detection.")],
+        slides=[
+            SlideRequest(
+                id="s1",
+                type=SlideType.RESULT,
+                title="Split into 2 columns card grid",
+                evidence_refs=["c1"],
+            )
+        ],
+    )
+    with pytest.raises(UnsupportedTextualFactError) as exc_info:
+        validate_truthfulness(raw_input, spec_layout_title, strict=True)
+    assert "slide_title" in str(exc_info.value)
+
+
+def test_narrative_grounding_allows_conservative_morphological_variants():
+    """Ensure conservative morphology variants (e.g. improves -> improved) pass with evidence."""
+    raw_input = "AnomalyAgent improves anomaly detection robustness across industrial benchmarks."
+    spec = CanonicalPPTSpec(
+        presentation=PresentationConfig(title="AnomalyAgent Robustness"),
+        evidence=[ClaimEvidence(id="c1", content="AnomalyAgent improves anomaly detection robustness across industrial benchmarks.")],
+        slides=[
+            SlideRequest(
+                id="s1",
+                type=SlideType.RESULT,
+                title="Improved Robustness for Anomaly Detection",
+                objective="Discussion of improved detection",
+                evidence_refs=["c1"],
+            )
+        ],
+    )
+    res = validate_truthfulness(raw_input, spec, strict=True)
+    assert res.valid is True
+
+
+
 
