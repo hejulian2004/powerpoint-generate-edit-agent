@@ -63,6 +63,26 @@ class SessionPersistenceService:
     async def flush(self, session) -> None:
         await self.flush_session_id(session.session_id)
 
+    async def persist_session_now(self, sid: str) -> None:
+        """Immediately captures a durable snapshot and writes to repository.
+
+        Cancels any in-flight debounce task for this session and absorbs it.
+        Only clears dirty marker if no newer mutation advanced the generation.
+        """
+        current = asyncio.current_task()
+        task = self._tasks.pop(sid, None)
+        if task is not None and task is not current and not task.done():
+            task.cancel()
+        generation = self._dirty_generation.get(sid, 0)
+        session = self._resolver(sid)
+        if session is None:
+            self._dirty_generation.pop(sid, None)
+            return
+        snapshot: SessionSnapshot = await session.snapshot_for_persistence()
+        await self._repo.save(snapshot)
+        if self._dirty_generation.get(sid, 0) <= generation:
+            self._dirty_generation.pop(sid, None)
+
     async def flush_session_id(self, sid: str) -> None:
         current = asyncio.current_task()
         task = self._tasks.pop(sid, None)

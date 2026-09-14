@@ -25,6 +25,10 @@ from typing import Any, Dict, List, Optional
 from collections import OrderedDict
 import asyncio
 import json
+import logging
+import time
+
+logger = logging.getLogger(__name__)
 
 from ..ir.models import PresentationIR, SlideIR
 from .snapshot import SessionSnapshot, session_to_snapshot
@@ -74,6 +78,16 @@ class CompletedRequestRecord:
     response: Dict[str, Any]
     admitted_generation: int
     size_bytes: int = 0
+    durable: bool = False
+
+
+@dataclass
+class FailedRequestRecord:
+    request_id: str
+    fingerprint: str
+    conversation_generation: int
+    outcome: RequestOutcome
+    expire_at: float
 
 
 __all__ = [
@@ -89,6 +103,7 @@ __all__ = [
     "RequestOutcome",
     "RequestExecution",
     "CompletedRequestRecord",
+    "FailedRequestRecord",
     "MAX_COMPLETED_REQUESTS",
     "MAX_COMPLETED_REQUEST_BYTES",
     "MAX_COMPLETED_REQUEST_RECORD_BYTES",
@@ -139,6 +154,7 @@ class PPTSession:
         self.committed_turns: Dict[str, Dict[str, Any]] = {}  # request_id -> turn DTO
         self.conversation_generation: int = 0
         self.completed_requests: OrderedDict[str, CompletedRequestRecord] = OrderedDict()
+        self.failed_requests: OrderedDict[str, FailedRequestRecord] = OrderedDict()
         self.in_flight_requests: Dict[str, RequestExecution] = {}
         self._request_journal_lock: Optional[asyncio.Lock] = None
         self._request_journal_lock_loop: Optional[Any] = None
@@ -475,10 +491,12 @@ class PPTSession:
         fingerprint: str,
         response: Dict[str, Any],
         admitted_generation: int,
-    ) -> None:
+        durable: bool = False,
+        schedule_persist: bool = True,
+    ) -> CompletedRequestRecord:
         """Records a completed request with double bounded budgets (count + total bytes)."""
         if not request_id:
-            return
+            raise ValueError("request_id is required")
         try:
             size_bytes = len(
                 json.dumps(response, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
@@ -486,10 +504,9 @@ class PPTSession:
         except Exception:
             size_bytes = 1024
 
-        # Per-record hard ceiling
-        if size_bytes > MAX_COMPLETED_REQUEST_RECORD_BYTES:
-            logger.warning("Completed response for %s exceeds %s bytes, skipping journal", request_id, MAX_COMPLETED_REQUEST_RECORD_BYTES)
-            return
+        assert size_bytes <= MAX_COMPLETED_REQUEST_RECORD_BYTES, (
+            f"Compact response for {request_id} must not exceed {MAX_COMPLETED_REQUEST_RECORD_BYTES} bytes"
+        )
 
         record = CompletedRequestRecord(
             request_id=request_id,
@@ -497,6 +514,7 @@ class PPTSession:
             response=response,
             admitted_generation=admitted_generation,
             size_bytes=size_bytes,
+            durable=durable,
         )
 
         # Evict oldest if count exceeds MAX_COMPLETED_REQUESTS
@@ -511,7 +529,36 @@ class PPTSession:
 
         self.completed_requests[request_id] = record
         self.updated_at = datetime.now(timezone.utc)
-        self.schedule_persist()
+        if schedule_persist:
+            self.schedule_persist()
+        return record
+
+    def record_failed_request(
+        self,
+        request_id: str,
+        fingerprint: str,
+        outcome: RequestOutcome,
+        ttl_seconds: float = 5.0,
+    ) -> None:
+        """Records a short-lived terminal failure in memory, bound to conversation_generation."""
+        if not request_id:
+            return
+        # Lazy eviction of expired
+        now = time.monotonic()
+        for k in list(self.failed_requests.keys()):
+            if self.failed_requests[k].expire_at <= now:
+                self.failed_requests.pop(k, None)
+
+        while len(self.failed_requests) >= 64:
+            self.failed_requests.popitem(last=False)
+
+        self.failed_requests[request_id] = FailedRequestRecord(
+            request_id=request_id,
+            fingerprint=fingerprint,
+            conversation_generation=self.conversation_generation,
+            outcome=outcome,
+            expire_at=now + ttl_seconds,
+        )
 
     async def commit_conversation_turn(
         self,
@@ -576,6 +623,7 @@ class PPTSession:
                 self.conversation_generation += 1
                 self.committed_turns.clear()
                 self.completed_requests.clear()
+                self.failed_requests.clear()
             self.memory.clear_conversation()
             self.confirmations.clear()
             self.plan_confirmations.clear()

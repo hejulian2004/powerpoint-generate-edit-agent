@@ -1254,6 +1254,7 @@ async def chat_with_attachments(
     import hashlib
     import asyncio
     import json
+    import time
 
     from ..agent.attachment_router import (
         ACTION_CHAT,
@@ -1280,7 +1281,7 @@ async def chat_with_attachments(
     max_single = int(settings.max_upload_file_bytes)
     max_total = int(settings.max_total_attachment_bytes)
     max_count = int(settings.max_attachment_count)
-    incoming = [u for u in (files or []) if u is not None and u.filename]
+    incoming = [u for u in (files or []) if u is not None]
     if len(incoming) > max_count:
         raise HTTPException(
             status_code=413,
@@ -1289,7 +1290,7 @@ async def chat_with_attachments(
     attachments: List[Dict[str, Any]] = []
     total_bytes = 0
     for idx, upload in enumerate(incoming):
-        safe = sanitize_upload_name(upload.filename, fallback=f"attachment_{idx}")
+        safe = sanitize_upload_name(getattr(upload, "filename", ""), fallback=f"attachment_{idx}")
         try:
             content = await read_upload_bounded(upload, max_bytes=max_single)
         except PayloadTooLarge as exc:
@@ -1357,6 +1358,7 @@ async def chat_with_attachments(
     from ..session.session import RequestOutcome, RequestExecution
 
     is_first_executor = False
+    is_recovery_executor = False
     execution_fut: Optional[asyncio.Future] = None
     admitted_generation = session.conversation_generation
 
@@ -1366,30 +1368,105 @@ async def chat_with_attachments(
             if cached_record is not None:
                 if cached_record.fingerprint != req_fingerprint:
                     raise HTTPException(status_code=409, detail="REQUEST_ID_PAYLOAD_MISMATCH")
-                return cached_record.response
+                if cached_record.durable:
+                    return cached_record.response
+                # Commit-uncertain recovery: record exists in memory but not yet confirmed durable
+                in_flight = session.in_flight_requests.get(request_id)
+                if in_flight is not None:
+                    if in_flight.fingerprint != req_fingerprint:
+                        raise HTTPException(status_code=409, detail="REQUEST_ID_PAYLOAD_MISMATCH")
+                    execution_fut = in_flight.future
+                else:
+                    loop = asyncio.get_running_loop()
+                    fut: asyncio.Future[RequestOutcome] = loop.create_future()
+                    execution_fut = fut
+                    session.in_flight_requests[request_id] = RequestExecution(
+                        fingerprint=req_fingerprint,
+                        future=fut,
+                        admitted_generation=cached_record.admitted_generation,
+                    )
+                    is_recovery_executor = True
 
-            in_flight = session.in_flight_requests.get(request_id)
-            if in_flight is not None:
-                if in_flight.fingerprint != req_fingerprint:
-                    raise HTTPException(status_code=409, detail="REQUEST_ID_PAYLOAD_MISMATCH")
-                execution_fut = in_flight.future
-            else:
-                loop = asyncio.get_running_loop()
-                fut: asyncio.Future[RequestOutcome] = loop.create_future()
-                execution_fut = fut
-                session.in_flight_requests[request_id] = RequestExecution(
-                    fingerprint=req_fingerprint,
-                    future=fut,
-                    admitted_generation=admitted_generation,
-                )
-                is_first_executor = True
+            if not is_recovery_executor and cached_record is None:
+                # Check short-lived failed requests cache
+                now = time.monotonic()
+                failed_rec = session.failed_requests.get(request_id)
+                if (
+                    failed_rec is not None
+                    and failed_rec.conversation_generation == session.conversation_generation
+                    and failed_rec.expire_at > now
+                ):
+                    if failed_rec.fingerprint != req_fingerprint:
+                        raise HTTPException(status_code=409, detail="REQUEST_ID_PAYLOAD_MISMATCH")
+                    outcome = failed_rec.outcome
+                    raise HTTPException(status_code=outcome.status_code or 500, detail=outcome.detail)
 
-    if request_id and not is_first_executor and execution_fut is not None:
-        # Wait for first executor to complete
+                in_flight = session.in_flight_requests.get(request_id)
+                if in_flight is not None:
+                    if in_flight.fingerprint != req_fingerprint:
+                        raise HTTPException(status_code=409, detail="REQUEST_ID_PAYLOAD_MISMATCH")
+                    execution_fut = in_flight.future
+                else:
+                    loop = asyncio.get_running_loop()
+                    fut = loop.create_future()
+                    execution_fut = fut
+                    session.in_flight_requests[request_id] = RequestExecution(
+                        fingerprint=req_fingerprint,
+                        future=fut,
+                        admitted_generation=admitted_generation,
+                    )
+                    is_first_executor = True
+
+    if request_id and not is_first_executor and not is_recovery_executor and execution_fut is not None:
+        # Wait for first executor or recovery executor to complete
         outcome = await execution_fut
         if not outcome.ok:
             raise HTTPException(status_code=outcome.status_code or 500, detail=outcome.detail)
         return outcome.response
+
+    if is_recovery_executor:
+        # Single-flight durability recovery for commit-uncertain completed request
+        manager = get_workspace_manager()
+        persist_error = False
+        if manager is not None:
+            try:
+                await manager.persist_session_now(session.session_id)
+            except Exception as exc:
+                logger.warning("Durability recovery flush failed for %s: %s", request_id, exc)
+                persist_error = True
+
+        async with session.request_journal_lock:
+            cached_rec = session.get_completed_request(request_id)
+            if cached_rec is None or session.conversation_generation != cached_rec.admitted_generation:
+                reset_outcome = RequestOutcome(
+                    ok=False,
+                    status_code=409,
+                    detail="CONVERSATION_RESET_DURING_REQUEST",
+                )
+                session.record_failed_request(request_id, req_fingerprint, reset_outcome)
+                session.in_flight_requests.pop(request_id, None)
+                if execution_fut is not None and not execution_fut.done():
+                    execution_fut.set_result(reset_outcome)
+                raise HTTPException(status_code=409, detail="CONVERSATION_RESET_DURING_REQUEST")
+
+            if persist_error:
+                fail_outcome = RequestOutcome(
+                    ok=False,
+                    status_code=503,
+                    detail="REQUEST_COMMITTED_PERSISTENCE_FAILED",
+                )
+                session.record_failed_request(request_id, req_fingerprint, fail_outcome)
+                session.in_flight_requests.pop(request_id, None)
+                if execution_fut is not None and not execution_fut.done():
+                    execution_fut.set_result(fail_outcome)
+                raise HTTPException(status_code=503, detail="REQUEST_COMMITTED_PERSISTENCE_FAILED")
+
+            cached_rec.durable = True
+            succ_outcome = RequestOutcome(ok=True, response=cached_rec.response)
+            session.in_flight_requests.pop(request_id, None)
+            if execution_fut is not None and not execution_fut.done():
+                execution_fut.set_result(succ_outcome)
+            return cached_rec.response
 
     try:
         res = await _execute_chat_drive(
@@ -1407,7 +1484,7 @@ async def chat_with_attachments(
         )
         if request_id and is_first_executor and execution_fut is not None:
             # Build compact canonical replay response to guarantee bounded journal size
-            # and prevent oversized presentation IR blobs from inflating the journal.
+            # Exact canonical turn is preserved without modification or truncation!
             compact_res = {
                 "success": res.get("success", True),
                 "action": res.get("action"),
@@ -1425,28 +1502,90 @@ async def chat_with_attachments(
             # Strip None values
             compact_res = {k: v for k, v in compact_res.items() if v is not None}
 
+            # Generation Fence 1
+            reset_detected = False
             async with session.request_journal_lock:
-                if session.conversation_generation == admitted_generation:
+                if session.conversation_generation != admitted_generation:
+                    reset_detected = True
+                    reset_outcome = RequestOutcome(
+                        ok=False,
+                        status_code=409,
+                        detail="CONVERSATION_RESET_DURING_REQUEST",
+                    )
+                    session.record_failed_request(request_id, req_fingerprint, reset_outcome)
+                    session.in_flight_requests.pop(request_id, None)
+                    execution_fut.set_result(reset_outcome)
+                else:
                     session.record_completed_request(
                         request_id=request_id,
                         fingerprint=req_fingerprint,
                         response=compact_res,
                         admitted_generation=admitted_generation,
+                        durable=False,
+                        schedule_persist=False,
                     )
+
+            if reset_detected:
+                raise HTTPException(status_code=409, detail="CONVERSATION_RESET_DURING_REQUEST")
+
+            # Durable flush before success
+            manager = get_workspace_manager()
+            persist_failed = False
+            if manager is not None:
+                try:
+                    await manager.persist_session_now(session.session_id)
+                except Exception as exc:
+                    logger.error("Durable persist_session_now failed for %s: %s", request_id, exc)
+                    persist_failed = True
+
+            # Generation Fence 2 & Terminalization
+            async with session.request_journal_lock:
+                if session.conversation_generation != admitted_generation:
+                    reset_outcome = RequestOutcome(
+                        ok=False,
+                        status_code=409,
+                        detail="CONVERSATION_RESET_DURING_REQUEST",
+                    )
+                    session.record_failed_request(request_id, req_fingerprint, reset_outcome)
+                    session.in_flight_requests.pop(request_id, None)
+                    execution_fut.set_result(reset_outcome)
+                    raise HTTPException(status_code=409, detail="CONVERSATION_RESET_DURING_REQUEST")
+
+                if persist_failed:
+                    fail_outcome = RequestOutcome(
+                        ok=False,
+                        status_code=503,
+                        detail="REQUEST_COMMITTED_PERSISTENCE_FAILED",
+                    )
+                    session.record_failed_request(request_id, req_fingerprint, fail_outcome)
+                    session.in_flight_requests.pop(request_id, None)
+                    execution_fut.set_result(fail_outcome)
+                    raise HTTPException(status_code=503, detail="REQUEST_COMMITTED_PERSISTENCE_FAILED")
+
+                rec = session.get_completed_request(request_id)
+                if rec is not None:
+                    rec.durable = True
+                succ_outcome = RequestOutcome(ok=True, response=compact_res)
                 session.in_flight_requests.pop(request_id, None)
-                execution_fut.set_result(RequestOutcome(ok=True, response=res))
+                execution_fut.set_result(succ_outcome)
         return res
     except HTTPException as exc:
         if request_id and is_first_executor and execution_fut is not None:
+            fail_outcome = RequestOutcome(ok=False, status_code=exc.status_code, detail=exc.detail)
             async with session.request_journal_lock:
-                execution_fut.set_result(RequestOutcome(ok=False, status_code=exc.status_code, detail=exc.detail))
+                session.record_failed_request(request_id, req_fingerprint, fail_outcome)
                 session.in_flight_requests.pop(request_id, None)
+                if not execution_fut.done():
+                    execution_fut.set_result(fail_outcome)
         raise
     except Exception as exc:
         if request_id and is_first_executor and execution_fut is not None:
+            fail_outcome = RequestOutcome(ok=False, status_code=500, detail=str(exc))
             async with session.request_journal_lock:
-                execution_fut.set_result(RequestOutcome(ok=False, status_code=500, detail=str(exc)))
+                session.record_failed_request(request_id, req_fingerprint, fail_outcome)
                 session.in_flight_requests.pop(request_id, None)
+                if not execution_fut.done():
+                    execution_fut.set_result(fail_outcome)
         raise
 
 
