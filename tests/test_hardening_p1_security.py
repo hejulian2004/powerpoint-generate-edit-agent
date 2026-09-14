@@ -58,6 +58,15 @@ def test_spa_directory_traversal_blocked(tmp_path, monkeypatch):
         # Should fallback safely to index.html
         assert "SPA Index" in res.text
 
+    # Verify behavior when dist_dir does not exist (clean container default)
+    non_existent = tmp_path / "non_existent_dist"
+    monkeypatch.setattr("backend.main.dist_dir", non_existent)
+    res_root = client.get("/")
+    assert res_root.status_code == 200
+    assert res_root.json()["status"] == "online"
+    res_404 = client.get("/some_missing_asset.js")
+    assert res_404.status_code == 404
+
 
 def test_svg_renderer_adversarial_injection_neutralized():
     """Ensure malicious element IDs, attributes, font names, colors, and image srcs
