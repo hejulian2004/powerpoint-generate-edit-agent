@@ -504,6 +504,12 @@ class PPTSession:
         except Exception:
             size_bytes = 1024
 
+        if size_bytes > MAX_COMPLETED_REQUEST_RECORD_BYTES:
+            raise RuntimeError(
+                f"COMPACT_REPLAY_RESPONSE_INVARIANT_VIOLATION: Response for {request_id} "
+                f"exceeds limit ({size_bytes} > {MAX_COMPLETED_REQUEST_RECORD_BYTES} bytes)"
+            )
+
         assert size_bytes <= MAX_COMPLETED_REQUEST_RECORD_BYTES, (
             f"Compact response for {request_id} must not exceed {MAX_COMPLETED_REQUEST_RECORD_BYTES} bytes"
         )

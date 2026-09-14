@@ -1229,6 +1229,74 @@ def _as_upload_file(name: str, content_type: Optional[str], content: bytes) -> U
     return StarletteUploadFile(file=io.BytesIO(content), filename=name)
 
 
+def build_compact_replay_response(
+    res: Dict[str, Any],
+    session: Any,
+) -> Dict[str, Any]:
+    """Constructs a deterministic canonical terminal response with hard size boundaries.
+
+    Single-source transcript invariant:
+    - 'turn' contains the authoritative UserTurn + AssistantTurn DTO, preserved exactly.
+    - 'message' is derived strictly from turn['assistant']['content'], eliminating dual-reply drift.
+    - Non-authoritative fields (dispositions, summary, warnings, etc.) are strictly bounded.
+    - Document IR (presentation snapshot) is never stored in the journal, guaranteeing bounded size.
+    """
+    turn = res.get("turn")
+    assistant_msg = ""
+    if isinstance(turn, dict):
+        asst = turn.get("assistant")
+        if isinstance(asst, dict) and isinstance(asst.get("content"), str):
+            assistant_msg = asst["content"]
+    if not assistant_msg and isinstance(res.get("message"), str):
+        assistant_msg = res["message"][:2000]
+
+    # Bounded dispositions (max 64 items, bounded string lengths)
+    dispositions = None
+    raw_disp = res.get("dispositions")
+    if isinstance(raw_disp, list):
+        bounded_disp = []
+        for d in raw_disp[:64]:
+            if isinstance(d, dict):
+                bounded_disp.append({
+                    "attachment_id": str(d.get("attachment_id", ""))[:50],
+                    "filename": str(d.get("filename", d.get("name", "")))[:200],
+                    "kind": str(d.get("kind", ""))[:50],
+                    "action": str(d.get("action", ""))[:50],
+                    "disposition": str(d.get("disposition", ""))[:50],
+                    "reason": str(d.get("reason", ""))[:200] if d.get("reason") is not None else None,
+                })
+        dispositions = bounded_disp
+
+    # Bounded warnings
+    warnings = None
+    raw_warnings = res.get("warnings")
+    if isinstance(raw_warnings, list):
+        warnings = [str(w)[:500] for w in raw_warnings[:50]]
+
+    # Bounded summary & source_filename
+    summary = str(res["summary"])[:5000] if res.get("summary") is not None else None
+    source_filename = str(res["source_filename"])[:500] if res.get("source_filename") is not None else None
+    page_count = int(res["page_count"]) if res.get("page_count") is not None else None
+
+    compact_res: Dict[str, Any] = {
+        "success": bool(res.get("success", True)),
+        "action": res.get("action"),
+        "session_id": session.session_id,
+        "message": assistant_msg,
+        "turn": turn,
+        "dispositions": dispositions,
+        "document_epoch": res.get("document_epoch") or session.document_epoch,
+        "version": res.get("version") or session.document.presentation.version,
+        "active_slide_id": res.get("active_slide_id") or session.active_slide_id,
+        "source_filename": source_filename,
+        "page_count": page_count,
+        "summary": summary,
+        "warnings": warnings,
+    }
+    # Strip None values
+    return {k: v for k, v in compact_res.items() if v is not None}
+
+
 @router.post("/chat/drive")
 async def chat_with_attachments(
     message: str = Form(""),
@@ -1427,7 +1495,7 @@ async def chat_with_attachments(
     if is_recovery_executor:
         # Single-flight durability recovery for commit-uncertain completed request
         manager = get_workspace_manager()
-        persist_error = False
+        persist_error = manager is None  # Fail closed if workspace manager is missing
         if manager is not None:
             try:
                 await manager.persist_session_now(session.session_id)
@@ -1484,23 +1552,8 @@ async def chat_with_attachments(
         )
         if request_id and is_first_executor and execution_fut is not None:
             # Build compact canonical replay response to guarantee bounded journal size
-            # Exact canonical turn is preserved without modification or truncation!
-            compact_res = {
-                "success": res.get("success", True),
-                "action": res.get("action"),
-                "session_id": session.session_id,
-                "message": res.get("message"),
-                "turn": res.get("turn"),
-                "dispositions": res.get("dispositions"),
-                "document_epoch": res.get("document_epoch") or session.document_epoch,
-                "version": res.get("version") or session.document.presentation.version,
-                "active_slide_id": res.get("active_slide_id") or session.active_slide_id,
-                "source_filename": res.get("source_filename"),
-                "page_count": res.get("page_count"),
-                "summary": res.get("summary"),
-            }
-            # Strip None values
-            compact_res = {k: v for k, v in compact_res.items() if v is not None}
+            # and identical terminal outcome across executor, concurrent waiter, and durable replay.
+            compact_res = build_compact_replay_response(res, session=session)
 
             # Generation Fence 1
             reset_detected = False
@@ -1528,9 +1581,9 @@ async def chat_with_attachments(
             if reset_detected:
                 raise HTTPException(status_code=409, detail="CONVERSATION_RESET_DURING_REQUEST")
 
-            # Durable flush before success
+            # Durable flush before success (Fail closed if workspace manager is missing)
             manager = get_workspace_manager()
-            persist_failed = False
+            persist_failed = manager is None
             if manager is not None:
                 try:
                     await manager.persist_session_now(session.session_id)
@@ -1568,6 +1621,7 @@ async def chat_with_attachments(
                 succ_outcome = RequestOutcome(ok=True, response=compact_res)
                 session.in_flight_requests.pop(request_id, None)
                 execution_fut.set_result(succ_outcome)
+            return compact_res
         return res
     except HTTPException as exc:
         if request_id and is_first_executor and execution_fut is not None:

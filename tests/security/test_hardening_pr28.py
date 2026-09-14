@@ -26,6 +26,26 @@ from backend.session.manager import session_manager
 
 client = TestClient(app)
 
+# Setup a memory-backed WorkspaceManager for this test module so routes that check
+# get_workspace_manager() (e.g. durable before success) find an active persistence service
+from backend.workspace.manager import WorkspaceManager
+
+class MemoryRepo:
+    def __init__(self):
+        self.saved = {}
+    async def save(self, snapshot):
+        self.saved[snapshot.session_id] = snapshot
+    async def load(self, sid):
+        return self.saved.get(sid)
+    async def list_ids(self):
+        return list(self.saved.keys())
+    async def close(self):
+        pass
+
+_default_test_wm = WorkspaceManager(session_manager, MemoryRepo(), debounce_seconds=0.01)
+from backend.workspace.runtime import set_workspace_manager
+set_workspace_manager(_default_test_wm)
+
 
 # ---------------------------------------------------------------------------
 # sanitize_upload_name: cross-platform (POSIX + Windows separators)
@@ -1175,10 +1195,84 @@ async def test_chat_drive_in_flight_concurrent_deduplication():
         assert len(results) == 2
         assert results[0][1] == 200
         assert results[1][1] == 200
-        # Exactly identical turn DTO received
+        # Exactly identical response payload received (not just turn_id!)
+        assert results[0][2] == results[1][2]
         assert results[0][2]["turn"]["turn_id"] == results[1][2]["turn"]["turn_id"]
         # Exactly 2 messages in session (1 user, 1 assistant)
         assert len(sess.memory.messages) == 2
+    finally:
+        session_manager.delete_session(sid)
+
+
+@pytest.mark.anyio
+async def test_chat_drive_concurrent_image_insert_returns_identical_compact_payload():
+    """Gate B / ACTION_IMAGE: Concurrent requests for image_insert return identical compact payload."""
+    import anyio
+    import backend.agent.attachment_router as router
+    import backend.api.routes as routes
+    from backend.agent.attachment_router import ACTION_IMAGE
+
+    async def _force_image(llm, message, kinds):
+        return ACTION_IMAGE
+
+    barrier = anyio.Event()
+    sid = "test_concurrent_image_sid"
+    sess = session_manager.get_or_create(sid)
+    from backend.state.store import create_default_demo_presentation
+    sess.pres = create_default_demo_presentation()
+    req_id = "req_image_concurrent_1"
+    active_id = sess.document.presentation.slides[0].id
+
+    import httpx
+    from backend.main import app
+
+    results = []
+
+    # 1x1 transparent PNG
+    PNG_BYTES = (
+        b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01"
+        b"\x08\x06\x00\x00\x00\x1f\x15c4\x00\x00\x00\rIDATx\x9cc`\x00\x00\x00"
+        b"\x02\x00\x01H\xaf\xa4q\x00\x00\x00\x00IEND\xaeB`\x82"
+    )
+
+    orig_execute = routes.execute_direct_batch
+    async def slow_execute(*args, **kwargs):
+        barrier.set()
+        await anyio.sleep(0.05)
+        return await orig_execute(*args, **kwargs)
+
+    async def client_request(idx):
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://testserver") as ac:
+            data = {
+                "message": "把图加进去",
+                "session_id": sid,
+                "request_id": req_id,
+                "expected_epoch": sess.document_epoch,
+                "expected_revision": str(sess.document.presentation.version),
+                "ui_context": json.dumps({"active_slide_id": active_id}),
+            }
+            files = {"files": ("figure.png", PNG_BYTES, "image/png")}
+            resp = await ac.post("/api/chat/drive", data=data, files=files)
+            results.append((idx, resp.status_code, resp.json()))
+
+    from unittest.mock import patch
+    with patch.object(router, "classify_intent", _force_image), \
+         patch.object(routes, "execute_direct_batch", slow_execute):
+        async with anyio.create_task_group() as tg:
+            tg.start_soon(client_request, 1)
+            await barrier.wait()
+            tg.start_soon(client_request, 2)
+
+    try:
+        assert len(results) == 2
+        assert results[0][1] == 200
+        assert results[1][1] == 200
+        # Both executor and waiter get the exact same compact response
+        assert results[0][2] == results[1][2]
+        assert results[0][2]["action"] == ACTION_IMAGE
+        assert "turn" in results[0][2]
+        # Presentation IR is stripped from journal/compact response for both callers
+        assert "presentation" not in results[0][2]
     finally:
         session_manager.delete_session(sid)
 
@@ -1300,32 +1394,23 @@ async def test_session_snapshot_persists_completed_requests_across_restart():
 
 
 @pytest.mark.anyio
-async def test_chat_drive_durable_flush_across_sqlite_restart(monkeypatch):
-    """Scenario 1: success -> SQLite flush -> restart -> retry
+async def test_chat_drive_durable_flush_across_sqlite_restart(monkeypatch, tmp_path):
+    """Scenario 1: success -> Real SQLite flush -> restart -> retry
 
-    Pipeline executes exactly once, turn_id is identical, exact canonical turn preserved.
+    Verifies the complete persistence guarantee:
+    SessionSnapshot -> asdict -> json.dumps -> SQLite commit -> process memory wiped ->
+    new SQLiteRepository -> json.loads -> SessionSnapshot -> snapshot_to_session -> replay.
+    Pipeline executes exactly once, response payload is 100% identical, durable=True.
     """
     import backend.agent.attachment_router as router
     import backend.api.routes as routes
     from backend.workspace.manager import WorkspaceManager
-    from backend.workspace.persistence import SessionPersistenceService
-    from backend.session.snapshot import SessionSnapshot
+    from backend.workspace.repository import SQLiteRepository
 
-    class FakeRepo:
-        def __init__(self):
-            self.saved = {}
-        async def save(self, snapshot):
-            self.saved[snapshot.session_id] = snapshot
-        async def load(self, sid):
-            return self.saved.get(sid)
-        async def list_ids(self):
-            return list(self.saved.keys())
-        async def close(self):
-            pass
-
-    fake_repo = FakeRepo()
-    wm = WorkspaceManager(session_manager, fake_repo, debounce_seconds=0.01)
-    monkeypatch.setattr(routes, "get_workspace_manager", lambda: wm)
+    db_file = tmp_path / "workspace_restart_test.db"
+    repo1 = SQLiteRepository(db_file)
+    wm1 = WorkspaceManager(session_manager, repo1, debounce_seconds=0.01)
+    monkeypatch.setattr(routes, "get_workspace_manager", lambda: wm1)
 
     async def _force_text(*a, **k):
         return "text_generate"
@@ -1347,7 +1432,7 @@ async def test_chat_drive_durable_flush_across_sqlite_restart(monkeypatch):
 
     sid = "test_sqlite_restart_sid"
     sess = session_manager.get_or_create(sid)
-    sess.persistence = wm.persistence
+    sess.persistence = wm1.persistence
     req_id = "req_durable_sqlite_1"
 
     try:
@@ -1370,16 +1455,26 @@ async def test_chat_drive_durable_flush_across_sqlite_restart(monkeypatch):
             turn1 = res1.get("turn")
             assert turn1 is not None
 
-            # Verify saved into fake_repo immediately (durable flush executed)
-            assert sid in fake_repo.saved
-            saved_snap = fake_repo.saved[sid]
-            assert any(r["request_id"] == req_id for r in saved_snap.completed_requests)
+            # Verify saved into real SQLite database immediately
+            loaded_snap = await repo1.load(sid)
+            assert loaded_snap is not None
+            assert any(r["request_id"] == req_id for r in loaded_snap.completed_requests)
 
-            # Simulate complete process crash & restart: delete session from memory, reload from repo
+            # Close old repo & manager, wipe memory session completely
+            await wm1.close()
             session_manager.delete_session(sid)
-            restored_sess = await wm.restore_session(sid)
+            assert session_manager.get_session(sid) is None
+
+            # Spin up completely fresh repository and WorkspaceManager from the same SQLite file
+            repo2 = SQLiteRepository(db_file)
+            wm2 = WorkspaceManager(session_manager, repo2, debounce_seconds=0.01)
+            monkeypatch.setattr(routes, "get_workspace_manager", lambda: wm2)
+
+            # Restore session from disk
+            restored_sess = await wm2.restore_session(sid)
             assert restored_sess is not None
             assert req_id in restored_sess.completed_requests
+            # In SQLite snapshot, durable is not stored, but restored session sets durable=True
             assert restored_sess.completed_requests[req_id].durable is True
 
             # Retry with exact same request_id
@@ -1398,8 +1493,212 @@ async def test_chat_drive_durable_flush_across_sqlite_restart(monkeypatch):
             res2 = resp2.json()
             # Pipeline executed exactly once
             assert execution_count == 1
-            # Exact same turn_id received
-            assert res2.get("turn", {}).get("turn_id") == turn1.get("turn_id")
+            # Exact 100% identical response payload received
+            assert res2 == res1
+            assert res2.get("turn") == turn1
+
+            await wm2.close()
+    finally:
+        session_manager.delete_session(sid)
+
+
+@pytest.mark.anyio
+async def test_chat_drive_persist_failure_keeps_durable_false_and_returns_503(monkeypatch):
+    """Scenario: First persist flush fails.
+
+    Verifies:
+    1. HTTP 503 REQUEST_COMMITTED_PERSISTENCE_FAILED is returned to caller.
+    2. The completed request record is retained in memory with durable=False.
+    3. The conversation turn was atomically committed.
+    """
+    import backend.agent.attachment_router as router
+    import backend.api.routes as routes
+    from backend.workspace.manager import WorkspaceManager
+
+    class FailingRepo:
+        async def save(self, snapshot):
+            raise IOError("Disk write error")
+        async def close(self):
+            pass
+
+    wm = WorkspaceManager(session_manager, FailingRepo(), debounce_seconds=0.01)
+    monkeypatch.setattr(routes, "get_workspace_manager", lambda: wm)
+
+    async def _force_text(*a, **k):
+        return "text_generate"
+
+    async def fake_normalize(payload):
+        return {
+            "valid": True,
+            "normalization_id": "nid_persist_fail",
+            "summary": "s",
+            "warnings": [],
+            "errors": [],
+        }
+
+    async def fake_gen(payload):
+        return {"success": True, "session_id": payload["session_id"]}
+
+    sid = "test_persist_fail_sid"
+    sess = session_manager.get_or_create(sid)
+    sess.persistence = wm.persistence
+    req_id = "req_persist_fail_1"
+
+    try:
+        with patch.object(router, "classify_intent", _force_text), \
+             patch.object(routes, "api_normalize_pptspec", fake_normalize), \
+             patch.object(routes, "api_generate_from_pptspec", fake_gen):
+            resp = client.post(
+                "/api/chat/drive",
+                data={
+                    "message": "生成PPT",
+                    "session_id": sid,
+                    "request_id": req_id,
+                    "expected_epoch": sess.document_epoch,
+                    "expected_revision": sess.document.presentation.version,
+                },
+                files=[("files", ("test.txt", b"sample content", "text/plain"))],
+            )
+            assert resp.status_code == 503
+            assert "REQUEST_COMMITTED_PERSISTENCE_FAILED" in resp.text
+
+            # Completed request record exists in session with durable=False
+            rec = sess.get_completed_request(req_id)
+            assert rec is not None
+            assert rec.durable is False
+            # Canonical turn was already committed before flush attempt
+            assert len(sess.memory.messages) == 2
+    finally:
+        session_manager.delete_session(sid)
+
+
+@pytest.mark.anyio
+async def test_chat_drive_concurrent_commit_uncertain_recovery_is_single_flight(monkeypatch):
+    """Scenario: N concurrent retries for a commit-uncertain (durable=False) request.
+
+    Verifies:
+    1. Recovery flush runs single-flight (exactly once).
+    2. Business pipeline execution runs 0 additional times.
+    3. All callers receive identical HTTP 200 with the exact same response payload.
+    4. durable is updated to True.
+    """
+    import anyio
+    import backend.agent.attachment_router as router
+    import backend.api.routes as routes
+    from backend.workspace.manager import WorkspaceManager
+    from backend.session.session import CompletedRequestRecord
+
+    flush_count = 0
+    barrier = anyio.Event()
+
+    class FlakyRepo:
+        async def save(self, snapshot):
+            nonlocal flush_count
+            flush_count += 1
+            barrier.set()
+            await anyio.sleep(0.05)
+        async def close(self):
+            pass
+
+    repo = FlakyRepo()
+    wm = WorkspaceManager(session_manager, repo, debounce_seconds=0.01)
+    monkeypatch.setattr(routes, "get_workspace_manager", lambda: wm)
+
+    sid = "test_commit_uncertain_recovery_sid"
+    sess = session_manager.get_or_create(sid)
+    req_id = "req_recovery_single_flight_1"
+
+    # Pre-populate a committed turn and a completed_request with durable=False
+    turn_dto = {
+        "turn_id": "turn_recovery_1",
+        "request_id": req_id,
+        "user": {"id": "u1", "role": "user", "content": "生成PPT", "timestamp": 100},
+        "assistant": {"id": "a1", "role": "assistant", "content": "已生成", "timestamp": 101},
+    }
+    sample_response = {
+        "success": True,
+        "action": "text_generate",
+        "session_id": sid,
+        "message": "已生成",
+        "turn": turn_dto,
+        "document_epoch": sess.document_epoch,
+        "version": sess.document.presentation.version,
+    }
+
+    # Compute exact fingerprint for this payload
+    import hashlib, json
+    fp_payload = {
+        "message": "生成PPT",
+        "attachments": [
+            {
+                "index": 0,
+                "name": "test.txt",
+                "kind": "text",
+                "content_type": "text/plain",
+                "size_bytes": len(b"sample content"),
+                "sha256": hashlib.sha256(b"sample content").hexdigest(),
+            }
+        ],
+        "expected_epoch": sess.document_epoch,
+        "expected_revision": sess.document.presentation.version,
+        "ui_context": "",
+    }
+    req_fp = hashlib.sha256(
+        json.dumps(fp_payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+    ).hexdigest()
+
+    sess.completed_requests[req_id] = CompletedRequestRecord(
+        request_id=req_id,
+        fingerprint=req_fp,
+        response=sample_response,
+        admitted_generation=sess.conversation_generation,
+        size_bytes=len(json.dumps(sample_response).encode("utf-8")),
+        durable=False,
+    )
+
+    business_pipeline_count = 0
+    async def fake_normalize(*a, **k):
+        nonlocal business_pipeline_count
+        business_pipeline_count += 1
+        return {"valid": True}
+
+    results = []
+
+    async def retry_caller(idx: int):
+        if idx > 0:
+            await barrier.wait()
+        resp = await anyio.to_thread.run_sync(
+            lambda: client.post(
+                "/api/chat/drive",
+                data={
+                    "message": "生成PPT",
+                    "session_id": sid,
+                    "request_id": req_id,
+                    "expected_epoch": sess.document_epoch,
+                    "expected_revision": sess.document.presentation.version,
+                },
+                files=[("files", ("test.txt", b"sample content", "text/plain"))],
+            )
+        )
+        results.append((idx, resp.status_code, resp.json()))
+
+    try:
+        with patch.object(routes, "api_normalize_pptspec", fake_normalize):
+            async with anyio.create_task_group() as tg:
+                for i in range(3):
+                    tg.start_soon(retry_caller, i)
+
+        # Persistence flush happened exactly once
+        assert flush_count == 1
+        # Business generation pipeline ran 0 times
+        assert business_pipeline_count == 0
+        # All callers got 200 with identical response
+        assert len(results) == 3
+        assert all(r[1] == 200 for r in results)
+        assert results[0][2] == results[1][2] == results[2][2]
+        assert results[0][2] == sample_response
+        # Durable is now True
+        assert sess.completed_requests[req_id].durable is True
     finally:
         session_manager.delete_session(sid)
 

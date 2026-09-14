@@ -2386,10 +2386,6 @@ export const usePPTStore = create<PPTState>((set, get) => ({
         throw new Error(typeof detail === 'string' ? detail : JSON.stringify(detail))
       }
 
-      if (data?.presentation) {
-        get().adoptCanonicalSnapshot(data)
-      }
-
       // Gate D: Strict canonical turn adoption with deduplication and zero fallback.
       // Must validate exact contract: matching request_id, valid IDs, distinct user/assistant, finite timestamps.
       const turn = data?.turn
@@ -2463,6 +2459,31 @@ export const usePPTStore = create<PPTState>((set, get) => ({
             generationStage: null
           }
         })
+
+        // Canonical Snapshot Adoption & Resync (Strictly decoupled from Chat Turn success)
+        const mutatingActions = ['paper_generate', 'pptx_import', 'text_generate', 'image_insert']
+        if (data?.presentation) {
+          get().adoptCanonicalSnapshot(data)
+        } else if (mutatingActions.includes(data?.action)) {
+          // Mutating response without embedded presentation (e.g. concurrent waiter or replay):
+          // Fetch canonical snapshot in an isolated try/catch so a network failure here NEVER
+          // rolls back or fails the committed chat turn!
+          try {
+            const snapRes = await authFetch(`/api/presentation/snapshot?session_id=${encodeURIComponent(current.sessionId)}`)
+            if (snapRes.ok) {
+              const snap = await snapRes.json()
+              if (snap?.presentation) {
+                get().adoptCanonicalSnapshot(snap)
+              }
+            } else {
+              set({ needsResync: true, mutationStatus: 'resyncing' })
+              console.warn(`Snapshot resync returned HTTP ${snapRes.status}; marked needsResync.`)
+            }
+          } catch (resyncErr) {
+            set({ needsResync: true, mutationStatus: 'resyncing' })
+            console.warn('Snapshot resync network failure; marked needsResync without failing chat turn:', resyncErr)
+          }
+        }
       } else {
         // Protocol Error: 200 response without canonical turn DTO.
         set({
