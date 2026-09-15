@@ -277,6 +277,261 @@ class FactualTextField:
     fact_type: str
     content: str
     context: str
+    provenance_type: str = "factual_claim"  # factual_claim | source_paraphrase | editorial_label | layout_instruction
+    evidence_id: Optional[str] = None
+
+
+EDITORIAL_LABELS = {
+    "cover", "title", "agenda", "outline", "table of contents", "overview",
+    "background", "motivation", "problem statement", "related work",
+    "methodology", "method", "proposed method", "architecture",
+    "system architecture", "system overview", "framework", "model",
+    "experiments", "experiment", "experimental setup", "experimental results", "results", "result",
+    "evaluation", "ablation study", "discussion", "conclusion", "conclusions",
+    "future work", "summary", "references", "appendix", "q&a", "questions",
+    "thank you", "thanks", "performance", "metrics", "metric", "case study", "benchmark",
+    "implementation details", "specs", "loss", "equation", "res", "arch",
+    "table", "fig", "figure", "chart", "tbl", "t", "bg", "introduction", "intro", "findings",
+    "presentation", "slide",
+    # Chinese
+    "封面", "标题", "目录", "概述", "大纲", "研究背景", "背景", "动机",
+    "问题定义", "相关工作", "方法", "本文方法", "方法概述", "架构设计",
+    "系统架构", "核心架构", "模型框架", "实验", "实验设计", "实验评估",
+    "实验结果", "实验分析", "消融实验", "结果分析", "讨论", "结论", "总结",
+    "总结与展望", "未来工作", "参考文献", "致谢", "问答", "性能评估", "指标分析",
+    "案例分析", "落地应用", "演示概述", "学术论文汇报", "实验分析与讨论",
+    "论文汇报", "项目汇报", "汇报", "汇报总结",
+}
+
+_SLIDE_NUMBER_LABEL_RE = re.compile(
+    r"^(slide\s*\d+|第\s*\d+\s*页|part\s*\d+|phase\s*\d+|section\s*\d+|第[一二三四五六七八九十]+\s*(部分|章|节))$",
+    re.IGNORECASE,
+)
+
+UNGROUNDED_STRONG_CLAIMS = [
+    "全面超越", "彻底解决", "完美解决", "首创", "最佳", "最强", "无可比拟",
+    "遥遥领先", "彻底消除", "全面领先",
+    "outperforms all", "surpasses all", "state-of-the-art across all",
+    "revolutionary", "best-in-class", "unmatched", "completely solves",
+    "zero error", "zero false positive", "flawless",
+]
+
+
+EDITORIAL_WORDS = {
+    "cover", "title", "agenda", "outline", "table", "of", "contents", "overview",
+    "background", "motivation", "problem", "statement", "related", "work",
+    "methodology", "method", "methods", "proposed", "architecture",
+    "system", "framework", "model", "approach", "layout", "instruction", "instructions",
+    "experiments", "experiment", "experimental", "setup", "results", "result",
+    "key", "findings", "finding",
+    "evaluation", "ablation", "study", "discussion", "conclusion", "conclusions",
+    "future", "summary", "references", "appendix", "q&a", "questions",
+    "thank", "you", "thanks", "performance", "metrics", "metric", "case", "benchmark",
+    "implementation", "details", "specs", "loss", "equation", "res", "arch",
+    "fig", "figure", "chart", "tbl", "t", "bg", "introduction", "intro",
+    "presentation", "slide", "analysis", "design", "test", "tests", "valid", "captions", "caption",
+    "hardware", "software", "system", "overview",
+    # Chinese
+    "封面", "标题", "目录", "概述", "大纲", "研究背景", "背景", "动机",
+    "问题定义", "相关工作", "方法", "本文方法", "方法概述", "架构设计",
+    "系统架构", "核心架构", "模型框架", "实验", "实验设计", "实验评估",
+    "实验结果", "实验分析", "消融实验", "结果分析", "讨论", "结论", "总结",
+    "总结与展望", "未来工作", "参考文献", "致谢", "问答", "性能评估", "指标分析",
+    "案例分析", "落地应用", "演示概述", "学术论文汇报", "实验分析与讨论",
+    "论文汇报", "项目汇报", "汇报", "汇报总结", "核心结果", "关键结果", "关键结论",
+    "设计", "分析", "架构", "模型", "研究", "评估", "测试",
+}
+
+
+_LAYOUT_INSTRUCTION_RE = re.compile(
+    r"\b(split\s+into\s+\d+\s+columns?|\d+\s*columns?|card\s*grid|two-column|three-column|grid\s*layout|"
+    r"header-content|split-screen|left-right|top-bottom|hero-metric|stat-callout|timeline-process|"
+    r"双栏|三栏|四栏|两栏|分栏|网格布局|卡片布局|左右对比|时间线|指标卡片|排版样式|布局结构)\b",
+    re.IGNORECASE,
+)
+
+_COMPARISON_OR_CLAIM_RE = re.compile(
+    r"\b(dominates?|outperforms?|surpasses?|exceeds?|beats?|higher\s+than|lower\s+than|superior\s+to|"
+    r"better\s+than|worse\s+than|improves?\s+by|reduces?\s+by|increases?\s+by|"
+    r"超越|领先|高于|低于|优于|胜过|提升了|降低了|相比|相较)\b",
+    re.IGNORECASE,
+)
+
+
+def _simple_morph_norm(word: str) -> str:
+    """Conservative English morphology normalization for semantic-token matching.
+
+    Handles common regular suffix variations: -ies -> -y, -es -> -, -s -> -, -ed -> -, -ing -> -.
+    """
+    w = word.lower().strip()
+    if len(w) <= 3:
+        return w
+    if w.endswith("ies") and len(w) > 4:
+        return w[:-3] + "y"
+    if w.endswith("ing") and len(w) > 5:
+        # e.g. improving -> improve, running -> run
+        base = w[:-3]
+        if base.endswith(("prov", "resolv", "declar", "requir", "achiev", "compar", "evaluat", "generat")):
+            return base + "e"
+        return base
+    if w.endswith("ed") and len(w) > 4:
+        # e.g. improved -> improve
+        base = w[:-2]
+        if base.endswith(("prov", "resolv", "declar", "requir", "achiev", "compar", "evaluat", "generat")):
+            return base + "e"
+        if base.endswith("i"):
+            return base[:-1] + "y"
+        return base
+    if w.endswith("es") and len(w) > 4 and not w.endswith(("ses", "xes", "zes", "ches", "shes")):
+        return w[:-1]
+    if w.endswith("s") and not w.endswith("ss") and len(w) > 3:
+        return w[:-1]
+    return w
+
+
+def classify_text_provenance(text: str) -> str:
+    """Classify text into ProvenanceType:
+
+    - 'editorial_label': structural presentation labels or short metadata (<= 3 words)
+    - 'layout_instruction': formatting/layout directives
+    - 'factual_claim': substantive claims with metrics, comparison relations, or specific assertions
+    - 'source_paraphrase': descriptive narrative synthesis of source content
+    """
+    if not text or not text.strip():
+        return "editorial_label"
+    clean = text.strip().lower()
+    stripped = re.sub(r"^(\d+[\.\:\-\s]+|[一二三四五六七八九十]+[、\.\:\-\s]+)", "", clean).strip()
+
+    # 1. Exact editorial label match
+    if stripped in EDITORIAL_LABELS or clean in EDITORIAL_LABELS:
+        return "editorial_label"
+    if _SLIDE_NUMBER_LABEL_RE.match(stripped) or _SLIDE_NUMBER_LABEL_RE.match(clean):
+        return "editorial_label"
+
+    # Multi-word editorial compound label check (only if short: <= 3 words and all are editorial)
+    words = re.findall(r"\b[a-z\u4e00-\u9fa5]+\b", clean)
+    if words and len(words) <= 3 and all(w in EDITORIAL_WORDS for w in words):
+        return "editorial_label"
+
+    # 2. Layout instruction check
+    if _LAYOUT_INSTRUCTION_RE.search(clean):
+        return "layout_instruction"
+
+    # 3. Factual claim vs Source paraphrase
+    # If it contains numbers/percentages, superlative/comparative claims, or comparison predicates, it's a factual claim
+    has_numeric = bool(_STRUCTURED_NUMERIC_RE.search(text))
+    has_comparison = bool(_COMPARISON_OR_CLAIM_RE.search(clean))
+    has_strong_claim = any(p.lower() in clean for p in UNGROUNDED_STRONG_CLAIMS)
+
+    if has_numeric or has_comparison or has_strong_claim:
+        return "factual_claim"
+
+    # Otherwise, substantive non-numeric narrative is categorized as source_paraphrase
+    return "source_paraphrase"
+
+
+def validate_narrative_provenance(
+    text: str,
+    raw_input: str,
+    slide: Optional[SlideRequest],
+    spec: CanonicalPPTSpec,
+    field_name: str = "title",
+) -> Tuple[bool, str]:
+    """Validates that a presentation title, slide title, or objective has provenance.
+
+    - 'editorial_label': exempt from grounding.
+    - 'layout_instruction': strictly forbidden in user-visible content (titles, objectives).
+    - 'source_paraphrase': narrative synthesis, all semantic tokens must be grounded in raw input,
+      source document title, or referenced evidence.
+    - 'factual_claim': substantive factual assertions requiring backing evidence and evidence refs.
+    - Superlative/absolute claims are strictly forbidden unless literal in raw input.
+    """
+    if not text or not text.strip():
+        return True, ""
+
+    raw_lower = (raw_input or "").lower()
+    text_lower = text.lower()
+
+    # 1. Reject ungrounded strong/superlative claims immediately
+    for phrase in UNGROUNDED_STRONG_CLAIMS:
+        if phrase.lower() in text_lower and phrase.lower() not in raw_lower:
+            return False, f"Unsubstantiated claim phrase '{phrase}' in {field_name} '{text}' is not grounded in raw input."
+
+    ptype = classify_text_provenance(text)
+
+    # 2. Reject layout instructions in visible fields
+    if ptype == "layout_instruction":
+        return False, f"Layout instruction '{text}' must not appear in user-visible {field_name}."
+
+    # 3. Exempt short editorial labels
+    if ptype == "editorial_label":
+        return True, ""
+
+    # 4. Direct full grounding in raw input or source_document title
+    if is_text_grounded(text, raw_input):
+        return True, ""
+    if spec.source_document and spec.source_document.title:
+        if is_text_grounded(text, spec.source_document.title):
+            return True, ""
+
+    # 5. Build full reference context
+    # If slide is None (e.g. presentation.title), reference context is raw_input + source_doc + ALL spec evidence
+    # If slide is given, reference context is raw_input + source_doc + SLIDE referenced evidence
+    ref_ev_texts = []
+    if slide is not None:
+        if ptype == "factual_claim" and not slide.evidence_refs:
+            return False, f"Substantive {field_name} '{text}' makes factual claims but has no referenced evidence in slide '{slide.id}'."
+        target_ev_ids = slide.evidence_refs or []
+    else:
+        # Deck-level presentation title: check against all evidence in spec
+        target_ev_ids = [ev.id for ev in spec.evidence]
+
+    for ref_id in target_ev_ids:
+        ev = spec.get_evidence(ref_id)
+        if ev:
+            if isinstance(ev, ClaimEvidence):
+                ref_ev_texts.append(ev.content)
+            elif isinstance(ev, QuoteEvidence):
+                ref_ev_texts.append(ev.content)
+            elif isinstance(ev, MetricEvidence):
+                ref_ev_texts.extend([ev.name, str(ev.value), ev.method or ""])
+            elif isinstance(ev, MetricGroupEvidence):
+                ref_ev_texts.append(ev.group_name)
+                for m in ev.metrics:
+                    ref_ev_texts.extend([m.name, str(m.value)])
+            elif isinstance(ev, TableEvidence):
+                ref_ev_texts.append(ev.caption or "")
+            elif isinstance(ev, FigureReferenceEvidence):
+                ref_ev_texts.append(ev.caption or "")
+
+    source_title = (spec.source_document.title if spec.source_document else "") or ""
+    combined_context = f"{raw_input} {source_title} {' '.join(ref_ev_texts)}".lower()
+
+    # Normalize tokens for conservative morphological matching
+    context_tokens = set(re.findall(r"\b[a-z0-9\u4e00-\u9fa5]+\b", combined_context))
+    normalized_context_tokens = {_simple_morph_norm(t) for t in context_tokens} | context_tokens
+
+    rem = extract_non_numeric_semantic_text(text)
+    if rem:
+        tokens = [t.strip() for t in re.split(r"[\s\:\,\.\;，。：\(\)\[\]]+", rem) if len(t.strip()) >= 2]
+        # Standard English stopwords and meta-intent words
+        stopwords = {
+            "a", "an", "the", "for", "with", "and", "or", "to", "in", "on", "at", "of", "by", "as",
+            "that", "this", "these", "those", "from", "into", "over", "about", "why", "how", "what",
+            "when", "where", "which", "paper", "presentation", "deck", "slide", "slides", "discussion",
+            "overview", "summary", "introduction", "intro", "introduce", "study", "analysis", "report",
+            "present", "summarize", "describe", "discuss",
+            "汇报", "总结", "概述", "介绍", "分析", "讨论", "展示", "论文",
+        }
+        for tok in tokens:
+            tok_lower = tok.lower()
+            if tok_lower in stopwords:
+                continue
+            norm_tok = _simple_morph_norm(tok_lower)
+            if tok_lower not in context_tokens and norm_tok not in normalized_context_tokens and tok_lower not in combined_context:
+                return False, f"Factual/substantive term '{tok}' in {field_name} '{text}' is not grounded in raw input or referenced evidence."
+
+    return True, ""
 
 
 def extract_non_numeric_semantic_text(text: str) -> str:
@@ -925,6 +1180,76 @@ def validate_metric_binding(
     return False
 
 
+def validate_claim_relation_binding(
+    raw_input: str,
+    claim_text: str,
+    window_chars: int = 300,
+) -> bool:
+    """Validate that relational/comparison claims (e.g. A outperforms B, X higher than Y)
+
+    have their subject, predicate, and object co-located in the same evidence unit / sentence in raw_input,
+    preventing relation recombination hallucinations (e.g. combining entity from sentence 1 with relation/object from sentence 2).
+    """
+    if not claim_text or not raw_input:
+        return True
+
+    clean_claim = claim_text.strip()
+    # Check if claim has a comparison or relational assertion
+    pred_match = _COMPARISON_OR_CLAIM_RE.search(clean_claim)
+    if not pred_match:
+        # Not a comparison claim; simple textual grounding in earlier steps applies
+        return True
+
+    # If the exact claim sentence is literally grounded in raw_input, it is inherently bound
+    if is_text_grounded(clean_claim, raw_input):
+        return True
+
+    predicate = pred_match.group(0)
+    subject_part = clean_claim[:pred_match.start()].strip()
+    object_part = clean_claim[pred_match.end():].strip()
+
+    # Extract non-stopword tokens for subject and object
+    stopwords = {
+        "a", "an", "the", "for", "with", "and", "or", "to", "in", "on", "at", "of", "by", "as",
+        "that", "this", "our", "their", "its", "method", "model", "approach", "system", "proposed",
+    }
+    subj_tokens = [
+        t.lower() for t in re.findall(r"\b[a-z0-9\u4e00-\u9fa5]+\b", subject_part)
+        if t.lower() not in stopwords and len(t) >= 2
+    ]
+    obj_tokens = [
+        t.lower() for t in re.findall(r"\b[a-z0-9\u4e00-\u9fa5]+\b", object_part)
+        if t.lower() not in stopwords and len(t) >= 2
+    ]
+
+    # If subject or object has no distinctive semantic tokens, fallback to standard grounding
+    if not subj_tokens or not obj_tokens:
+        return True
+
+    # Split raw_input into scoped sentence / evidence units
+    raw_units = re.split(r"(?:\r?\n\s*\r?\n|[\n。！？\.\!\?])", raw_input)
+
+    # Check whether any scoped unit contains subject token(s), the relational predicate (or equivalent), and object token(s)
+    pred_pattern = re.compile(re.escape(predicate), re.IGNORECASE)
+    for unit in raw_units:
+        unit_lower = unit.lower()
+        if not unit_lower.strip():
+            continue
+        # Does this unit have the comparison predicate?
+        has_pred = bool(pred_pattern.search(unit)) or bool(_COMPARISON_OR_CLAIM_RE.search(unit))
+        if not has_pred:
+            continue
+
+        # Check subject and object token presence in this unit
+        has_subj = any(t in unit_lower or _simple_morph_norm(t) in unit_lower for t in subj_tokens)
+        has_obj = any(t in unit_lower or _simple_morph_norm(t) in unit_lower for t in obj_tokens)
+
+        if has_subj and has_obj:
+            return True
+
+    return False
+
+
 @dataclass
 class TruthfulnessValidationResult:
     valid: bool
@@ -996,6 +1321,49 @@ class TruthfulnessValidator:
                 errors.append(err)
                 if self.strict:
                     raise UnsupportedTextualFactError(fact_type=tf.fact_type, content=tf.content, context=tf.context)
+
+        # 4b. Narrative Provenance Guard (Slide Title & Objective Grounding)
+        # Prevents qualitative hallucinations, unsupported strong claims (e.g. '全面超越'),
+        # and ungrounded substantive titles/objectives from entering presentation output.
+        if spec.presentation and spec.presentation.title:
+            p_valid, p_err = validate_narrative_provenance(
+                spec.presentation.title, raw_input, None, spec, field_name="presentation_title"
+            )
+            if not p_valid:
+                errors.append(f"UNSUPPORTED_NARRATIVE_CLAIM: {p_err}")
+                if self.strict:
+                    raise UnsupportedTextualFactError(
+                        fact_type="presentation_title",
+                        content=spec.presentation.title,
+                        context="presentation.title",
+                    )
+
+        for slide in spec.slides:
+            if slide.title:
+                t_valid, t_err = validate_narrative_provenance(
+                    slide.title, raw_input, slide, spec, field_name="slide_title"
+                )
+                if not t_valid:
+                    errors.append(f"UNSUPPORTED_NARRATIVE_CLAIM: {t_err}")
+                    if self.strict:
+                        raise UnsupportedTextualFactError(
+                            fact_type="slide_title",
+                            content=slide.title,
+                            context=f"Slide '{slide.id}' title",
+                        )
+
+            if slide.objective:
+                o_valid, o_err = validate_narrative_provenance(
+                    slide.objective, raw_input, slide, spec, field_name="slide_objective"
+                )
+                if not o_valid:
+                    errors.append(f"UNSUPPORTED_NARRATIVE_CLAIM: {o_err}")
+                    if self.strict:
+                        raise UnsupportedTextualFactError(
+                            fact_type="slide_objective",
+                            content=slide.objective,
+                            context=f"Slide '{slide.id}' objective",
+                        )
 
         # 5. Source Locator & Contextual Binding Guard
         # Enforces that figure/table labels, references, and page citations exist in raw input
@@ -1085,6 +1453,23 @@ class TruthfulnessValidator:
                     ev.complete_table = False
                     msg = f"Table '{ev.id}' structure could not be provenance-bound; demoted to placeholder."
                     warnings.append(msg)
+
+        # 8. Comparison/Relational Claim Binding Guard
+        # Prevents relation recombination hallucinations where entity from sentence A is combined
+        # with comparison predicate and target from sentence B.
+        for ev in spec.evidence:
+            if isinstance(ev, ClaimEvidence) and ev.content:
+                if not validate_claim_relation_binding(raw_input, ev.content):
+                    err = f"UNSUPPORTED_FACT_RELATION: Relational claim '{ev.content}' recombines entities/predicates across disconnected evidence units."
+                    errors.append(err)
+                    if self.strict:
+                        raise UnsupportedFactRelationError(
+                            fact_type="claim_relation",
+                            subject="claim_subject",
+                            relation="comparison_predicate",
+                            target=ev.content,
+                            context=f"Claim {ev.id}",
+                        )
 
         valid = len(errors) == 0
         return TruthfulnessValidationResult(

@@ -54,6 +54,7 @@ from .services.plan_confirmation import PlanConfirmationService
 MAX_COMPLETED_REQUESTS = 32
 MAX_COMPLETED_REQUEST_BYTES = 32 * 1024 * 1024  # 32 MiB
 MAX_COMPLETED_REQUEST_RECORD_BYTES = 16 * 1024 * 1024  # 16 MiB
+MAX_COMPLETED_TOMBSTONES = 1024
 
 
 @dataclass
@@ -82,6 +83,14 @@ class CompletedRequestRecord:
 
 
 @dataclass
+class RequestTombstone:
+    request_id: str
+    fingerprint: str
+    admitted_generation: int
+    completed_at: str = ""
+
+
+@dataclass
 class FailedRequestRecord:
     request_id: str
     fingerprint: str
@@ -103,11 +112,24 @@ __all__ = [
     "RequestOutcome",
     "RequestExecution",
     "CompletedRequestRecord",
+    "RequestTombstone",
     "FailedRequestRecord",
     "MAX_COMPLETED_REQUESTS",
     "MAX_COMPLETED_REQUEST_BYTES",
     "MAX_COMPLETED_REQUEST_RECORD_BYTES",
+    "MAX_COMPLETED_TOMBSTONES",
 ]
+
+
+IDEMPOTENCY_RETENTION_SECONDS = 7 * 86400  # 7 days authoritative retention
+
+
+def _is_tombstone_expired(tombstone: RequestTombstone) -> bool:
+    try:
+        c_at = float(tombstone.completed_at)
+    except (ValueError, TypeError):
+        c_at = time.time()
+    return (time.time() - c_at) > IDEMPOTENCY_RETENTION_SECONDS
 
 
 class PPTSession:
@@ -154,6 +176,8 @@ class PPTSession:
         self.committed_turns: Dict[str, Dict[str, Any]] = {}  # request_id -> turn DTO
         self.conversation_generation: int = 0
         self.completed_requests: OrderedDict[str, CompletedRequestRecord] = OrderedDict()
+        self.completed_tombstones: OrderedDict[str, RequestTombstone] = OrderedDict()
+        self.pending_tombstones: Dict[str, RequestTombstone] = {}  # uncommitted write-set for atomic SQLite commit
         self.failed_requests: OrderedDict[str, FailedRequestRecord] = OrderedDict()
         self.in_flight_requests: Dict[str, RequestExecution] = {}
         self._request_journal_lock: Optional[asyncio.Lock] = None
@@ -392,7 +416,9 @@ class PPTSession:
     async def snapshot_for_export(self) -> ExportSnapshot:
         return await self.document.snapshot_for_export()
 
-    async def snapshot_for_persistence(self) -> SessionSnapshot:
+    async def snapshot_for_persistence(
+        self, with_pending_tombstones: bool = False
+    ) -> Union[SessionSnapshot, Tuple[SessionSnapshot, List[RequestTombstone]]]:
         """Atomically captures durable state under the strict lock hierarchy:
 
         conversation_lock -> document.mutation_lock -> request_journal_lock.
@@ -402,7 +428,16 @@ class PPTSession:
         async with self.memory.conversation_lock:
             async with self.document.mutation_lock:
                 async with self.request_journal_lock:
-                    return session_to_snapshot(self)
+                    snapshot = session_to_snapshot(self)
+                    if with_pending_tombstones:
+                        pending = list(self.pending_tombstones.values())
+                        return snapshot, pending
+                    return snapshot
+
+    def ack_persisted_tombstones(self, committed_ids: List[str]) -> None:
+        """Removes committed request IDs from pending_tombstones after DB transaction succeeds."""
+        for req_id in committed_ids:
+            self.pending_tombstones.pop(req_id, None)
 
     # ------------------------------------------------------------------
     # Cursor
@@ -485,6 +520,26 @@ class PPTSession:
     def get_completed_request(self, request_id: str) -> Optional[CompletedRequestRecord]:
         return self.completed_requests.get(request_id)
 
+    def cache_request_tombstone(self, tombstone: RequestTombstone) -> None:
+        """Caches a tombstone into the in-memory True-LRU cache if within 7-day TTL."""
+        if _is_tombstone_expired(tombstone):
+            return
+        self.completed_tombstones.pop(tombstone.request_id, None)
+        self.completed_tombstones[tombstone.request_id] = tombstone
+        while len(self.completed_tombstones) > MAX_COMPLETED_TOMBSTONES:
+            self.completed_tombstones.popitem(last=False)
+
+    def get_request_tombstone(self, request_id: str) -> Optional[RequestTombstone]:
+        """Looks up a tombstone from in-memory cache, enforcing 7-day TTL and LRU touch."""
+        t = self.completed_tombstones.get(request_id)
+        if t is None:
+            return None
+        if _is_tombstone_expired(t):
+            self.completed_tombstones.pop(request_id, None)
+            return None
+        self.completed_tombstones.move_to_end(request_id)
+        return t
+
     def record_completed_request(
         self,
         request_id: str,
@@ -494,7 +549,11 @@ class PPTSession:
         durable: bool = False,
         schedule_persist: bool = True,
     ) -> CompletedRequestRecord:
-        """Records a completed request with double bounded budgets (count + total bytes)."""
+        """Records a completed request into two tiers:
+
+        Tier 1: Bounded response cache (count <= 32, bytes <= 32 MiB).
+        Tier 2: Compact durable tombstones (count <= 1024) to reject expired replay side-effects.
+        """
         if not request_id:
             raise ValueError("request_id is required")
         try:
@@ -523,11 +582,21 @@ class PPTSession:
             durable=durable,
         )
 
-        # Evict oldest if count exceeds MAX_COMPLETED_REQUESTS
+        # Tier 2: Record durable compact tombstone in memory LRU cache and uncommitted write-set
+        tombstone = RequestTombstone(
+            request_id=request_id,
+            fingerprint=fingerprint,
+            admitted_generation=admitted_generation,
+            completed_at=str(time.time()),
+        )
+        self.cache_request_tombstone(tombstone)
+        self.pending_tombstones[request_id] = tombstone
+
+        # Tier 1: Evict oldest if count exceeds MAX_COMPLETED_REQUESTS
         while len(self.completed_requests) >= MAX_COMPLETED_REQUESTS:
             self.completed_requests.popitem(last=False)
 
-        # Evict oldest if total bytes exceed MAX_COMPLETED_REQUEST_BYTES
+        # Tier 1: Evict oldest if total bytes exceed MAX_COMPLETED_REQUEST_BYTES
         current_bytes = sum(r.size_bytes for r in self.completed_requests.values()) + size_bytes
         while current_bytes > MAX_COMPLETED_REQUEST_BYTES and self.completed_requests:
             evicted = self.completed_requests.popitem(last=False)[1]
@@ -600,7 +669,7 @@ class PPTSession:
             }
             if request_id:
                 # Bounded cache of recently committed turns
-                if len(self.committed_turns) > 200:
+                if len(self.committed_turns) >= 200:
                     oldest = next(iter(self.committed_turns))
                     self.committed_turns.pop(oldest, None)
                 self.committed_turns[request_id] = turn_dto
@@ -629,6 +698,8 @@ class PPTSession:
                 self.conversation_generation += 1
                 self.committed_turns.clear()
                 self.completed_requests.clear()
+                # Contract: completed_tombstones & pending_tombstones are session-scoped and 7-day durable;
+                # reset_conversation() NEVER deletes tombstones, preserving idempotency across resets.
                 self.failed_requests.clear()
             self.memory.clear_conversation()
             self.confirmations.clear()
