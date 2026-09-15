@@ -1180,6 +1180,76 @@ def validate_metric_binding(
     return False
 
 
+def validate_claim_relation_binding(
+    raw_input: str,
+    claim_text: str,
+    window_chars: int = 300,
+) -> bool:
+    """Validate that relational/comparison claims (e.g. A outperforms B, X higher than Y)
+
+    have their subject, predicate, and object co-located in the same evidence unit / sentence in raw_input,
+    preventing relation recombination hallucinations (e.g. combining entity from sentence 1 with relation/object from sentence 2).
+    """
+    if not claim_text or not raw_input:
+        return True
+
+    clean_claim = claim_text.strip()
+    # Check if claim has a comparison or relational assertion
+    pred_match = _COMPARISON_OR_CLAIM_RE.search(clean_claim)
+    if not pred_match:
+        # Not a comparison claim; simple textual grounding in earlier steps applies
+        return True
+
+    # If the exact claim sentence is literally grounded in raw_input, it is inherently bound
+    if is_text_grounded(clean_claim, raw_input):
+        return True
+
+    predicate = pred_match.group(0)
+    subject_part = clean_claim[:pred_match.start()].strip()
+    object_part = clean_claim[pred_match.end():].strip()
+
+    # Extract non-stopword tokens for subject and object
+    stopwords = {
+        "a", "an", "the", "for", "with", "and", "or", "to", "in", "on", "at", "of", "by", "as",
+        "that", "this", "our", "their", "its", "method", "model", "approach", "system", "proposed",
+    }
+    subj_tokens = [
+        t.lower() for t in re.findall(r"\b[a-z0-9\u4e00-\u9fa5]+\b", subject_part)
+        if t.lower() not in stopwords and len(t) >= 2
+    ]
+    obj_tokens = [
+        t.lower() for t in re.findall(r"\b[a-z0-9\u4e00-\u9fa5]+\b", object_part)
+        if t.lower() not in stopwords and len(t) >= 2
+    ]
+
+    # If subject or object has no distinctive semantic tokens, fallback to standard grounding
+    if not subj_tokens or not obj_tokens:
+        return True
+
+    # Split raw_input into scoped sentence / evidence units
+    raw_units = re.split(r"(?:\r?\n\s*\r?\n|[\n。！？\.\!\?])", raw_input)
+
+    # Check whether any scoped unit contains subject token(s), the relational predicate (or equivalent), and object token(s)
+    pred_pattern = re.compile(re.escape(predicate), re.IGNORECASE)
+    for unit in raw_units:
+        unit_lower = unit.lower()
+        if not unit_lower.strip():
+            continue
+        # Does this unit have the comparison predicate?
+        has_pred = bool(pred_pattern.search(unit)) or bool(_COMPARISON_OR_CLAIM_RE.search(unit))
+        if not has_pred:
+            continue
+
+        # Check subject and object token presence in this unit
+        has_subj = any(t in unit_lower or _simple_morph_norm(t) in unit_lower for t in subj_tokens)
+        has_obj = any(t in unit_lower or _simple_morph_norm(t) in unit_lower for t in obj_tokens)
+
+        if has_subj and has_obj:
+            return True
+
+    return False
+
+
 @dataclass
 class TruthfulnessValidationResult:
     valid: bool
@@ -1383,6 +1453,23 @@ class TruthfulnessValidator:
                     ev.complete_table = False
                     msg = f"Table '{ev.id}' structure could not be provenance-bound; demoted to placeholder."
                     warnings.append(msg)
+
+        # 8. Comparison/Relational Claim Binding Guard
+        # Prevents relation recombination hallucinations where entity from sentence A is combined
+        # with comparison predicate and target from sentence B.
+        for ev in spec.evidence:
+            if isinstance(ev, ClaimEvidence) and ev.content:
+                if not validate_claim_relation_binding(raw_input, ev.content):
+                    err = f"UNSUPPORTED_FACT_RELATION: Relational claim '{ev.content}' recombines entities/predicates across disconnected evidence units."
+                    errors.append(err)
+                    if self.strict:
+                        raise UnsupportedFactRelationError(
+                            fact_type="claim_relation",
+                            subject="claim_subject",
+                            relation="comparison_predicate",
+                            target=ev.content,
+                            context=f"Claim {ev.id}",
+                        )
 
         valid = len(errors) == 0
         return TruthfulnessValidationResult(

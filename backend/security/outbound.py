@@ -197,7 +197,7 @@ class OutboundURLPolicy:
         cls,
         base_url: str,
         api_key: Optional[str] = None,
-        allow_private_for_tests: bool = False,
+        allow_loopback: bool = False,
     ) -> None:
         """Enforces that any outbound target carrying an API key uses HTTPS."""
         if not api_key or not str(api_key).strip():
@@ -207,7 +207,7 @@ class OutboundURLPolicy:
         scheme = (parsed.scheme or "").lower()
         host = (parsed.hostname or "").lower()
         is_loopback = host in ("localhost", "127.0.0.1", "::1")
-        if scheme != "https" and not (is_loopback and allow_private_for_tests):
+        if scheme != "https" and not (is_loopback and allow_loopback):
             raise OutboundURLRejected(
                 "OUTBOUND_HTTPS_REQUIRED",
                 f"携带 API 密钥的出站请求必须使用 HTTPS 加密传输，拒绝不安全的明文协议 {scheme!r}",
@@ -220,7 +220,7 @@ class OutboundURLPolicy:
         *,
         api_key: Optional[str] = None,
         trusted_hosts: Optional[Set[str]] = None,
-        allow_private_for_tests: bool = False,
+        allow_loopback: bool = False,
     ) -> tuple[str, str, List[str]]:
         """Validate ``base_url`` and return ``(normalized, host, validated_ips)``.
 
@@ -230,10 +230,12 @@ class OutboundURLPolicy:
         list is non-empty.
 
         When ``api_key`` is present, enforces HTTPS encryption unless connecting
-        to local loopback in test/dev mode.
+        to local loopback in test/dev mode (allow_loopback=True).
+        RFC1918 private IPs (10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16) are strictly rejected
+        even if allow_loopback is True.
         """
         if api_key:
-            cls.enforce_credential_scheme(base_url, api_key, allow_private_for_tests=allow_private_for_tests)
+            cls.enforce_credential_scheme(base_url, api_key, allow_loopback=allow_loopback)
 
         normalized, host, port = cls.parse(base_url)
 
@@ -243,7 +245,10 @@ class OutboundURLPolicy:
         except ValueError:
             literal = None
         if literal is not None:
-            if _is_blocked_ip(literal) and not allow_private_for_tests:
+            if literal.is_loopback and allow_loopback:
+                # Allowed only for local loopback in dev/test
+                return normalized, host, []
+            if _is_blocked_ip(literal):
                 raise OutboundURLRejected(
                     "OUTBOUND_SSRF_BLOCKED",
                     f"拒绝出站到内网/回环/保留地址 {host!r}",
@@ -258,7 +263,7 @@ class OutboundURLPolicy:
                     f"自定义 provider 主机 {host!r} 不在 TRUSTED_PROVIDER_HOSTS 白名单中",
                 )
 
-        # 3) Resolve and require EVERY result to be public.
+        # 3) Resolve and require EVERY result to be public (or loopback if explicitly permitted).
         ips = _resolve_all_ips(host, port)
         for ip_str in ips:
             try:
@@ -267,7 +272,9 @@ class OutboundURLPolicy:
                 raise OutboundURLRejected(
                     "OUTBOUND_SSRF_BLOCKED", f"目标解析出非法地址 {ip_str!r}"
                 )
-            if _is_blocked_ip(ip) and not allow_private_for_tests:
+            if ip.is_loopback and allow_loopback:
+                continue
+            if _is_blocked_ip(ip):
                 raise OutboundURLRejected(
                     "OUTBOUND_SSRF_BLOCKED",
                     f"拒绝出站到内网/回环/保留地址 {host!r} -> {ip_str}",

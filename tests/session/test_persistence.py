@@ -201,7 +201,7 @@ def test_debounced_schedule_coalesces_writes():
             def __init__(self):
                 self.saves = 0
 
-            async def save(self, snapshot):
+            async def save(self, snapshot, pending_tombstones=None):
                 self.saves += 1
 
         repo = _CountingRepo()
@@ -234,7 +234,7 @@ def test_concurrent_commit_during_flush_is_not_lost():
                 self.release = asyncio.Event()
                 self.gate_first = True
 
-            async def save(self, snapshot):
+            async def save(self, snapshot, pending_tombstones=None):
                 self.saves.append(snapshot)
                 if self.gate_first:
                     self.gate_first = False
@@ -339,7 +339,7 @@ def test_debounce_cancellation_race_preserves_single_writer_and_latest_state(tmp
 
         orig_save_sync = repo._save_sync
 
-        def _instrumented_save_sync(snapshot):
+        def _instrumented_save_sync(snapshot, pending_tombstones=None):
             nonlocal concurrent_writers, max_concurrent_writers, first_call
             with count_lock:
                 concurrent_writers += 1
@@ -351,7 +351,7 @@ def test_debounce_cancellation_race_preserves_single_writer_and_latest_state(tmp
                     save1_entered.set()
                     # Block the first worker thread
                     save1_release.wait(timeout=5)
-                return orig_save_sync(snapshot)
+                return orig_save_sync(snapshot, pending_tombstones)
             finally:
                 with count_lock:
                     concurrent_writers -= 1

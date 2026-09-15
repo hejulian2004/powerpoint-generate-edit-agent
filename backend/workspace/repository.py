@@ -51,6 +51,18 @@ CREATE INDEX IF NOT EXISTS idx_request_tombstones_expiry ON request_tombstones(c
 
 @runtime_checkable
 class WorkspaceRepository(Protocol):
+    async def save(
+        self,
+        snapshot: SessionSnapshot,
+        pending_tombstones: Optional[List[RequestTombstone]] = None,
+    ) -> None: ...
+
+    async def load(self, session_id: str) -> Optional[SessionSnapshot]: ...
+
+    async def delete(self, session_id: str) -> None: ...
+
+    async def list_ids(self) -> List[str]: ...
+
     async def load_workspace(self) -> WorkspaceSnapshot: ...
 
     async def save_workspace(self, snapshot: WorkspaceSnapshot) -> None: ...
@@ -60,6 +72,10 @@ class WorkspaceRepository(Protocol):
         session_snapshot: SessionSnapshot,
         workspace_snapshot: WorkspaceSnapshot,
     ) -> None: ...
+
+    async def get_request_tombstone(
+        self, session_id: str, request_id: str
+    ) -> Optional[RequestTombstone]: ...
 
 
 class SQLiteRepository:

@@ -33,8 +33,14 @@ from backend.workspace.manager import WorkspaceManager
 class MemoryRepo:
     def __init__(self):
         self.saved = {}
-    async def save(self, snapshot):
+        self.tombstones = {}
+    async def save(self, snapshot, pending_tombstones=None):
         self.saved[snapshot.session_id] = snapshot
+        if pending_tombstones:
+            for t in pending_tombstones:
+                self.tombstones[(snapshot.session_id, t.request_id)] = t
+    async def get_request_tombstone(self, session_id, request_id):
+        return self.tombstones.get((session_id, request_id))
     async def load(self, sid):
         return self.saved.get(sid)
     async def list_ids(self):
@@ -422,7 +428,7 @@ def test_models_does_not_inherit_saved_key_for_custom_host(monkeypatch):
     from backend.config import settings
 
     # Bypass DNS for this key-isolation test (SSRF covered above).
-    def _fake_validate(cls, base_url, trusted_hosts=None, allow_private_for_tests=False):
+    def _fake_validate(cls, base_url, trusted_hosts=None, allow_loopback=False):
         from urllib.parse import urlparse as _up
 
         raw = str(base_url).strip().rstrip("/")
@@ -1516,7 +1522,7 @@ async def test_chat_drive_persist_failure_keeps_durable_false_and_returns_503(mo
     from backend.workspace.manager import WorkspaceManager
 
     class FailingRepo:
-        async def save(self, snapshot):
+        async def save(self, snapshot, pending_tombstones=None):
             raise IOError("Disk write error")
         async def close(self):
             pass
@@ -1592,7 +1598,7 @@ async def test_chat_drive_concurrent_commit_uncertain_recovery_is_single_flight(
     barrier = anyio.Event()
 
     class FlakyRepo:
-        async def save(self, snapshot):
+        async def save(self, snapshot, pending_tombstones=None):
             nonlocal flush_count
             flush_count += 1
             barrier.set()
@@ -1714,7 +1720,7 @@ async def test_chat_drive_durable_flush_strictly_before_success(monkeypatch):
     http_returned = False
 
     class SpyRepo:
-        async def save(self, snapshot):
+        async def save(self, snapshot, pending_tombstones=None):
             nonlocal flush_completed
             # Assert HTTP success has NOT been returned yet
             assert not http_returned

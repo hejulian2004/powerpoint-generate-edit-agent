@@ -106,13 +106,7 @@ class SessionPersistenceService:
             else:
                 snapshot, pending_tombstones = snap_res, None
 
-            if pending_tombstones:
-                try:
-                    await self._repo.save(snapshot, pending_tombstones)
-                except TypeError:
-                    await self._repo.save(snapshot)
-            else:
-                await self._repo.save(snapshot)
+            await self._repo.save(snapshot, pending_tombstones)
             if pending_tombstones and hasattr(session, "ack_persisted_tombstones"):
                 session.ack_persisted_tombstones([t.request_id for t in pending_tombstones])
 
@@ -143,13 +137,7 @@ class SessionPersistenceService:
             else:
                 snapshot, pending_tombstones = snap_res, None
 
-            if pending_tombstones:
-                try:
-                    await self._repo.save(snapshot, pending_tombstones)
-                except TypeError:
-                    await self._repo.save(snapshot)
-            else:
-                await self._repo.save(snapshot)
+            await self._repo.save(snapshot, pending_tombstones)
             if pending_tombstones and hasattr(session, "ack_persisted_tombstones"):
                 session.ack_persisted_tombstones([t.request_id for t in pending_tombstones])
             # Only clear dirty if no newer mutation arrived during the save. If the

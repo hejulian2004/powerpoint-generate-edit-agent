@@ -121,6 +121,17 @@ __all__ = [
 ]
 
 
+IDEMPOTENCY_RETENTION_SECONDS = 7 * 86400  # 7 days authoritative retention
+
+
+def _is_tombstone_expired(tombstone: RequestTombstone) -> bool:
+    try:
+        c_at = float(tombstone.completed_at)
+    except (ValueError, TypeError):
+        c_at = time.time()
+    return (time.time() - c_at) > IDEMPOTENCY_RETENTION_SECONDS
+
+
 class PPTSession:
     """A persistent interactive session with isolated presentation state."""
 
@@ -509,8 +520,25 @@ class PPTSession:
     def get_completed_request(self, request_id: str) -> Optional[CompletedRequestRecord]:
         return self.completed_requests.get(request_id)
 
+    def cache_request_tombstone(self, tombstone: RequestTombstone) -> None:
+        """Caches a tombstone into the in-memory True-LRU cache if within 7-day TTL."""
+        if _is_tombstone_expired(tombstone):
+            return
+        self.completed_tombstones.pop(tombstone.request_id, None)
+        self.completed_tombstones[tombstone.request_id] = tombstone
+        while len(self.completed_tombstones) > MAX_COMPLETED_TOMBSTONES:
+            self.completed_tombstones.popitem(last=False)
+
     def get_request_tombstone(self, request_id: str) -> Optional[RequestTombstone]:
-        return self.completed_tombstones.get(request_id)
+        """Looks up a tombstone from in-memory cache, enforcing 7-day TTL and LRU touch."""
+        t = self.completed_tombstones.get(request_id)
+        if t is None:
+            return None
+        if _is_tombstone_expired(t):
+            self.completed_tombstones.pop(request_id, None)
+            return None
+        self.completed_tombstones.move_to_end(request_id)
+        return t
 
     def record_completed_request(
         self,
@@ -561,9 +589,7 @@ class PPTSession:
             admitted_generation=admitted_generation,
             completed_at=str(time.time()),
         )
-        while len(self.completed_tombstones) >= MAX_COMPLETED_TOMBSTONES:
-            self.completed_tombstones.popitem(last=False)
-        self.completed_tombstones[request_id] = tombstone
+        self.cache_request_tombstone(tombstone)
         self.pending_tombstones[request_id] = tombstone
 
         # Tier 1: Evict oldest if count exceeds MAX_COMPLETED_REQUESTS

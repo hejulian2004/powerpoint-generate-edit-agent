@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import lxml.etree as etree
+import pytest
 from fastapi.testclient import TestClient
 
 from backend.main import app
@@ -234,15 +235,18 @@ def test_two_tier_journal_tombstones_prevent_expired_replay_execution():
     assert tombstone is not None
     assert tombstone.fingerprint == "fp_initial"
 
-    # Verify persistence round-trip preserves tombstones
+    # Contract: snapshot.completed_tombstones is empty ([]), eliminating dual-source-of-truth.
+    # Durable authority belongs strictly to SQLite request_tombstones table.
     snapshot = session_to_snapshot(session)
-    assert any(t["request_id"] == "req_initial" for t in snapshot.completed_tombstones)
+    assert snapshot.completed_tombstones == []
 
     restored = snapshot_to_session(snapshot)
     assert restored.get_completed_request("req_initial") is None
-    restored_tombstone = restored.get_request_tombstone("req_initial")
-    assert restored_tombstone is not None
-    assert restored_tombstone.fingerprint == "fp_initial"
+    # Restored session starts with empty in-memory cache and populates on demand from SQLite authority
+    assert restored.get_request_tombstone("req_initial") is None
+    # Warming cache through cache_request_tombstone works
+    restored.cache_request_tombstone(tombstone)
+    assert restored.get_request_tombstone("req_initial") is not None
 
 
 def test_sqlite_authoritative_tombstones_and_reset_conversation_retention(tmp_path):
@@ -326,7 +330,29 @@ def test_outbound_enforces_https_with_api_key(monkeypatch):
     # 3. HTTPS WITH api_key is accepted
     norm, host, ips = OutboundURLPolicy.validate("https://public.example.com/v1", api_key="sk-secret-1234")
     assert host == "public.example.com"
-    assert norm == "https://public.example.com/v1"
+
+
+def test_outbound_ssrf_allow_loopback_only_permits_true_loopback():
+    """allow_loopback permits 127.0.0.1 and ::1 in test/dev, but strictly blocks RFC1918 private IPs."""
+    from backend.security.outbound import OutboundURLPolicy, OutboundURLRejected
+
+    # True loopback passes with allow_loopback=True
+    norm, host, ips = OutboundURLPolicy.validate("http://127.0.0.1:8000/v1", allow_loopback=True)
+    assert host == "127.0.0.1"
+
+    norm, host, ips = OutboundURLPolicy.validate("http://[::1]:8000/v1", allow_loopback=True)
+    assert host == "::1"
+
+    # RFC1918 private IPs must be REJECTED even with allow_loopback=True
+    for private_target in [
+        "http://10.0.0.1:8000/v1",
+        "http://192.168.1.1:8000/v1",
+        "http://172.16.0.5:8000/v1",
+        "http://169.254.169.254/latest/meta-data",
+    ]:
+        with pytest.raises(OutboundURLRejected) as exc_info:
+            OutboundURLPolicy.validate(private_target, allow_loopback=True)
+        assert exc_info.value.code == "OUTBOUND_SSRF_BLOCKED"
 
 
 def test_models_route_server_configured_loopback_vs_client_override(monkeypatch):

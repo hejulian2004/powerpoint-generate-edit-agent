@@ -66,16 +66,8 @@ def session_to_snapshot(session: Any) -> SessionSnapshot:
                 "size_bytes": r.size_bytes,
             })
 
-    tombstones = []
-    if hasattr(session, "completed_tombstones") and session.completed_tombstones:
-        for t in list(session.completed_tombstones.values()):
-            tombstones.append({
-                "request_id": t.request_id,
-                "fingerprint": t.fingerprint,
-                "admitted_generation": t.admitted_generation,
-                "completed_at": t.completed_at,
-            })
-
+    # Contract: SQLite request_tombstones table is the sole durable authority for 7-day replay protection.
+    # Snapshot JSON does NOT persist tombstones (completed_tombstones = []) to eliminate dual-source-of-truth.
     return SessionSnapshot(
         session_id=session.session_id,
         presentation=session.document.presentation.model_dump(),
@@ -87,7 +79,7 @@ def session_to_snapshot(session: Any) -> SessionSnapshot:
         compression_through_index=mem.compression_through_index,
         conversation_generation=getattr(session, "conversation_generation", 0) or 0,
         completed_requests=completed,
-        completed_tombstones=tombstones,
+        completed_tombstones=[],
         checkpoints=session.checkpoint_service.to_snapshots(),
         created_at=session.created_at.isoformat(),
         updated_at=session.updated_at.isoformat(),
@@ -122,22 +114,10 @@ def snapshot_to_session(snapshot: SessionSnapshot) -> Any:
     )
     session.conversation_generation = int(getattr(snapshot, "conversation_generation", 0) or 0)
 
-    # Restore Tier 2 Durable Tombstones
+    # Clear in-memory tombstones on restore; SQLite request_tombstones table is sole durable authority
+    # and tombstones will be warm-cached on-demand through WorkspaceManager authoritative lookups.
     session.completed_tombstones.clear()
-    for item in getattr(snapshot, "completed_tombstones", []) or []:
-        req_id = item.get("request_id")
-        fingerprint = item.get("fingerprint")
-        admitted_gen = item.get("admitted_generation", 0)
-        completed_at = item.get("completed_at", "")
-        if req_id and fingerprint:
-            if len(session.completed_tombstones) >= MAX_COMPLETED_TOMBSTONES:
-                session.completed_tombstones.popitem(last=False)
-            session.completed_tombstones[req_id] = RequestTombstone(
-                request_id=req_id,
-                fingerprint=fingerprint,
-                admitted_generation=admitted_gen,
-                completed_at=completed_at,
-            )
+    session.pending_tombstones.clear()
 
     # Re-validate and recalculate completed_requests budgets independently on restore
     session.completed_requests.clear()

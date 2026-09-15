@@ -1032,5 +1032,36 @@ def test_narrative_grounding_allows_conservative_morphological_variants():
     assert res.valid is True
 
 
+def test_claim_relation_recombination_rejection():
+    """Ensure relational comparison claims cannot recombine entities across disconnected sentences."""
+    # Sentence 1: AlgorithmAlpha beats BaselineB.
+    # Sentence 2: AlgorithmBeta beats BaselineC.
+    raw_input = (
+        "Benchmark: In our experiments, AlgorithmAlpha beats BaselineB by a significant margin. "
+        "Furthermore, AlgorithmBeta beats BaselineC on ImageNet."
+    )
+
+    spec_invalid = CanonicalPPTSpec(
+        presentation=PresentationConfig(title="Benchmark"),
+        evidence=[ClaimEvidence(id="c1", content="AlgorithmBeta beats BaselineB")],
+        slides=[SlideRequest(id="s1", type=SlideType.RESULT, title="Results", evidence_refs=["c1"])],
+    )
+
+    # Recombining entities across disconnected sentences is rejected by textual provenance (literal) or relation binding
+    with pytest.raises((UnsupportedFactRelationError, UnsupportedTextualFactError)) as exc_info:
+        validate_truthfulness(raw_input, spec_invalid, strict=True)
+    assert "AlgorithmBeta beats BaselineB" in str(exc_info.value) or "claim_relation" in str(exc_info.value)
+
+    # Valid co-located relation passes
+    spec_valid = CanonicalPPTSpec(
+        presentation=PresentationConfig(title="Benchmark"),
+        evidence=[ClaimEvidence(id="c1", content="AlgorithmAlpha beats BaselineB")],
+        slides=[SlideRequest(id="s1", type=SlideType.RESULT, title="Results", evidence_refs=["c1"])],
+    )
+    res = validate_truthfulness(raw_input, spec_valid, strict=True)
+    assert res.valid is True
+
+
+
 
 
