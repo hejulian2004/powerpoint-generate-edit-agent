@@ -406,3 +406,78 @@ def test_langgraph_agent_full_turn_layout_and_theme():
         assert res_layout["intent"] == "optimize_layout"
 
     asyncio.run(_run())
+
+
+def test_router_node_llm_intent_classification():
+    """Verify router_node uses LLM semantic classification when llm_client is provided."""
+    from backend.agent.graph import router_node
+
+    class MockRoutingLLM:
+        def __init__(self, target_intent: str):
+            self.target_intent = target_intent
+            self.call_count = 0
+
+        def _is_unconfigured(self) -> bool:
+            return False
+
+        async def chat_completion(self, messages, role="fast", temperature=0.0, max_tokens=150):
+            self.call_count += 1
+            return {
+                "choices": [
+                    {
+                        "message": {
+                            "content": f'{{"intent": "{self.target_intent}", "reason": "semantic analysis"}}'
+                        }
+                    }
+                ]
+            }
+
+    async def _run():
+        pres = PresentationIR(title="Beautify Deck")
+        pres.slides.append(SlideIR(id="s1", slide_num=1))
+
+        # 1. User says "美化ui" -> LLM classifies as optimize_layout
+        llm = MockRoutingLLM("optimize_layout")
+        state = {"user_query": "美化ui"}
+        res = await router_node(state, {"configurable": {"pres": pres, "llm_client": llm}})
+        assert llm.call_count == 1
+        assert res["intent"] == "optimize_layout"
+
+        # 2. User says complex aesthetic phrase -> LLM classifies as optimize_layout
+        llm2 = MockRoutingLLM("optimize_layout")
+        state2 = {"user_query": "这个界面的视觉效果太单调了，请帮我自动调整排版和UI质感"}
+        res2 = await router_node(state2, {"configurable": {"pres": pres, "llm_client": llm2}})
+        assert llm2.call_count == 1
+        assert res2["intent"] == "optimize_layout"
+
+    asyncio.run(_run())
+
+
+def test_beautify_ui_full_turn_executes_layout_tools():
+    """Verify that asking agent to '美化ui' executes layout beautification without being ignored as chat."""
+    async def _run():
+        pres = PresentationIR(title="Beautify UI Deck")
+        s = SlideIR(id="s1", slide_num=1)
+        # Overlapping elements that need beautification and remediation
+        s.add_element(TextElementIR(id="t1", x=80, y=100, width=500, height=60, text_content=TextContentIR.from_plain_text("页面标题")))
+        s.add_element(ShapeElementIR(id="c1", x=80, y=220, width=300, height=200))
+        s.add_element(ShapeElementIR(id="c2", x=400, y=220, width=300, height=200))
+        pres.slides.append(s)
+        history = HistoryManager()
+
+        runtime = AgentRuntime()
+
+        res = await runtime.run_turn(
+            user_message="美化ui",
+            pres=pres,
+            history=history
+        )
+
+        assert res["intent"] == "optimize_layout"
+        # Must execute layout optimization/remediation tools rather than doing nothing
+        assert len(res["tools_executed"]) > 0
+        executed_names = [t.get("tool") for t in res["tools_executed"]]
+        assert any(name in ("auto_fix_layout", "optimize_layout") for name in executed_names)
+
+    asyncio.run(_run())
+

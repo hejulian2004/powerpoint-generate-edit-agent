@@ -8,6 +8,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import re
 import uuid
 from typing import Dict, Any, List, Optional, Callable, TypedDict
 from langchain_core.runnables import RunnableConfig
@@ -182,40 +183,157 @@ def _aggregate_deck_reviews(
 
 
 # =====================================================================
-# 2. Node Functions
+# 2. Node Functions & Intent Classification
 # =====================================================================
+
+VALID_INTENTS = {
+    "generate_presentation",
+    "generate_slide",
+    "modify_elements",
+    "optimize_layout",
+    "apply_theme",
+    "undo",
+    "chat",
+}
+
+_ROUTER_SYSTEM_PROMPT = """你是一个专业的 PPT 演示文稿智能助手意图路由分类器。
+你的唯一任务是：分析用户的输入指令，结合当前演示文稿的状态，将用户的真实意图精确分类到以下 7 种标准意图之一：
+
+1. "generate_presentation": 用户希望生成整套多页 PPT 演示文稿（例如：“制作一份关于...的PPT”、“根据大纲生成文稿”、“写一个商业计划书PPT”）。
+2. "generate_slide": 用户希望新建一页幻灯片（如“新增一页”、“加一页空白幻灯片”），或在当前页生成特定版式架构块（如“生成时间线”、“添加KPI指标卡”、“生成两栏对比”、“做三张特性卡片”）。
+3. "modify_elements": 用户希望对当前页面的具体图元/文字进行局部微调（如“把标题改成XX”、“文字变大一点”、“背景矩形换成红色”、“删掉这个卡片”、“往右移动50px”）。
+4. "optimize_layout": 用户希望对页面进行美化、UI优化、排版重构、消除重叠/遮挡、自动对齐规整、呼吸感留白调整（例如：“美化ui”、“美化界面”、“美化一下”、“优化排版”、“页面太挤了整理一下”、“自动排版”、“排版美化”、“好看一点”）。
+5. "apply_theme": 用户希望切换或应用全局配色/设计主题（例如：“换成深色主题”、“改成科技蓝风格”、“换成极简黑曜风格”）。
+6. "undo": 用户希望撤销上一轮操作、回退修改（例如：“撤销”、“回退刚才的修改”、“undo”）。
+7. "chat": 纯闲聊、打招呼、提问咨询、与 PPT 设计/排版/生成完全无关的问答（例如：“你好”、“你叫什么名字”、“什么是中间表示”、“介绍一下你自己”）。
+
+【输出规范】:
+请严格输出合法的 JSON 对象，不要输出任何额外文本：
+{
+  "intent": "<上述7种意图之一>",
+  "reason": "<简明判定理由>"
+}
+"""
+
+
+def _extract_intent_from_response(content: str) -> Optional[str]:
+    """Extracts valid intent string from LLM JSON response."""
+    if not content or not content.strip():
+        return None
+    try:
+        data = json.loads(content.strip())
+        if isinstance(data, dict):
+            cand = str(data.get("intent") or "").strip()
+            if cand in VALID_INTENTS:
+                return cand
+    except Exception:
+        pass
+    m = re.search(r'["\']intent["\']\s*:\s*["\']\s*([a-zA-Z_]+)\s*["\']', content)
+    if m and m.group(1) in VALID_INTENTS:
+        return m.group(1)
+    return None
+
+
+async def classify_intent_with_llm(
+    llm_client: Any,
+    user_query: str,
+    pres: Optional[PresentationIR],
+) -> Optional[str]:
+    """Primary intent decider powered by LLM semantic understanding."""
+    if not llm_client or not hasattr(llm_client, "chat_completion"):
+        return None
+    if hasattr(llm_client, "_is_unconfigured") and llm_client._is_unconfigured():
+        return None
+
+    context_lines = [f"用户输入: \"{user_query}\""]
+    if pres and pres.slides:
+        context_lines.append(f"当前演示文稿状态: 共 {len(pres.slides)} 页，标题: 《{pres.title or '未命名'}》")
+        active = pres.get_active_slide()
+        if active:
+            context_lines.append(f"当前停留页: 第 {active.slide_num} 页 (ID: {active.id})，包含 {len(active.elements)} 个元素")
+    else:
+        context_lines.append("当前演示文稿状态: 空文稿 (0页)")
+
+    user_prompt = "\n".join(context_lines)
+
+    try:
+        resp = await llm_client.chat_completion(
+            messages=[
+                {"role": "system", "content": _ROUTER_SYSTEM_PROMPT},
+                {"role": "user", "content": user_prompt},
+            ],
+            role="fast",
+            temperature=0.0,
+            max_tokens=150,
+        )
+        content = ""
+        if isinstance(resp, dict):
+            choices = resp.get("choices") or []
+            if choices:
+                content = choices[0].get("message", {}).get("content", "")
+        if content:
+            parsed = _extract_intent_from_response(content)
+            if parsed:
+                return parsed
+    except Exception as e:
+        logger.warning(f"LLM intent classification failed: {e}")
+    return None
+
+
+def _fallback_intent_classifier(user_query: str, pres: Optional[PresentationIR]) -> str:
+    """Safety fallback intent classifier used solely when LLM is unavailable or offline."""
+    query = user_query.strip()
+    query_lower = query.lower()
+
+    if any(k in query_lower for k in ["撤销", "undo", "回退"]):
+        return "undo"
+    if any(k in query or k in query_lower for k in [
+        "美化", "美观", "好看", "规整", "对齐", "排列", "居中", "均匀分布", "整理卡片",
+        "自适应排版", "拥挤", "太挤", "紧凑", "排版杂乱", "优化排版", "排版优化", "优化ui", "优化界面", "美化ui", "美化界面"
+    ]):
+        return "optimize_layout"
+    if any(k in query for k in ["主题", "配色", "黑曜", "深色", "科技蓝", "浅色", "风格"]):
+        return "apply_theme"
+    if any(k in query for k in ["生成完整", "制作一份", "创建ppt", "生成ppt", "写一个ppt", "关于", "汇报", "商业计划书"]) or (
+        ("生成" in query or "创建" in query or "制作" in query) and ("演示文稿" in query or "ppt" in query_lower or "大纲" in query or "页" in query)
+    ):
+        return "generate_presentation"
+    if any(k in query or k in query_lower for k in ["时间线", "里程碑", "指标", "kpi", "特性卡片", "栏卡片", "对比", "新增一页", "添加一页", "新页面", "生成两栏", "排版生成"]):
+        return "generate_slide"
+    if any(k in query for k in ["修改", "改成", "换成", "变大", "变小", "调为", "更新", "删除", "添加", "标题", "文字", "复制", "移动", "位置", "右侧", "左侧", "再往", "往下", "往上", "往左", "往右", "突出"]):
+        return "modify_elements"
+    if len(query) > 5:
+        return "modify_elements" if (pres and len(pres.slides) > 0) else "generate_presentation"
+    return "chat"
+
 
 async def router_node(state: PPTAgentState, config: RunnableConfig) -> Dict[str, Any]:
     """Analyzes user message and current presentation state to classify intent."""
     configurable = config.get("configurable", {})
     on_event: Optional[Callable] = configurable.get("on_event")
     pres: Optional[PresentationIR] = configurable.get("pres")
+    llm_client: Optional[Any] = configurable.get("llm_client")
 
     user_query = state.get("user_query", "").strip()
-    query_lower = user_query.lower()
+    if not user_query:
+        return {
+            "intent": "chat",
+            "iteration": state.get("iteration", 0) + 1,
+            "grounding": None,
+            "grounding_clarification": None,
+        }
 
     if on_event:
-        await _safe_emit(on_event,{"type": "agent_thinking", "status": "routing", "text": "分析用户需求意图与画布状态..."})
+        await _safe_emit(on_event, {"type": "agent_thinking", "status": "routing", "text": "分析用户需求意图与画布状态..."})
 
-    # Rule & keyword-assisted intent classification
-    intent = "chat"
-    if any(k in user_query for k in ["撤销刚才修改", "撤销修改", "撤销操作", "撤销刚才", "撤销", "undo", "回退"]):
-        intent = "undo"
-    elif any(k in user_query for k in ["生成完整", "制作一份", "创建ppt", "生成ppt", "写一个ppt", "关于", "汇报", "商业计划书"]) or (
-        ("生成" in user_query or "创建" in user_query or "制作" in user_query) and ("演示文稿" in user_query or "ppt" in query_lower or "大纲" in user_query or "页" in user_query)
-    ):
-        intent = "generate_presentation"
-    elif any(k in user_query for k in ["时间线", "里程碑", "指标", "kpi", "特性卡片", "栏卡片", "对比", "新增一页", "添加一页", "新页面", "生成两栏", "排版生成"]):
-        intent = "generate_slide"
-    elif any(k in user_query for k in ["规整", "对齐", "排列", "居中", "均匀分布", "整理卡片", "自适应排版", "拥挤", "太挤", "紧凑", "排版杂乱"]):
-        intent = "optimize_layout"
-    elif any(k in user_query for k in ["主题", "配色", "黑曜", "深色", "科技蓝", "浅色", "风格"]):
-        intent = "apply_theme"
-    elif any(k in user_query for k in ["修改", "改成", "换成", "变大", "变小", "调为", "更新", "删除", "添加", "标题", "文字", "复制", "移动", "位置", "右侧", "左侧", "再往", "往下", "往上", "往左", "往右", "突出"]):
-        intent = "modify_elements"
-    elif len(user_query) > 5:
-        # Default action-oriented queries to modify or generate
-        intent = "modify_elements" if (pres and len(pres.slides) > 0) else "generate_presentation"
+    # 1. Primary intent classification via LLM
+    intent: Optional[str] = None
+    if llm_client:
+        intent = await classify_intent_with_llm(llm_client, user_query, pres)
+
+    # 2. Structural safety fallback if LLM is unavailable or unconfigured
+    if not intent:
+        intent = _fallback_intent_classifier(user_query, pres)
 
     # Grounding gate: factual deck requests without source material must ask first.
     grounding: Optional[Dict[str, Any]] = None
@@ -267,7 +385,7 @@ async def planner_node(state: PPTAgentState, config: RunnableConfig) -> Dict[str
         else:
             plan_desc = f"规划生成当前页面布局架构: 统一字号层级、计算间距与容器圆角，避免元素交叠。"
     elif intent == "optimize_layout":
-        plan_desc = "计算画布几何重心，重新规整图元水平/垂直对齐与呼吸留白。"
+        plan_desc = "计算画布几何重心，分析排版缺陷与重叠，重新规整图元对齐、呼吸留白与视觉美化。"
     elif intent == "apply_theme":
         plan_desc = "匹配全局色彩系统与图元描边规范，提升视觉对比度与统一性。"
     elif intent == "modify_elements":
@@ -603,15 +721,27 @@ def _heuristic_tool_planner(
             })
 
     elif intent == "optimize_layout":
-        tool_calls.append({
-            "name": "optimize_layout",
-            "arguments": {
-                "layout_mode": "horizontal_cards",
-                "start_y": 240,
-                "gap": 32
-            },
-            "id": f"call_{uuid.uuid4().hex[:6]}"
-        })
+        # Check if active slide has multiple cards to rearrange horizontally
+        cards = [e for e in (active_slide.elements if active_slide else []) if getattr(e, "type", None) == "shape" and getattr(e, "width", 0) >= 100]
+        if len(cards) >= 2 and any(k in user_query for k in ["卡片", "横排", "均匀"]):
+            tool_calls.append({
+                "name": "optimize_layout",
+                "arguments": {
+                    "layout_mode": "horizontal_cards",
+                    "start_y": 240,
+                    "gap": 32
+                },
+                "id": f"call_{uuid.uuid4().hex[:6]}"
+            })
+        else:
+            # Universal slide beautification and geometric/aesthetic defect remediation
+            tool_calls.append({
+                "name": "auto_fix_layout",
+                "arguments": {
+                    "only_critical": False
+                },
+                "id": f"call_{uuid.uuid4().hex[:6]}"
+            })
 
     elif intent == "apply_theme":
         theme_name = "monochrome_studio"
@@ -1296,7 +1426,7 @@ async def summary_node(state: PPTAgentState, config: RunnableConfig) -> Dict[str
         else:
             final_text = f"已为您在当前页面完成高保真架构排版。按统一网格计算了元素坐标与呼吸感留白，已就绪供您查看与微调。"
     elif intent == "optimize_layout":
-        final_text = "已自动执行几何网格对齐与规整，优化了卡片间距与容器层级，排版更加匀称工整。"
+        final_text = "已自动执行排版与UI视觉美化，规整了元素几何布局与间距层级，消除了视觉重叠与缺陷。"
     elif intent == "apply_theme":
         final_text = "已应用全局设计主题规范，调和了背景底色、卡片填充与文字高对比度。"
     else:
@@ -1431,7 +1561,8 @@ def _build_llm_system_prompt(pres: Optional[PresentationIR], memory: Optional[Ag
 【重要操作准则】:
 1. 当用户要求生成完整 PPT 时，调用 generate_presentation 工具，主题可选 editorial_technical / engineering_dark / tech_blue 等。
 2. 当用户要求生成时间线、指标或卡片等布局时，调用 generate_slide_layout 或 batch_add_cards。
-3. 当用户要求微调特定元素或排版时，调用 update_element, format_text, optimize_layout 或 align_elements。
+3. 当用户要求美化页面、美化UI、排版优化、自适应规整或修复布局瑕疵时，优先调用 auto_fix_layout（自动检测并修复重叠与边距溢出），或调用 optimize_layout / align_elements / format_text。
+4. 当用户要求微调特定元素或排版时，调用 update_element, format_text, optimize_layout 或 align_elements。
 """
 
 

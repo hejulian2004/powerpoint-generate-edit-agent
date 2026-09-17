@@ -1062,6 +1062,77 @@ def test_claim_relation_recombination_rejection():
     assert res.valid is True
 
 
+def test_truthfulness_json_equation_latex_and_source_page_grounding():
+    """Verify that JSON-escaped LaTeX formulas and JSON-formatted source_page numbers are grounded."""
+    import json
 
+    raw_json = json.dumps({
+        "spec_version": "1.0",
+        "presentation": {"title": "RL Math Reasoning", "style": "academic_clean"},
+        "evidence": [
+            {
+                "id": "eq1",
+                "kind": "equation",
+                "latex": r"g(\tau)=\alpha_{out}r_{out}+\sum_{t=1}^{T}\gamma^{t-1}r_t",
+                "description": "Trajectory return",
+            },
+            {
+                "id": "c1",
+                "kind": "claim",
+                "source_page": 4,
+                "content": "SERC inner loop computes process rewards.",
+            },
+            {
+                "id": "fig2",
+                "kind": "figure_reference",
+                "label": "Figure 2",
+                "source_page": 3,
+                "caption": "The Framework of Agent0-VL",
+            },
+        ],
+        "slides": [
+            {
+                "id": "s1",
+                "type": "METHOD_OVERVIEW",
+                "title": "Method Architecture",
+                "evidence_refs": ["eq1", "c1", "fig2"],
+            }
+        ],
+    })
 
+    spec = CanonicalPPTSpec(
+        spec_version="1.0",
+        presentation=PresentationConfig(title="RL Math Reasoning", style="academic_clean"),
+        evidence=[
+            EquationEvidence(
+                id="eq1",
+                latex=r"g(\tau)=\alpha_{out}r_{out}+\sum_{t=1}^{T}\gamma^{t-1}r_t",
+                description="Trajectory return",
+            ),
+            ClaimEvidence(
+                id="c1",
+                source_page=4,
+                content="SERC inner loop computes process rewards.",
+            ),
+            FigureReferenceEvidence(
+                id="fig2",
+                label="Figure 2",
+                source_page=3,
+                caption="The Framework of Agent0-VL",
+            ),
+        ],
+        slides=[
+            SlideRequest(
+                id="s1",
+                type=SlideType.METHOD_OVERVIEW,
+                title="Method Architecture",
+                evidence_refs=["eq1", "c1", "fig2"],
+            )
+        ],
+    )
+
+    # In strict mode, both the escaped LaTeX and source_page must pass truthfulness guard
+    res = validate_truthfulness(raw_json, spec, strict=True)
+    assert res.valid is True
+    assert len(res.errors) == 0
 

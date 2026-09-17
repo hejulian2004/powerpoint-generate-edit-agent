@@ -250,6 +250,8 @@ def normalize_for_textual_match(text: str) -> str:
     norm = re.sub(r"!\[([^\]]*)\]\([^)]+\)", r"\1", norm)
     # Remove bold, italics, code, headers, blockquotes, bullets
     norm = re.sub(r"[*_`#>]", " ", norm)
+    # Collapse multiple consecutive backslashes into a single backslash for literal comparison (e.g. JSON escaped LaTeX)
+    norm = re.sub(r"\\+", "\\\\", norm)
     # Collapse multiple whitespace/newlines
     norm = re.sub(r"\s+", " ", norm).strip().lower()
     # Strip outer quotes / punctuation
@@ -697,9 +699,13 @@ def validate_source_locator(
     if not label and page is None and not caption:
         return True
 
+    def _page_pattern(p: int) -> str:
+        # Match natural citations ("page 1", "p.1", "第1页") as well as JSON keys ("source_page": 1, "page": 1)
+        # Using word boundaries to avoid false-positive matches on "total_page", "per_page", etc.
+        return rf"""(?i)(?:\b(?:source_page|page)["']?\s*[:=]\s*["']?|(?:\bpage|\bp\.|第)\s*){p}(?:["']?\s*页|["']?(?!\d))"""
+
     def has_page_in_text(text: str, p: int) -> bool:
-        p_pattern = rf"(?i)(?:page|p\.|第)\s*{p}(?:\s*页|(?!\d))"
-        return bool(re.search(p_pattern, text))
+        return bool(re.search(_page_pattern(p), text))
 
     intervening_locator_re = re.compile(r"(?i)(?:Figure|Fig\.?|Table|图|表)\s*\d+(?!\d)")
 
@@ -746,12 +752,12 @@ def validate_source_locator(
 
                     if not has_page_in_text(window_text, page):
                         continue
-                    p_match = re.search(rf"(?i)(?:page|p\.|第)\s*{page}(?:\s*页|(?!\d))", after_m)
+                    p_match = re.search(_page_pattern(page), after_m)
                     if p_match:
                         intervening = after_m[:p_match.start()]
                         if intervening_locator_re.search(intervening):
                             continue
-                    p_match_before = re.search(rf"(?i)(?:page|p\.|第)\s*{page}(?:\s*页|(?!\d))", before_m)
+                    p_match_before = re.search(_page_pattern(page), before_m)
                     if p_match_before:
                         intervening = before_m[p_match_before.end():]
                         if intervening_locator_re.search(intervening):
