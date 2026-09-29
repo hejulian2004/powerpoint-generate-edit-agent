@@ -76,8 +76,9 @@ def test_subagent_zero_context_leakage():
         assert len(done_events) == 1
         assert done_events[0]["main_agent_status"] == "resumed"
 
-        # 3. Verify score fusion with subagent aesthetic evaluation (rule 100 + model 88 -> fused 94)
-        assert res.health_report.quality_score.aesthetics == 94.0
+        # Rule aesthetics stay sealed. The model score is feedback only.
+        assert res.health_report.quality_score.aesthetics == 100.0
+        assert res.vision_status.get("aesthetic_model_score") == 88.0
         assert res.subagent_info["context_isolated"] is True
 
     asyncio.run(_run())

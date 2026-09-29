@@ -25,6 +25,10 @@ class RejectingContentLLM:
         self.content_calls = 0
 
     async def chat_completion(self, messages, tools=None, role="reasoning", **kwargs):
+        from tests.intent_reply import maybe_route
+        routed = maybe_route(messages, "modify_elements")
+        if routed:
+            return routed
         self.content_calls += 1
         return {"choices": [{"message": {"content": (
             "【文案优点】: 观点明确\n"
@@ -43,6 +47,10 @@ class ReworkLLM:
         self.executor_messages = []
 
     async def chat_completion(self, messages, tools=None, role="reasoning", **kwargs):
+        from tests.intent_reply import maybe_route
+        routed = maybe_route(messages, "modify_elements")
+        if routed:
+            return routed
         sys_msg = next((m["content"] for m in messages if m.get("role") == "system"), "")
         if role == "vision":
             return {"choices": [{"message": {"content": (

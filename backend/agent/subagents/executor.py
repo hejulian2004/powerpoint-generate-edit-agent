@@ -238,15 +238,15 @@ class ExecutorSubagent:
                     })
             except Exception as e:
                 logger.warning(f"ExecutorSubagent LLM call error: {e}, using heuristic planner")
-                from ..graph import _heuristic_tool_planner
-                tool_calls = _heuristic_tool_planner(
-                    intent, user_query, planning_snapshot,
-                    last_target_id=last_target_id,
-                    selected_element_ids=ctx.selected_element_ids,
-                    primary_selected_element_id=ctx.primary_selected_element_id,
-                )
+                llm_failed = True
+            else:
+                llm_failed = False
+        else:
+            llm_failed = False
 
-        if not has_live_llm or not tool_calls:
+        # A live model that returns no tool calls keeps an empty plan. The
+        # heuristic runs only when there is no live model or the call raised.
+        if not has_live_llm or llm_failed:
             from ..graph import _heuristic_tool_planner
             tool_calls = _heuristic_tool_planner(
                 intent, user_query, planning_snapshot,

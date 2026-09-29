@@ -14,6 +14,12 @@ import re
 from typing import Any, Dict, List, Optional, Tuple
 import lxml.etree as etree
 
+from ..design.tokens import (
+    SHADOW_DX,
+    SHADOW_DY,
+    SHADOW_FLOOD_OPACITY,
+    SHADOW_STD_DEVIATION,
+)
 from .models import (
     BorderStyle,
     ConnectorElementIR,
@@ -180,10 +186,10 @@ class SVGRenderer:
             filter_elem,
             _q("feDropShadow"),
             attrib={
-                "dx": "2",
-                "dy": "4",
-                "stdDeviation": "4",
-                "flood-opacity": "0.15",
+                "dx": f"{float(SHADOW_DX):g}",
+                "dy": f"{float(SHADOW_DY):g}",
+                "stdDeviation": f"{float(SHADOW_STD_DEVIATION):g}",
+                "flood-opacity": f"{float(SHADOW_FLOOD_OPACITY):g}",
             },
         )
 
@@ -458,7 +464,7 @@ class SVGRenderer:
             common_attrs["filter"] = filter_str
 
         if stype in ["roundRect", "rounded_rectangle"]:
-            rx = radius * min(w, h) if (0 < radius <= 0.5) else (radius if radius > 0 else 12.0)
+            rx = float(radius) if radius and float(radius) > 0 else 0.0
             attrs = dict(common_attrs)
             attrs.update({
                 "x": str(x),

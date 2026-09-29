@@ -220,7 +220,27 @@ class VisualCritic:
                     ))
                     handled_elements.add(eid)
 
-            # 5. Misalignment (STRUCTURAL - Advisory only)
+            # 5. Oversized card radius (STRUCTURAL, auto-clamped to 3px)
+            elif defect.defect_type == "oversized_card_radius":
+                from ..design.tokens import MAX_CARD_RADIUS
+                radius = fix.get("radius", MAX_CARD_RADIUS)
+                targets = list(fix.get("element_ids") or defect.element_ids or [])
+                for eid in targets:
+                    if not eid or eid in handled_elements:
+                        continue
+                    actions.append(FixAction(
+                        action_type=FixActionType.CLAMP_RADIUS,
+                        category=DefectCategory.STRUCTURAL,
+                        target_ids=[eid],
+                        parameters={"element_id": eid, "radius": radius},
+                        reason=f"将圆角钳制到 {MAX_CARD_RADIUS:.0f}px: {defect.description}",
+                        priority=6,
+                        confidence=0.95,
+                        source="geometry_rule",
+                    ))
+                    handled_elements.add(eid)
+
+            # 6. Misalignment (STRUCTURAL, auto-applicable)
             elif defect.defect_type == "misaligned":
                 align_targets = defect.element_ids
                 if align_targets and not any(tid in handled_elements for tid in align_targets):

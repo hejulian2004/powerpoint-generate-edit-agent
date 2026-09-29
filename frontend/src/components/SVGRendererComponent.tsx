@@ -5,6 +5,7 @@ import type {
 } from '../types/presentation-ir.generated'
 import { usePPTStore } from '../store/usePPTStore'
 import { themeColors } from '../theme/tokens'
+import { SHADOW_DX, SHADOW_DY, SHADOW_FLOOD_OPACITY, SHADOW_STD_DEVIATION } from '../theme/slideTokens'
 import { AlignmentGuides } from './AlignmentGuides'
 import type { SnapGuide } from '../editor/snapping/types'
 import { canResize, getBounds, unionBounds } from '../editor/geometry/adapter'
@@ -188,7 +189,7 @@ export const SVGRendererComponent: React.FC<Props> = ({
         width="140%"
         height="140%"
       >
-        <feDropShadow dx="0" dy="6" stdDeviation="6" floodColor="#000000" floodOpacity="0.4" />
+        <feDropShadow dx={SHADOW_DX} dy={SHADOW_DY} stdDeviation={SHADOW_STD_DEVIATION} floodColor="#000000" floodOpacity={SHADOW_FLOOD_OPACITY} />
       </filter>
     ]
 
@@ -359,7 +360,7 @@ export const SVGRendererComponent: React.FC<Props> = ({
     const filter = style.shadow?.enabled ? `url(#shadow-${slide.id})` : undefined
 
     if (shape_type === 'roundRect' || shape_type === 'rounded_rectangle') {
-      const rx = typeof style.radius === 'number' ? style.radius : 12
+      const rx = typeof style.radius === 'number' && style.radius > 0 ? style.radius : 0
       return <rect x={x} y={y} width={w} height={h} rx={rx} ry={rx} fill={fill} filter={filter} {...strokeProps} />
     }
     if (shape_type === 'ellipse' || shape_type === 'circle') {

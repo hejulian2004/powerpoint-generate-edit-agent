@@ -347,6 +347,7 @@ class PPTSession:
         active_slide_id: Optional[str] = None,
         ui_context: Optional[Dict[str, Any]] = None,
         ui_context_revision: Optional[int] = None,
+        tool_calls: Optional[list] = None,
     ) -> Dict[str, Any]:
         if document_epoch is None:
             document_epoch = self.document.epoch
@@ -360,6 +361,7 @@ class PPTSession:
             active_slide_id=active_slide_id,
             ui_context=ui_context,
             ui_context_revision=ui_context_revision,
+            tool_calls=tool_calls,
         )
         self.updated_at = datetime.now(timezone.utc)
         return record

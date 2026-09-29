@@ -17,7 +17,7 @@ from langgraph.graph import StateGraph, START, END
 from .memory import AgentMemory
 from .vision import VisionEngine
 from .llm import LLMClient
-from .action import AgentAction, ActionResolver
+from .intent import classify_intent_with_llm
 from .iteration import AgentIteration
 from ..ir.models import PresentationIR, SlideIR
 from ..ir.patch import HistoryManager
@@ -51,10 +51,18 @@ class PPTAgentState(TypedDict, total=False):
     user_query: str
     intent: str  # "generate_presentation" | "generate_slide" | "modify_elements" | "optimize_layout" | "apply_theme" | "undo" | "chat"
     plan: Optional[str]
+    # Tool calls drafted before a plan-mode confirmation. The resumed turn
+    # executes this list instead of planning again.
+    proposed_tool_calls: Optional[List[Dict[str, Any]]]
+    frozen_tool_calls: Optional[List[Dict[str, Any]]]
     plan_review: Optional[Dict[str, Any]]
     plan_iteration: int
     content_review: Optional[Dict[str, Any]]
     content_iteration: int
+    # Per-slide content-rework rounds already issued this turn. Each failed
+    # slide may be sent back at most twice; routing uses this map, not a
+    # single global counter.
+    content_rework_counts: Dict[str, int]
     rework_directive: Optional[Dict[str, Any]]
     tool_calls: List[Dict[str, Any]]
     execution_plan: List[Dict[str, Any]]
@@ -186,127 +194,6 @@ def _aggregate_deck_reviews(
 # 2. Node Functions & Intent Classification
 # =====================================================================
 
-VALID_INTENTS = {
-    "generate_presentation",
-    "generate_slide",
-    "modify_elements",
-    "optimize_layout",
-    "apply_theme",
-    "undo",
-    "chat",
-}
-
-_ROUTER_SYSTEM_PROMPT = """你是一个专业的 PPT 演示文稿智能助手意图路由分类器。
-你的唯一任务是：分析用户的输入指令，结合当前演示文稿的状态，将用户的真实意图精确分类到以下 7 种标准意图之一：
-
-1. "generate_presentation": 用户希望生成整套多页 PPT 演示文稿（例如：“制作一份关于...的PPT”、“根据大纲生成文稿”、“写一个商业计划书PPT”）。
-2. "generate_slide": 用户希望新建一页幻灯片（如“新增一页”、“加一页空白幻灯片”），或在当前页生成特定版式架构块（如“生成时间线”、“添加KPI指标卡”、“生成两栏对比”、“做三张特性卡片”）。
-3. "modify_elements": 用户希望对当前页面的具体图元/文字进行局部微调（如“把标题改成XX”、“文字变大一点”、“背景矩形换成红色”、“删掉这个卡片”、“往右移动50px”）。
-4. "optimize_layout": 用户希望对页面进行美化、UI优化、排版重构、消除重叠/遮挡、自动对齐规整、呼吸感留白调整（例如：“美化ui”、“美化界面”、“美化一下”、“优化排版”、“页面太挤了整理一下”、“自动排版”、“排版美化”、“好看一点”）。
-5. "apply_theme": 用户希望切换或应用全局配色/设计主题（例如：“换成深色主题”、“改成科技蓝风格”、“换成极简黑曜风格”）。
-6. "undo": 用户希望撤销上一轮操作、回退修改（例如：“撤销”、“回退刚才的修改”、“undo”）。
-7. "chat": 纯闲聊、打招呼、提问咨询、与 PPT 设计/排版/生成完全无关的问答（例如：“你好”、“你叫什么名字”、“什么是中间表示”、“介绍一下你自己”）。
-
-【输出规范】:
-请严格输出合法的 JSON 对象，不要输出任何额外文本：
-{
-  "intent": "<上述7种意图之一>",
-  "reason": "<简明判定理由>"
-}
-"""
-
-
-def _extract_intent_from_response(content: str) -> Optional[str]:
-    """Extracts valid intent string from LLM JSON response."""
-    if not content or not content.strip():
-        return None
-    try:
-        data = json.loads(content.strip())
-        if isinstance(data, dict):
-            cand = str(data.get("intent") or "").strip()
-            if cand in VALID_INTENTS:
-                return cand
-    except Exception:
-        pass
-    m = re.search(r'["\']intent["\']\s*:\s*["\']\s*([a-zA-Z_]+)\s*["\']', content)
-    if m and m.group(1) in VALID_INTENTS:
-        return m.group(1)
-    return None
-
-
-async def classify_intent_with_llm(
-    llm_client: Any,
-    user_query: str,
-    pres: Optional[PresentationIR],
-) -> Optional[str]:
-    """Primary intent decider powered by LLM semantic understanding."""
-    if not llm_client or not hasattr(llm_client, "chat_completion"):
-        return None
-    if hasattr(llm_client, "_is_unconfigured") and llm_client._is_unconfigured():
-        return None
-
-    context_lines = [f"用户输入: \"{user_query}\""]
-    if pres and pres.slides:
-        context_lines.append(f"当前演示文稿状态: 共 {len(pres.slides)} 页，标题: 《{pres.title or '未命名'}》")
-        active = pres.get_active_slide()
-        if active:
-            context_lines.append(f"当前停留页: 第 {active.slide_num} 页 (ID: {active.id})，包含 {len(active.elements)} 个元素")
-    else:
-        context_lines.append("当前演示文稿状态: 空文稿 (0页)")
-
-    user_prompt = "\n".join(context_lines)
-
-    try:
-        resp = await llm_client.chat_completion(
-            messages=[
-                {"role": "system", "content": _ROUTER_SYSTEM_PROMPT},
-                {"role": "user", "content": user_prompt},
-            ],
-            role="fast",
-            temperature=0.0,
-            max_tokens=150,
-        )
-        content = ""
-        if isinstance(resp, dict):
-            choices = resp.get("choices") or []
-            if choices:
-                content = choices[0].get("message", {}).get("content", "")
-        if content:
-            parsed = _extract_intent_from_response(content)
-            if parsed:
-                return parsed
-    except Exception as e:
-        logger.warning(f"LLM intent classification failed: {e}")
-    return None
-
-
-def _fallback_intent_classifier(user_query: str, pres: Optional[PresentationIR]) -> str:
-    """Safety fallback intent classifier used solely when LLM is unavailable or offline."""
-    query = user_query.strip()
-    query_lower = query.lower()
-
-    if any(k in query_lower for k in ["撤销", "undo", "回退"]):
-        return "undo"
-    if any(k in query or k in query_lower for k in [
-        "美化", "美观", "好看", "规整", "对齐", "排列", "居中", "均匀分布", "整理卡片",
-        "自适应排版", "拥挤", "太挤", "紧凑", "排版杂乱", "优化排版", "排版优化", "优化ui", "优化界面", "美化ui", "美化界面"
-    ]):
-        return "optimize_layout"
-    if any(k in query for k in ["主题", "配色", "黑曜", "深色", "科技蓝", "浅色", "风格"]):
-        return "apply_theme"
-    if any(k in query for k in ["生成完整", "制作一份", "创建ppt", "生成ppt", "写一个ppt", "关于", "汇报", "商业计划书"]) or (
-        ("生成" in query or "创建" in query or "制作" in query) and ("演示文稿" in query or "ppt" in query_lower or "大纲" in query or "页" in query)
-    ):
-        return "generate_presentation"
-    if any(k in query or k in query_lower for k in ["时间线", "里程碑", "指标", "kpi", "特性卡片", "栏卡片", "对比", "新增一页", "添加一页", "新页面", "生成两栏", "排版生成"]):
-        return "generate_slide"
-    if any(k in query for k in ["修改", "改成", "换成", "变大", "变小", "调为", "更新", "删除", "添加", "标题", "文字", "复制", "移动", "位置", "右侧", "左侧", "再往", "往下", "往上", "往左", "往右", "突出"]):
-        return "modify_elements"
-    if len(query) > 5:
-        return "modify_elements" if (pres and len(pres.slides) > 0) else "generate_presentation"
-    return "chat"
-
-
 async def router_node(state: PPTAgentState, config: RunnableConfig) -> Dict[str, Any]:
     """Analyzes user message and current presentation state to classify intent."""
     configurable = config.get("configurable", {})
@@ -326,14 +213,18 @@ async def router_node(state: PPTAgentState, config: RunnableConfig) -> Dict[str,
     if on_event:
         await _safe_emit(on_event, {"type": "agent_thinking", "status": "routing", "text": "分析用户需求意图与画布状态..."})
 
-    # 1. Primary intent classification via LLM
-    intent: Optional[str] = None
-    if llm_client:
-        intent = await classify_intent_with_llm(llm_client, user_query, pres)
-
-    # 2. Structural safety fallback if LLM is unavailable or unconfigured
+    # The model is the only intent classifier. No keyword table fills in a guess.
+    intent = await classify_intent_with_llm(llm_client, user_query, pres) if llm_client else None
     if not intent:
-        intent = _fallback_intent_classifier(user_query, pres)
+        return {
+            "intent": "chat",
+            "iteration": state.get("iteration", 0) + 1,
+            "grounding": None,
+            "grounding_clarification": (
+                "模型没有给出可执行的意图，这次不会改动画布。"
+                "请说明要生成文稿、修改当前页，还是调整版式。"
+            ),
+        }
 
     # Grounding gate: factual deck requests without source material must ask first.
     grounding: Optional[Dict[str, Any]] = None
@@ -395,8 +286,38 @@ async def planner_node(state: PPTAgentState, config: RunnableConfig) -> Dict[str
     if prev_plan_review and prev_plan_review.get("recommendations"):
         plan_desc += f" [已吸纳规划评审优化要求: {prev_plan_review['recommendations']}]"
 
+    proposed_tool_calls = None
+    if state.get("interaction_mode") == "plan":
+        from .subagents.executor import ExecutorSubagent
+        memory: Optional[AgentMemory] = configurable.get("memory")
+        llm_client: Optional[LLMClient] = configurable.get("llm_client")
+        session = configurable.get("session")
+        last_target_id = getattr(session, "last_target_id", None) if session else None
+        try:
+            drafted = await ExecutorSubagent.plan_task(
+                intent=intent,
+                user_query=user_query,
+                plan_desc=plan_desc,
+                pres=pres,
+                memory=memory,
+                llm_client=llm_client,
+                last_target_id=last_target_id,
+                session=session,
+                on_event=on_event,
+                conversation_context=state.get("messages"),
+                rework_directive=state.get("rework_directive"),
+                grounding=state.get("grounding"),
+                ui_context=configurable.get("ui_context"),
+            )
+            proposed_tool_calls = list(drafted.tool_calls or [])
+        except Exception as exc:
+            logger.warning(f"Plan draft failed, keeping an empty frozen list: {exc}")
+            proposed_tool_calls = []
+        plan_desc = _format_frozen_plan(plan_desc, proposed_tool_calls)
+
     return {
-        "plan": plan_desc
+        "plan": plan_desc,
+        "proposed_tool_calls": proposed_tool_calls,
     }
 
 
@@ -413,7 +334,7 @@ async def plan_critic_node(state: PPTAgentState, config: RunnableConfig) -> Dict
     from .subagents.memory import SubagentSessionMemory
     plan_mem = SubagentSessionMemory.from_dict(subagent_mems.get("PlanCriticSubagent", {})) if "PlanCriticSubagent" in subagent_mems else SubagentSessionMemory("PlanCriticSubagent")
 
-    slide_count = 5 if intent == "generate_presentation" else 1
+    slide_count = _planned_slide_count(state, configurable.get("pres"))
 
     plan_review_dict = None
     if intent in ["generate_presentation", "generate_slide", "optimize_layout"]:
@@ -451,6 +372,9 @@ async def await_plan_confirmation_node(state: PPTAgentState, config: RunnableCon
     plan_review = state.get("plan_review")
     intent = state.get("intent", "chat")
     plan_id = f"plan_{uuid.uuid4().hex[:10]}"
+    frozen_calls = state.get("proposed_tool_calls")
+    if frozen_calls is None and state.get("interaction_mode") == "plan":
+        frozen_calls = []
 
     record = None
     if session is not None and hasattr(session, "register_pending_plan"):
@@ -464,6 +388,7 @@ async def await_plan_confirmation_node(state: PPTAgentState, config: RunnableCon
             active_slide_id=state.get("active_slide_id"),
             ui_context=state.get("ui_context"),
             ui_context_revision=state.get("ui_context_revision"),
+            tool_calls=frozen_calls,
         )
 
     if on_event:
@@ -471,6 +396,7 @@ async def await_plan_confirmation_node(state: PPTAgentState, config: RunnableCon
             "type": "plan_ready",
             "plan_id": plan_id,
             "plan": plan,
+            "tool_calls": list(frozen_calls or []),
             "plan_review": plan_review,
             "intent": intent,
             "document_epoch": record.get("document_epoch") if record else None,
@@ -504,6 +430,17 @@ async def executor_node(state: PPTAgentState, config: RunnableConfig) -> Dict[st
     last_target_id = getattr(session, "last_target_id", None) if session else None
     if not last_target_id:
         last_target_id = state.get("last_target_id")
+
+    frozen_calls = state.get("frozen_tool_calls")
+    if state.get("plan_preapproved") and frozen_calls is not None and not state.get("stale_plan"):
+        return {
+            "execution_plan": list(frozen_calls),
+            "last_target_id": last_target_id,
+            "active_slide_id": pres.active_slide_id if pres else state.get("active_slide_id"),
+            "plan_document_epoch": getattr(session, "document_epoch", None) if session else state.get("turn_document_epoch"),
+            "plan_base_revision": pres.version if pres is not None else None,
+            "stale_plan": False,
+        }
 
     from .subagents.executor import ExecutorSubagent
     plan = await ExecutorSubagent.plan_task(
@@ -564,6 +501,60 @@ async def executor_node(state: PPTAgentState, config: RunnableConfig) -> Dict[st
     }
 
 
+def _call_id() -> str:
+    return f"call_{uuid.uuid4().hex[:6]}"
+
+
+def _tool_call(name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
+    return {"name": name, "arguments": arguments, "id": _call_id()}
+
+
+def _clarify(question: str) -> List[Dict[str, Any]]:
+    return [_tool_call("request_clarification", {"question": question})]
+
+
+_OFFLINE_CONTENT_QUESTION = (
+    "当前没有可用的模型，不能编排幻灯片正文。"
+    "请配置模型后再生成，或直接给出每一页的标题和要点。"
+)
+_BLANK_PAGE_MARKERS = (
+    "新增一页", "添加一页", "新页面", "新建页面", "新增幻灯片",
+    "新建幻灯片", "加一页", "空白", "创建一页",
+)
+_LAYOUT_CONTENT_MARKERS = (
+    "时间线", "里程碑", "timeline", "指标", "kpi", "数据",
+    "对比", "两栏", "卡片", "特性",
+)
+
+
+def _format_frozen_plan(intro: str, calls: List[Dict[str, Any]]) -> str:
+    """Human-readable plan that names the tool calls about to be frozen."""
+    lines = [intro.strip(), "将执行的工具："]
+    if not calls:
+        lines.append("- 无（确认后不会改动画布）")
+        return "\n".join(lines)
+    for call in calls:
+        args = call.get("arguments") or {}
+        target = args.get("slide_id") or args.get("title") or "当前页"
+        lines.append(f"- {call.get('name')}（目标: {target}）")
+    return "\n".join(lines)
+
+
+def _planned_slide_count(state: "PPTAgentState", pres: Optional[PresentationIR]) -> int:
+    """Slide count implied by the frozen tool list, never a hardcoded 5."""
+    for call in state.get("proposed_tool_calls") or []:
+        name = call.get("name")
+        args = call.get("arguments") or {}
+        if name == "generate_presentation":
+            slides = args.get("slides") or []
+            return len(slides) if isinstance(slides, list) and slides else 1
+        if name == "create_slide":
+            return (len(pres.slides) if pres and pres.slides else 0) + 1
+    if pres and pres.slides:
+        return len(pres.slides)
+    return 1
+
+
 def _heuristic_tool_planner(
     intent: str,
     user_query: str,
@@ -572,178 +563,20 @@ def _heuristic_tool_planner(
     selected_element_ids: Optional[List[str]] = None,
     primary_selected_element_id: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
-    """Heuristic tool planner using AgentAction contract for deterministic execution."""
-    tool_calls = []
+    """Offline planner: undo, blank create_slide, apply_theme, or a clarification.
+
+    Selected-element edits stay, because the target id is already known.
+    Keyword geometry and canned decks do not.
+    """
+    del last_target_id  # relative keyword nudges are no longer invented offline
+    tool_calls: List[Dict[str, Any]] = []
     active_slide = pres.get_active_slide() if pres else None
+    query_lower = user_query.lower()
 
     if intent == "undo":
-        tool_calls.append({
-            "name": "undo",
-            "arguments": {},
-            "id": f"call_{uuid.uuid4().hex[:6]}"
-        })
-        return tool_calls
+        return [_tool_call("undo", {})]
 
-    if intent == "generate_presentation":
-        # Extract topic or use sensible default
-        topic = user_query
-        for prefix in ["生成关于", "制作一份关于", "制作关于", "生成一份", "创建关于", "生成", "制作", "创建"]:
-            if topic.startswith(prefix):
-                topic = topic[len(prefix):].strip()
-        topic = topic.replace("的ppt", "").replace("的演示文稿", "").strip() or "AI 智能创新方案"
-
-        tool_calls.append({
-            "name": "generate_presentation",
-            "arguments": {
-                "topic": topic,
-                "theme": "editorial_technical",
-                "replace": True,
-                "slides": [
-                    {
-                        "title": f"{topic} · 战略白皮书",
-                        "layout": "title_slide",
-                        "subtitle": "基于 AI Agent 中间表示与多模态视觉自省的下一代技术架构",
-                    },
-                    {
-                        "title": "系统核心功能矩阵",
-                        "layout": "card_grid",
-                        "subtitle": "高可用模块化架构，驱动高效智能生产力",
-                        "items": [
-                            {"title": "PPT-IR 中间表示", "description": "统一解耦各种格式，支持增量差异同步与补丁撤销", "badge": "01"},
-                            {"title": "LangGraph 协同流", "description": "状态机驱动的观察-规划-执行-自检闭环，确保图元编排精度", "badge": "02"},
-                            {"title": "原生 OOXML 引擎", "description": "直接读写底层 XML 数据，高保真导入导出演示文稿", "badge": "03"}
-                        ]
-                    },
-                    {
-                        "title": "项目发展阶段与演进时间线",
-                        "layout": "timeline",
-                        "items": [
-                            {"title": "Phase 1: 底层模型确立", "description": "构建标准 PPT-IR 抽象与属性规范"},
-                            {"title": "Phase 2: Agent 与工具链", "description": "接入 LangGraph 智能编排与专业图元操作工具库"},
-                            {"title": "Phase 3: 实时双向预览", "description": "WebSocket 全双工协同，实现端到端所见即所得"}
-                        ]
-                    },
-                    {
-                        "title": "关键效能与业务价值指标",
-                        "layout": "kpi_metrics",
-                        "items": [
-                            {"value": "—", "label": "制作效率提升", "subtext": "全流程自动化出稿"},
-                            {"value": "—", "label": "样式保真度", "subtext": "原生 OOXML 双向映射"},
-                            {"value": "—", "label": "协同响应延迟", "subtext": "全量状态增量广播"}
-                        ]
-                    },
-                    {
-                        "title": "传统设计 vs Agentic 驱动模式对比",
-                        "layout": "comparison",
-                        "items": [
-                            {"title": "传统手动模式", "description": "• 反复调整对齐坐标与边距\n• 跨成员协作易发生样式冲突\n• 耗费大量机械劳动"},
-                            {"title": "Agentic 智能驱动", "description": "• 自然语言意图理解并自动构图\n• 自动遵循专业排版设计规范\n• 一键导出与历史版本追溯"}
-                        ]
-                    }
-                ]
-            },
-            "id": f"call_{uuid.uuid4().hex[:6]}"
-        })
-
-    elif intent == "generate_slide":
-        if "时间线" in user_query or "里程碑" in user_query or "timeline" in user_query.lower():
-            tool_calls.append({
-                "name": "generate_slide_layout",
-                "arguments": {
-                    "layout_type": "timeline",
-                    "title": "发展历程与里程碑规划",
-                    "items": [
-                        {"title": "需求调研", "description": "定义核心业务场景与用户画像"},
-                        {"title": "技术攻关", "description": "攻克 PPT-IR 转换与 Agent 闭环"},
-                        {"title": "产品发布", "description": "全功能上线并实现规模化交付"}
-                    ]
-                },
-                "id": f"call_{uuid.uuid4().hex[:6]}"
-            })
-        elif "指标" in user_query or "kpi" in user_query.lower() or "数据" in user_query:
-            tool_calls.append({
-                "name": "generate_slide_layout",
-                "arguments": {
-                    "layout_type": "kpi_metrics",
-                    "title": "核心关键绩效指标 (KPI)",
-                    "items": [
-                        {"value": "—", "label": "用户满意度", "subtext": "设计美感与排版质感增强"},
-                        {"value": "—", "label": "协同周转速率", "subtext": "降低改版沟通成本"},
-                        {"value": "—", "label": "平台兼容性", "subtext": "支持标准 PowerPoint 播放"}
-                    ]
-                },
-                "id": f"call_{uuid.uuid4().hex[:6]}"
-            })
-        elif "对比" in user_query or "两栏" in user_query:
-            tool_calls.append({
-                "name": "generate_slide_layout",
-                "arguments": {
-                    "layout_type": "comparison",
-                    "title": "方案对比与选型分析",
-                    "items": [
-                        {"title": "方案 A (传统模式)", "description": "• 成本高、周期长\n• 灵活性差\n• 难以快速规模化复制"},
-                            {"title": "方案 B (智能协同)", "description": "• 快速生成与重绘\n• 统一高质感设计系统\n• 赋能全员高效表达"}
-                    ]
-                },
-                "id": f"call_{uuid.uuid4().hex[:6]}"
-            })
-        elif any(k in user_query for k in ["新增一页", "添加一页", "新页面", "新建页面", "新增幻灯片", "新建幻灯片", "加一页", "空白", "创建一页"]):
-            bg = "#0A0A0A"
-            if active_slide and getattr(active_slide.background, "color", None):
-                bg = active_slide.background.color
-            if "白" in user_query and "黑" not in user_query:
-                bg = "#FFFFFF"
-            elif "黑" in user_query and "白" not in user_query:
-                bg = "#0A0A0A"
-
-            tool_calls.append({
-                "name": "create_slide",
-                "arguments": {
-                    "title": "新建幻灯片",
-                    "background_color": bg
-                },
-                "id": f"call_{uuid.uuid4().hex[:6]}"
-            })
-        else:
-            # Default card grid
-            tool_calls.append({
-                "name": "generate_slide_layout",
-                "arguments": {
-                    "layout_type": "card_grid",
-                    "title": "核心产品功能与架构特性",
-                    "items": [
-                        {"title": "智能意图解析", "description": "基于 LangGraph 图状态机，精准分流生成与编辑指令", "badge": "01"},
-                        {"title": "原生图元工具箱", "description": "提供完备的卡片、连线、对齐与排版等原子级操作能力", "badge": "02"},
-                        {"title": "视觉多模态校验", "description": "结合画布几何计算与视觉模型，主动修正视觉瑕疵", "badge": "03"}
-                    ]
-                },
-                "id": f"call_{uuid.uuid4().hex[:6]}"
-            })
-
-    elif intent == "optimize_layout":
-        # Check if active slide has multiple cards to rearrange horizontally
-        cards = [e for e in (active_slide.elements if active_slide else []) if getattr(e, "type", None) == "shape" and getattr(e, "width", 0) >= 100]
-        if len(cards) >= 2 and any(k in user_query for k in ["卡片", "横排", "均匀"]):
-            tool_calls.append({
-                "name": "optimize_layout",
-                "arguments": {
-                    "layout_mode": "horizontal_cards",
-                    "start_y": 240,
-                    "gap": 32
-                },
-                "id": f"call_{uuid.uuid4().hex[:6]}"
-            })
-        else:
-            # Universal slide beautification and geometric/aesthetic defect remediation
-            tool_calls.append({
-                "name": "auto_fix_layout",
-                "arguments": {
-                    "only_critical": False
-                },
-                "id": f"call_{uuid.uuid4().hex[:6]}"
-            })
-
-    elif intent == "apply_theme":
+    if intent == "apply_theme":
         theme_name = "monochrome_studio"
         if "蓝" in user_query:
             theme_name = "tech_blue"
@@ -753,23 +586,42 @@ def _heuristic_tool_planner(
             theme_name = "warm_corporate"
         elif "黑" in user_query or "极简" in user_query:
             theme_name = "monochrome_studio"
+        return [_tool_call("apply_theme", {"theme_preset": theme_name})]
 
-        tool_calls.append({
-            "name": "apply_theme",
-            "arguments": {"theme_preset": theme_name},
-            "id": f"call_{uuid.uuid4().hex[:6]}"
-        })
+    if intent == "optimize_layout":
+        slide_id = active_slide.id if active_slide else None
+        args: Dict[str, Any] = {}
+        if slide_id:
+            args["slide_id"] = slide_id
+        return [
+            _tool_call("evaluate_layout", dict(args)),
+            _tool_call("auto_fix_layout", {**args, "only_critical": False}),
+        ]
 
-    elif intent == "modify_elements":
-        # Deictic references ("这个/它/选中的") bind to the requesting client's
-        # selection, or fail closed with a clarification (empty plan). Never fall
-        # back to last_target_id or textual guessing.
+    if intent == "generate_presentation":
+        return _clarify(_OFFLINE_CONTENT_QUESTION)
+
+    if intent == "generate_slide":
+        wants_layout = any(marker in user_query or marker in query_lower for marker in _LAYOUT_CONTENT_MARKERS)
+        wants_blank = any(marker in user_query for marker in _BLANK_PAGE_MARKERS)
+        if wants_blank and not wants_layout:
+            bg = "#FFFFFF"
+            if active_slide and getattr(active_slide.background, "color", None):
+                bg = active_slide.background.color
+            if "白" in user_query and "黑" not in user_query:
+                bg = "#FFFFFF"
+            elif "黑" in user_query and "白" not in user_query:
+                bg = "#0A0A0A"
+            return [_tool_call("create_slide", {"title": "新建幻灯片", "background_color": bg})]
+        return _clarify(_OFFLINE_CONTENT_QUESTION)
+
+    if intent == "modify_elements":
         from .uicontext import DEFERENCE_TOKENS
         if any(tok in user_query for tok in DEFERENCE_TOKENS):
             targets = [t for t in (selected_element_ids or []) if t]
             target = primary_selected_element_id or (targets[0] if targets else None)
             if not target:
-                return tool_calls
+                return []
             updates: Dict[str, Any] = {"element_id": target}
             if "红" in user_query:
                 updates["fill_color"] = "#EF4444"
@@ -780,7 +632,7 @@ def _heuristic_tool_planner(
             elif "黄" in user_query:
                 updates["fill_color"] = "#F59E0B"
             elements = active_slide.elements if active_slide else []
-            target_el = next((e for e in elements if e.id == target), None)
+            target_el = next((element for element in elements if element.id == target), None)
             if target_el is not None:
                 if any(k in user_query for k in ["放大", "变大", "大一点", "再大", "增大"]):
                     updates["width"] = float(target_el.width) * 1.2
@@ -788,110 +640,11 @@ def _heuristic_tool_planner(
                 elif any(k in user_query for k in ["缩小", "变小", "小一点", "再小"]):
                     updates["width"] = float(target_el.width) * 0.8
                     updates["height"] = float(target_el.height) * 0.8
-            tool_calls.append({
-                "name": "update_element",
-                "arguments": updates,
-                "id": f"call_{uuid.uuid4().hex[:6]}",
-            })
-            return tool_calls
-
-        # Target elements on active slide using AgentAction contract
-        if active_slide and active_slide.elements:
-            target_ref = last_target_id or "title"
-
-            # 1. Relative movement (multi-turn context sensitive)
-            if any(k in user_query for k in ["再往下", "往下一点", "往下挪", "下移", "再往下", "低一点"]):
-                act = AgentAction(action_type="update_element", target=target_ref, parameters={"y": 50.0}, relative=True, reason="User requested downward adjustment")
-                tc = ActionResolver.action_to_tool_call(act, pres, last_target_id=last_target_id)
-                if tc:
-                    tool_calls.append({**tc, "id": f"call_{uuid.uuid4().hex[:6]}"})
-            elif any(k in user_query for k in ["再往上", "往上一点", "往上挪", "上移", "再往上", "高一点"]):
-                act = AgentAction(action_type="update_element", target=target_ref, parameters={"y": -50.0}, relative=True, reason="User requested upward adjustment")
-                tc = ActionResolver.action_to_tool_call(act, pres, last_target_id=last_target_id)
-                if tc:
-                    tool_calls.append({**tc, "id": f"call_{uuid.uuid4().hex[:6]}"})
-            elif any(k in user_query for k in ["再往右", "往右一点", "往右挪", "右移", "再往右"]):
-                act = AgentAction(action_type="update_element", target=target_ref, parameters={"x": 50.0}, relative=True, reason="User requested rightward adjustment")
-                tc = ActionResolver.action_to_tool_call(act, pres, last_target_id=last_target_id)
-                if tc:
-                    tool_calls.append({**tc, "id": f"call_{uuid.uuid4().hex[:6]}"})
-            elif any(k in user_query for k in ["再往左", "往左一点", "往左挪", "左移", "再往左"]):
-                act = AgentAction(action_type="update_element", target=target_ref, parameters={"x": -50.0}, relative=True, reason="User requested leftward adjustment")
-                tc = ActionResolver.action_to_tool_call(act, pres, last_target_id=last_target_id)
-                if tc:
-                    tool_calls.append({**tc, "id": f"call_{uuid.uuid4().hex[:6]}"})
-
-            # 2. Prominent title / styling
-            elif any(k in user_query for k in ["突出", "醒目", "加大标题", "放大标题", "让标题更突出", "更突出"]):
-                act = AgentAction(action_type="resize_text", target="title", parameters={"font_size": 42.0, "bold": True}, reason="User requested prominent title")
-                tc = ActionResolver.action_to_tool_call(act, pres, last_target_id=last_target_id)
-                if tc:
-                    tool_calls.append({**tc, "id": f"call_{uuid.uuid4().hex[:6]}"})
-
-            # 3. Explicit repositioning / layout moving instructions
-            elif ("移动" in user_query or "move" in user_query.lower() or "位置" in user_query or "放" in user_query) and ("右" in user_query or "right" in user_query.lower()):
-                act = AgentAction(action_type="update_element", target="title", parameters={"x": 900.0}, reason="User moved title to right")
-                tc = ActionResolver.action_to_tool_call(act, pres, last_target_id=last_target_id)
-                if tc:
-                    tool_calls.append({**tc, "id": f"call_{uuid.uuid4().hex[:6]}"})
-            elif ("移动" in user_query or "move" in user_query.lower() or "位置" in user_query or "放" in user_query) and ("左" in user_query or "left" in user_query.lower()):
-                act = AgentAction(action_type="update_element", target="title", parameters={"x": 100.0}, reason="User moved title to left")
-                tc = ActionResolver.action_to_tool_call(act, pres, last_target_id=last_target_id)
-                if tc:
-                    tool_calls.append({**tc, "id": f"call_{uuid.uuid4().hex[:6]}"})
-            elif ("标题" in user_query or "字号" in user_query):
-                act = AgentAction(action_type="format_text", target="title", parameters={"font_size": 36.0, "bold": True, "font_color": "#FFFFFF"})
-                tc = ActionResolver.action_to_tool_call(act, pres, last_target_id=last_target_id)
-                if tc:
-                    tool_calls.append({**tc, "id": f"call_{uuid.uuid4().hex[:6]}"})
-            elif "颜色" in user_query or "背景" in user_query or "深色" in user_query:
-                card_elems = [e for e in active_slide.elements if e.type == "shape"]
-                if card_elems:
-                    tool_calls.append({
-                        "name": "update_element",
-                        "arguments": {
-                            "element_id": card_elems[0].id,
-                            "fill_color": "#1C1D24",
-                            "border_color": "#3A3D4D"
-                        },
-                        "id": f"call_{uuid.uuid4().hex[:6]}"
-                    })
-                else:
-                    tool_calls.append({
-                        "name": "apply_theme",
-                        "arguments": {"theme_preset": "monochrome_studio"},
-                        "id": f"call_{uuid.uuid4().hex[:6]}"
-                    })
-            else:
-                # Ambiguous modify: never invent a generic shape with fabricated
-                # copy. Ask the user to disambiguate instead.
-                tool_calls.append({
-                    "name": "request_clarification",
-                    "arguments": {
-                        "question": (
-                            "我还不能确定您想修改哪个元素或改成什么效果。"
-                            "请先选中目标元素（或在指令中说明元素名称与目标属性/样式），"
-                            "我再精确执行，避免误改。"
-                        )
-                    },
-                    "id": f"call_{uuid.uuid4().hex[:6]}",
-                })
-        else:
-            # Empty slide, add text & card
-            tool_calls.append({
-                "name": "add_text",
-                "arguments": {
-                    "text": user_query if len(user_query) < 25 else "PPT-Agent 智能演示平台",
-                    "x": 100,
-                    "y": 80,
-                    "width": 1080,
-                    "height": 60,
-                    "font_size": 34,
-                    "font_color": "#FFFFFF",
-                    "bold": True
-                },
-                "id": f"call_{uuid.uuid4().hex[:6]}"
-            })
+            return [_tool_call("update_element", updates)]
+        return _clarify(
+            "我还不能确定您想修改哪个元素或改成什么效果。"
+            "请先选中目标元素（或在指令中说明元素名称与目标属性），我再精确执行。"
+        )
 
     return tool_calls
 
@@ -1122,6 +875,47 @@ async def mutation_node(state: PPTAgentState, config: RunnableConfig) -> Dict[st
     return result
 
 
+_CITED_ELEMENT_RE = re.compile(r"元素\s*'([^']+)'")
+_MAX_CONTENT_REWORK_ROUNDS = 2
+
+
+def _cited_content_target_ids(review: Dict[str, Any], slide: Optional[SlideIR]) -> List[str]:
+    """Element ids the content critic actually named.
+
+    Rule issues embed ``元素 'id'``. When an LLM rejection names no id, fall
+    back to text elements on that slide so a vague "需修正" still has a target
+    without dragging every shape into the rework.
+    """
+    elements = list(slide.elements) if slide else []
+    known = {el.id for el in elements}
+    blobs: List[str] = [str(review.get("summary") or "")]
+    blobs.extend(str(item) for item in (review.get("redundancy_issues") or []))
+    blobs.extend(str(item) for item in (review.get("recommendations") or []))
+    cited: List[str] = []
+    for blob in blobs:
+        for match in _CITED_ELEMENT_RE.finditer(blob):
+            element_id = match.group(1)
+            if element_id in known and element_id not in cited:
+                cited.append(element_id)
+    if cited:
+        return cited
+    return [el.id for el in elements if getattr(el, "type", "") == "text"]
+
+
+def _select_content_rework_slide(
+    failed_ids: List[str],
+    counts: Dict[str, int],
+) -> Optional[str]:
+    """First failed slide that has not been handled, else one still under the cap."""
+    for slide_id in failed_ids:
+        if int(counts.get(slide_id, 0)) == 0:
+            return slide_id
+    for slide_id in failed_ids:
+        if int(counts.get(slide_id, 0)) < _MAX_CONTENT_REWORK_ROUNDS:
+            return slide_id
+    return None
+
+
 async def content_critic_node(state: PPTAgentState, config: RunnableConfig) -> Dict[str, Any]:
     """Runs decoupled, read-only content & narrative structural critique via ContentCriticSubagent with dedicated history."""
     configurable = config.get("configurable", {})
@@ -1129,6 +923,10 @@ async def content_critic_node(state: PPTAgentState, config: RunnableConfig) -> D
     llm_client: Optional[LLMClient] = configurable.get("llm_client")
     on_event: Optional[Callable] = configurable.get("on_event")
     content_iteration = state.get("content_iteration", 0) + 1
+    rework_counts = {
+        str(slide_id): int(count)
+        for slide_id, count in (state.get("content_rework_counts") or {}).items()
+    }
 
     subagent_mems = dict(state.get("subagent_memories") or {})
     from .subagents.memory import SubagentSessionMemory
@@ -1139,8 +937,6 @@ async def content_critic_node(state: PPTAgentState, config: RunnableConfig) -> D
         # No mutation happened on the rework pass: re-audit the previously failed slides.
         review_ids = list(state["rework_directive"].get("failed_slide_ids") or [])
     review_targets = _resolve_review_slides(pres, review_ids)
-    if review_targets and pres:
-        pres.active_slide_id = review_targets[0].id
 
     deck_reviews: Dict[str, Dict[str, Any]] = {}
     if review_targets:
@@ -1157,28 +953,30 @@ async def content_critic_node(state: PPTAgentState, config: RunnableConfig) -> D
     content_dict = _aggregate_deck_reviews(deck_reviews, approved_key="approved")
     rework_directive = None
     if content_dict and not content_dict.get("approved", True):
-        failing_slide_id = content_dict["failed_slide_ids"][0]
-        failing_review = deck_reviews[failing_slide_id]
-        failing_slide = pres.get_slide(failing_slide_id) if pres else None
-        rework_directive = {
-            "source": "content_critic",
-            "slide_id": failing_slide_id,
-            "target_ids": [
-                el.id for el in (failing_slide.elements if failing_slide else [])
-                if getattr(el, "type", "") in ("text", "shape")
-            ],
-            "defects": list(failing_review.get("redundancy_issues") or []),
-            "recommendations": list(failing_review.get("recommendations") or []),
-            "summary": failing_review.get("summary", ""),
-            "round": content_iteration,
-            "failed_slide_ids": list(content_dict["failed_slide_ids"]),
-        }
+        failed_ids = list(content_dict.get("failed_slide_ids") or [])
+        failing_slide_id = _select_content_rework_slide(failed_ids, rework_counts)
+        if failing_slide_id:
+            failing_review = deck_reviews[failing_slide_id]
+            failing_slide = pres.get_slide(failing_slide_id) if pres else None
+            issued = rework_counts.get(failing_slide_id, 0) + 1
+            rework_counts[failing_slide_id] = issued
+            rework_directive = {
+                "source": "content_critic",
+                "slide_id": failing_slide_id,
+                "target_ids": _cited_content_target_ids(failing_review, failing_slide),
+                "defects": list(failing_review.get("redundancy_issues") or []),
+                "recommendations": list(failing_review.get("recommendations") or []),
+                "summary": failing_review.get("summary", ""),
+                "round": issued,
+                "failed_slide_ids": failed_ids,
+            }
 
     subagent_mems["ContentCriticSubagent"] = content_mem.to_dict()
 
     return {
         "content_review": content_dict,
         "content_iteration": content_iteration,
+        "content_rework_counts": rework_counts,
         "rework_directive": rework_directive,
         "subagent_memories": subagent_mems
     }
@@ -1203,8 +1001,6 @@ async def vision_critic_node(state: PPTAgentState, config: RunnableConfig) -> Di
     critique = None
     review_dict = None
     review_targets = _resolve_review_slides(pres, state.get("changed_slide_ids"))
-    if review_targets and pres:
-        pres.active_slide_id = review_targets[0].id
 
     deck_reviews: Dict[str, Dict[str, Any]] = {}
     if review_targets and settings.enable_vision_loop:
@@ -1318,7 +1114,7 @@ async def auto_correct_node(state: PPTAgentState, config: RunnableConfig) -> Dic
                 history=history,
                 plan=plan,
                 slide_id=target_slide_id,
-                only_critical=True,
+                only_critical=False,
                 on_event=on_event,
                 session=session,
                 agent_turn_id=state.get("agent_turn_id"),
@@ -1417,16 +1213,41 @@ async def summary_node(state: PPTAgentState, config: RunnableConfig) -> Dict[str
         final_text = "已为您成功撤销上一步修改，画布已恢复至先前的状态快照。"
     elif intent == "chat" and not tool_results:
         final_text = "你好！我是你的 PPT 协同设计架构师。我支持通过自然语言一键生成多页精美演示文稿、自动排版时间线/指标卡/对比栏、智能调色与图元微调。请告诉我你的设计需求！"
+    elif not any(r.get("executed") for r in tool_results) and intent not in ("chat", "undo"):
+        final_text = "这次没有可执行的修改，画布保持原样。"
     elif intent == "generate_presentation":
-        final_text = f"已为您成功构思并生成完整的《{pres.title if pres else '演示文稿'}》，共 {len(pres.slides) if pres else 1} 页。页面涵盖封面、核心特性、演进流程与关键指标，并已统一应用专业设计规范。"
+        final_text = (
+            f"已生成《{pres.title if pres else '演示文稿'}》，共 {len(pres.slides) if pres else 0} 页。"
+            "页面标题和要点来自本次指令，没有套用固定页眉。"
+        )
     elif intent == "generate_slide":
         has_created = any(r.get("tool") == "create_slide" for r in tool_results)
         if has_created:
-            final_text = f"已为您成功创建第 {len(pres.slides) if pres else 1} 页空白幻灯片，画布已自动切换至新页面，您可以开始自由添加内容。"
+            final_text = f"已创建第 {len(pres.slides) if pres else 1} 页空白幻灯片。"
         else:
-            final_text = f"已为您在当前页面完成高保真架构排版。按统一网格计算了元素坐标与呼吸感留白，已就绪供您查看与微调。"
+            names = [r.get("tool") for r in tool_results if r.get("executed") and r.get("tool")]
+            final_text = "已执行 " + "、".join(names) + "。" if names else "这次没有可执行的修改，画布保持原样。"
     elif intent == "optimize_layout":
-        final_text = "已自动执行排版与UI视觉美化，规整了元素几何布局与间距层级，消除了视觉重叠与缺陷。"
+        executed = [r for r in tool_results if r.get("executed")]
+        score = None
+        applied = 0
+        for record in executed:
+            result = record.get("result") if isinstance(record.get("result"), dict) else {}
+            if record.get("tool") == "evaluate_layout":
+                score = result.get("score", score)
+            if record.get("tool") == "auto_fix_layout":
+                applied += int(result.get("applied_count") or 0)
+        if applied <= 0:
+            score_text = f"规则检查得分 {float(score):.1f}。" if isinstance(score, (int, float)) else ""
+            final_text = (
+                f"{score_text}没有可自动修复的溢出、出界、重叠、对比度、对齐或圆角问题。"
+                "留白和配色仍只出现在评审里，版式没有被重新设计。"
+            )
+        else:
+            final_text = (
+                f"已自动修复 {applied} 处规则缺陷（溢出、出界、重叠、对比度、对齐或非法圆角）。"
+                "版式没有被重新设计。"
+            )
     elif intent == "apply_theme":
         final_text = "已应用全局设计主题规范，调和了背景底色、卡片填充与文字高对比度。"
     else:
@@ -1528,7 +1349,7 @@ def _build_llm_system_prompt(pres: Optional[PresentationIR], memory: Optional[Ag
 - 左右边距通常建议 >= 80px，卡片间距 20~40px。
 
 【设计语言 — 技术编辑风 / 精密仪表美学】:
-- 使用小圆角（radius ≤ 2px）而非大圆角卡片；不要给每张卡叠加阴影。
+- 使用小圆角（radius ≤ 3px）而非大圆角卡片；不要给每张卡叠加阴影。
 - 文字是主要视觉：标题大而有力，正文克制；把数字、结论做成"主角"，而不是把所有内容塞进相同卡片。
 - 每个版式只突出一个强调色元素（顶缘细条、左缘条、色块数字），其余保持中性安静。
 - 用细发丝线（hairline）、编号等结构元素承载信息；只有当内容确实是序列（时间线/步骤）时才用 01/02/03 编号。
@@ -1626,12 +1447,14 @@ def should_route_mutation(state: PPTAgentState) -> str:
 
 
 def should_route_content_critic(state: PPTAgentState) -> str:
-    """Decides whether to proceed to visual critic or loop back to executor to refine text."""
-    content_review = state.get("content_review")
-    content_it = state.get("content_iteration", 0)
+    """Loop back only when this pass named a slide that still has a rework round.
 
-    # If ContentCriticSubagent did not approve and within max 2 iterations, loop back to executor
-    if content_review and not content_review.get("approved", True) and content_it < 2:
+    Each failed slide is capped inside ``content_critic_node`` (two directives).
+    A global ``content_iteration < 2`` check ran after the node incremented the
+    counter, so the second page never received its own round.
+    """
+    directive = state.get("rework_directive") or {}
+    if directive.get("slide_id"):
         return "executor_node"
     return "vision_critic_node"
 

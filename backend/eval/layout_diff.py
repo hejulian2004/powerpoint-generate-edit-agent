@@ -9,6 +9,8 @@ import math
 import re
 from dataclasses import dataclass, field
 from typing import Dict, Any, List, Optional, Tuple, Union
+from ..design.tokens import MAX_CARD_RADIUS
+from ..eval.text_measure import text_pixel_width
 from ..ir.models import (
     SlideIR,
     ElementIR,
@@ -615,14 +617,10 @@ class LayoutDiffEngine:
                 font_sz = max(sizes) if sizes else 16.0
                 line_height = font_sz * (para.line_spacing if para.line_spacing else 1.25)
 
-                # Estimate character width:
-                # CJK chars (~1.0 * font_sz), ASCII (~0.55 * font_sz)
-                cjk_chars = len(re.findall(r'[一-鿿]', p_text))
-                ascii_chars = len(p_text) - cjk_chars
-                text_pixel_width = (cjk_chars * font_sz * 1.05) + (ascii_chars * font_sz * 0.55)
+                line_width = text_pixel_width(p_text, font_sz)
 
                 # Estimated lines wrapped
-                lines = max(1, math.ceil(text_pixel_width / avail_w))
+                lines = max(1, math.ceil(line_width / avail_w))
                 para_h = lines * line_height + (para.space_after or 0.0) + (para.space_before or 0.0)
                 total_est_height += para_h
 
@@ -894,7 +892,7 @@ class LayoutDiffEngine:
         oversized_radius_ids: List[str] = []
         for elem in slide.elements:
             if isinstance(elem, ShapeElementIR) and elem.style and elem.style.radius is not None:
-                if elem.style.radius > 16.0 and elem.width >= 80.0 and elem.height >= 60.0:
+                if elem.style.radius > MAX_CARD_RADIUS and elem.width >= 80.0 and elem.height >= 60.0:
                     oversized_radius_ids.append(elem.id)
 
         if oversized_radius_ids:
@@ -903,7 +901,12 @@ class LayoutDiffEngine:
                 defect_type="oversized_card_radius",
                 severity="warning",
                 element_ids=oversized_radius_ids,
-                description=f"检测到 {len(oversized_radius_ids)} 处大圆角卡片，违背精密技术/小圆角(radius ≤ 3px)设计语言"
+                description=f"检测到 {len(oversized_radius_ids)} 处大圆角卡片，违背精密技术/小圆角(radius ≤ {MAX_CARD_RADIUS:.0f}px)设计语言",
+                suggested_fix={
+                    "action": "clamp_radius",
+                    "element_ids": list(oversized_radius_ids),
+                    "radius": MAX_CARD_RADIUS,
+                },
             ))
 
         # 4. Typographic Hierarchy (font scale contrast between title and body)

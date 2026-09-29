@@ -325,12 +325,25 @@ def test_langgraph_vision_critique_closed_loop():
             "presentation_version": pres.version
         }
 
+        class _OptimizeChoiceLLM:
+            """The model selects optimize_layout; the offline planner then auto-fixes."""
+
+            api_key = ""
+
+            async def chat_completion(self, messages, role="reasoning", **kwargs):
+                from tests.intent_reply import maybe_route
+                routed = maybe_route(messages, "optimize_layout")
+                if routed:
+                    return routed
+                return {"choices": [{"message": {"content": "【内容评审结论】: 通过\n【内容健康分: 92/100】"}}]}
+
         config = {
             "configurable": {
                 "pres": pres,
                 "history": history,
                 "on_event": on_event,
-                "memory": None
+                "memory": None,
+                "llm_client": _OptimizeChoiceLLM(),
             }
         }
 
@@ -438,7 +451,7 @@ def test_aesthetic_quality_scoring():
 
 
 def test_visual_critic_multimodal_aesthetic_fusion():
-    """Verify that VisualCritic parses Vision Model aesthetic score and fuses into quality_score."""
+    """Model aesthetic score stays on the feedback record and does not change the rule score."""
     class MockVisionLLM:
         api_key = "test_key_vision"
         async def chat_completion(self, messages, role="vision", **kwargs):
@@ -452,19 +465,16 @@ def test_visual_critic_multimodal_aesthetic_fusion():
 
     async def _run():
         slide = SlideIR(id="slide_fusion", slide_num=1, width=1280, height=720)
-        # Clean slide rule aesthetics = 100.0
-        # Vision model gives 80.0
-        # Fused aesthetics should be 0.5 * 100 + 0.5 * 80 = 90.0
         review = await VisualCritic.review_slide(
             slide=slide,
             llm_client=MockVisionLLM(),
             include_multimodal=True
         )
-        assert review.health_report.quality_score.aesthetics == 90.0
-        # Total score should reflect fused aesthetics
-        # 0.30*100 + 0.20*100 + 0.15*100 + 0.15*100 + 0.20*90.0 = 98.0
-        assert review.health_report.quality_score.total == 98.0
-        assert review.health_report.score == 98.0
+        assert review.health_report.quality_score.aesthetics == 100.0
+        assert review.health_report.quality_score.total == 100.0
+        assert review.health_report.score == 100.0
+        assert review.vision_status.get("aesthetic_model_score") == 80.0
+        assert "80" in (review.multimodal_feedback or "")
 
     asyncio.run(_run())
 

@@ -27,6 +27,7 @@ class FixActionType(str, Enum):
     FIX_GEOMETRY = "fix_geometry"
     FIX_THEME_REF = "fix_theme_ref"
     FIX_ALIGNMENT = "fix_alignment"
+    CLAMP_RADIUS = "clamp_radius"
 
 
 @dataclass
@@ -43,15 +44,26 @@ class FixAction:
 
     @property
     def is_auto_applicable(self) -> bool:
-        """Safe execution policy: CRITICAL defects with confidence >= 0.9 auto-execute in loop."""
+        """Critical fixes, plus alignment and radius clamps at confidence >= 0.6.
+
+        Whitespace and color advice stay aesthetic and are never auto-applied.
+        """
+        if self.category == DefectCategory.AESTHETIC:
+            return False
+        if self.action_type in (
+            FixActionType.ALIGN_ELEMENTS,
+            FixActionType.FIX_ALIGNMENT,
+            FixActionType.CLAMP_RADIUS,
+        ):
+            return self.confidence >= 0.6
         return self.category == DefectCategory.CRITICAL and self.confidence >= 0.9
 
     @property
     def execution_mode(self) -> str:
-        """Execution mode: 'auto' (>=0.9 critical), 'review' (0.6-0.9), 'advisory' (<0.6 or non-critical)."""
-        if self.category == DefectCategory.CRITICAL and self.confidence >= 0.9:
+        """Execution mode: auto when the action is safe to run, else review or advisory."""
+        if self.is_auto_applicable:
             return "auto"
-        elif self.confidence >= 0.6:
+        if self.confidence >= 0.6 and self.category != DefectCategory.AESTHETIC:
             return "review"
         return "advisory"
 

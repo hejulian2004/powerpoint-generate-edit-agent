@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from typing import List
 
+from ...design.tokens import MAX_CARD_RADIUS
 from ...slidespec.schema import SlideSpec, TextBlock
 from ..schema import (
     Canvas,
@@ -102,7 +103,7 @@ class TwoColumnContrastTemplate(BaseLayoutTemplate):
                             background_color=bg_color,
                             border_color=border_color,
                             border_width=1.0,
-                            corner_radius=8.0,
+                            corner_radius=MAX_CARD_RADIUS,
                             padding=pad,
                             text=TextStyle(
                                 font_size=font_sz,

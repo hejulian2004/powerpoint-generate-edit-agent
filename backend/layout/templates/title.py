@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from typing import List, Tuple
 
+from ...design.tokens import MAX_CARD_RADIUS
 from ...slidespec.schema import BadgeBlock, BlockRole, SlideSpec, TextBlock
 from ..schema import (
     Canvas,
@@ -139,7 +140,7 @@ class TitleHeroTemplate(BaseLayoutTemplate):
                                 background_color="#F1F5F9",
                                 border_color="#CBD5E1",
                                 border_width=1.0,
-                                corner_radius=18.0,
+                                corner_radius=MAX_CARD_RADIUS,
                                 padding=8.0,
                                 text=TextStyle(
                                     font_size=13.0,

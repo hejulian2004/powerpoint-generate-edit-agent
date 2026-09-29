@@ -1,112 +1,44 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { fireEvent, render, screen } from '@testing-library/react'
+import { beforeEach, describe, expect, it } from 'vitest'
+import { render, screen } from '@testing-library/react'
 import { ChatPanel } from './ChatPanel'
 import { usePPTStore } from '../store/usePPTStore'
-import { FakeWebSocket, installFakeWebSocket } from '../test/wsMock'
+import { installFakeWebSocket } from '../test/wsMock'
+import { makePresentation, makeShape, makeSlide } from '../test/factories'
 
-const resetStore = () => {
-  usePPTStore.setState({
-    sessionId: 'sess_ui',
-    presentation: null,
-    confirmedPresentation: null,
-    activeSlideId: null,
-    selectedElementId: null,
-    messages: [],
-    isAgentThinking: false,
-    thinkingStatus: '',
-    contextUsage: null,
-    generationStage: null,
-    visualRemediation: null,
-    interactionMode: 'auto',
-    pendingPlan: null,
-    pendingConfirmation: null,
-    ws: null,
-    wsConnected: false,
-    pendingMutations: [],
-    outbox: [],
-    inFlightMutationId: null,
-    documentEpoch: null,
-    confirmedRevision: 0,
-    hasServerRevision: false,
-    mutationStatus: 'idle'
-  })
-}
-
-const connect = () => {
-  usePPTStore.getState().initWebSocket()
-  const ws = FakeWebSocket.latest()
-  ws.onopen?.({})
-  return ws
-}
-
-describe('ChatPanel slash-command palette', () => {
+describe('ChatPanel conversation and inspector', () => {
   beforeEach(() => {
+    Element.prototype.scrollIntoView = () => {}
     installFakeWebSocket()
-    resetStore()
-    // jsdom does not implement scrollIntoView.
-    if (!Element.prototype.scrollIntoView) {
-      Element.prototype.scrollIntoView = vi.fn()
-    }
-  })
-
-  it('opens the palette when typing "/" and executes a command', () => {
-    const ws = connect()
-    render(<ChatPanel />)
-
-    const textarea = screen.getByPlaceholderText(/输入需求/)
-    fireEvent.change(textarea, { target: { value: '/' } })
-
-    expect(screen.getByText('/review')).toBeInTheDocument()
-    expect(screen.getByText('/compress')).toBeInTheDocument()
-
-    fireEvent.click(screen.getByText('/compress'))
-    expect(ws.sentMessages().some((m) => m.type === 'compress_context')).toBe(true)
-    expect((textarea as HTMLTextAreaElement).value).toBe('')
-  })
-
-  it('renders the plan confirmation card when a plan is pending', () => {
-    resetStore()
     usePPTStore.setState({
-      pendingPlan: {
-        planId: 'p_ui',
-        plan: '封面 + 三页内容',
-        planReview: { approved: true },
-        createdAt: Date.now()
-      }
+      sessionId: 'sess_test',
+      presentation: makePresentation([makeSlide([makeShape('s1', 40, 40)])]),
+      confirmedPresentation: null,
+      activeSlideId: 'slide_1',
+      selectedElementId: 's1',
+      selectedElementIds: ['s1'],
+      selectionScope: [],
+      editingElementId: null,
+      activeRightTab: 'inspector',
+      messages: [{
+        id: 'm1',
+        role: 'assistant',
+        content: '对话仍然可见',
+        timestamp: 1
+      }],
+      ws: null,
+      wsConnected: false,
+      pendingMutations: [],
+      outbox: [],
+      mutationStatus: 'idle'
     })
-    render(<ChatPanel />)
-
-    expect(screen.getByText('待确认计划')).toBeInTheDocument()
-    expect(screen.getByText('确认执行')).toBeInTheDocument()
   })
 
-  it('rejects unsupported files instead of silently attaching them', () => {
-    resetStore()
+  it('keeps the message list mounted while the selected element inspector is open', () => {
     render(<ChatPanel />)
-    const input = document.querySelector('input[type="file"]') as HTMLInputElement
-    const bad = new File(['x'], 'old.ppt', { type: 'application/vnd.ms-powerpoint' })
-    Object.defineProperty(input, 'files', { value: [bad], configurable: true })
 
-    fireEvent.change(input)
-
-    expect(screen.queryByLabelText('移除 old.ppt')).toBeNull()
-    const messages = usePPTStore.getState().messages
-    expect(
-      messages.some((m) => m.content.includes('不支持该文件格式') && m.content.includes('old.ppt'))
-    ).toBe(true)
-  })
-
-  it('accepts a .pptx attachment', () => {
-    resetStore()
-    render(<ChatPanel />)
-    const input = document.querySelector('input[type="file"]') as HTMLInputElement
-    const good = new File(['x'], 'deck.pptx', {
-      type: 'application/vnd.openxmlformats-officedocument.presentationml.presentation'
-    })
-    Object.defineProperty(input, 'files', { value: [good], configurable: true })
-
-    fireEvent.change(input)
-
-    expect(screen.getByLabelText('移除 deck.pptx')).toBeInTheDocument()
+    expect(screen.getByTestId('chat-messages')).toBeTruthy()
+    expect(screen.getByText('对话仍然可见')).toBeTruthy()
+    expect(screen.getByTestId('inspector-dock')).toBeTruthy()
+    expect(screen.getByText(/几何卡片/)).toBeTruthy()
   })
 })

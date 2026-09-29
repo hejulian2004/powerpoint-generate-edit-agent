@@ -82,6 +82,10 @@ class GhostDeleteLLM:
     api_key = "live_test_key"
 
     async def chat_completion(self, messages, role="reasoning", tools=None, **kwargs):
+        from tests.intent_reply import maybe_route
+        routed = maybe_route(messages, "modify_elements")
+        if routed:
+            return routed
         sys_msg = next((m["content"] for m in messages if m.get("role") == "system"), "")
         if "策划架构评审总监" in sys_msg:
             return {"choices": [{"message": {"content": "【评审结论】: 通过\n【规划健康分: 95/100】"}}]}

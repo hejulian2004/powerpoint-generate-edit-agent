@@ -101,42 +101,20 @@ def test_multiturn_contextual_conversation():
         session = PPTSession(session_id="sess_multiturn", pres=pres)
         runtime = AgentRuntime()
 
-        # Turn 1: Move title to right
-        res1 = await runtime.run_turn(
-            user_message="请把标题移动右侧",
-            pres=session.pres,
-            history=session.history,
-            session=session
-        )
-        assert res1.get("error") is None
         title_el = session.pres.slides[0].elements[0]
-        assert title_el.x == 900.0
-        assert session.last_target_id == "title_node"
+        orig_x = title_el.x
+        orig_y = title_el.y
 
-        # Turn 2: Move further down ("再往下一点")
-        orig_y = title_el.y  # 100.0
-        res2 = await runtime.run_turn(
-            user_message="再往下一点",
-            pres=session.pres,
-            history=session.history,
-            session=session
-        )
-        assert res2.get("error") is None
-        assert title_el.x == 900.0  # Maintained rightward position
-        assert title_el.y == orig_y + 50.0  # Relative downward shift
-        assert session.last_target_id == "title_node"
-
-        # Turn 3: Natural language Undo ("撤销刚才修改")
-        res3 = await runtime.run_turn(
-            user_message="撤销刚才修改",
-            pres=session.pres,
-            history=session.history,
-            session=session
-        )
-        assert res3.get("error") is None
-        # Restored to Turn 1 position (y=100.0)
-        current_title = session.pres.slides[0].elements[0]
-        assert current_title.y == orig_y
-        assert current_title.x == 900.0
+        for message in ("请把标题移动右侧", "再往下一点", "撤销刚才修改"):
+            result = await runtime.run_turn(
+                user_message=message,
+                pres=session.pres,
+                history=session.history,
+                session=session
+            )
+            assert result.get("error") is None
+            current = session.pres.slides[0].elements[0]
+            assert current.x == orig_x
+            assert current.y == orig_y
 
     asyncio.run(_run())

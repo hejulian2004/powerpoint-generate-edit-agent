@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from typing import List
 
+from ...design.tokens import MAX_CARD_RADIUS
 from ...slidespec.schema import BadgeBlock, BlockRole, SlideSpec, TextBlock, VisualIntent
 from ..schema import (
     Canvas,
@@ -34,7 +35,7 @@ def _badge_style(variant: str) -> ElementStyle:
         background_color=bg,
         border_color=border,
         border_width=1.0,
-        corner_radius=8.0,
+        corner_radius=MAX_CARD_RADIUS,
         padding=10.0,
         text=TextStyle(
             font_size=15.0,
@@ -178,7 +179,7 @@ class TakeawayListTemplate(BaseLayoutTemplate):
                                 background_color="#EFF6FF" if t.emphasis else "#F8FAFC",
                                 border_color="#3B82F6" if t.emphasis else "#E2E8F0",
                                 border_width=2.0 if t.emphasis else 1.0,
-                                corner_radius=10.0,
+                                corner_radius=MAX_CARD_RADIUS,
                                 padding=18.0,
                                 text=TextStyle(
                                     font_size=18.0,
@@ -218,7 +219,7 @@ class TakeawayListTemplate(BaseLayoutTemplate):
                                 background_color="#EFF6FF" if t.emphasis else "#F8FAFC",
                                 border_color="#BFDBFE" if t.emphasis else "#E2E8F0",
                                 border_width=1.0,
-                                corner_radius=8.0,
+                                corner_radius=MAX_CARD_RADIUS,
                                 padding=16.0,
                                 text=TextStyle(
                                     font_size=16.0,
@@ -263,7 +264,7 @@ class TakeawayListTemplate(BaseLayoutTemplate):
                             background_color="#EFF6FF" if t.emphasis else "#F8FAFC",
                             border_color="#3B82F6" if t.emphasis else "#E2E8F0",
                             border_width=1.5 if t.emphasis else 1.0,
-                            corner_radius=8.0,
+                            corner_radius=MAX_CARD_RADIUS,
                             padding=pad,
                             text=TextStyle(
                                 font_size=font_sz,

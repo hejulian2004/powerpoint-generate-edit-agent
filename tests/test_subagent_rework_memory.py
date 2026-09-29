@@ -17,6 +17,10 @@ class MockReworkMemoryLLM:
         self.received_plan_prompts = []
 
     async def chat_completion(self, messages, role="reasoning", **kwargs):
+        from tests.intent_reply import maybe_route
+        routed = maybe_route(messages, "generate_presentation")
+        if routed:
+            return routed
         if role == "vision":
             return {
                 "choices": [{

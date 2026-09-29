@@ -34,6 +34,7 @@ from ..ir.models import (
     TextContentIR,
     TextElementIR,
 )
+from ..design.tokens import MAX_CARD_RADIUS
 from ..layout.schema import DeckLayoutSpec, ElementType, LayoutElement, LayoutSpec
 
 logger = logging.getLogger(__name__)
@@ -187,7 +188,7 @@ def compile_layout_element_to_ir(
             style=ElementStyleIR(
                 fill=FillStyle(type="solid", color="#F8FAFC", alpha=1.0),
                 border=BorderStyle(color="#94A3B8", width=1.5, style="dashed"),
-                radius=8.0,
+                radius=MAX_CARD_RADIUS,
                 padding=16.0,
             ),
             text_content=TextContentIR(paragraphs=paras),
@@ -258,7 +259,7 @@ def compile_layout_element_to_ir(
                 style=ElementStyleIR(
                     fill=FillStyle(type="solid", color="#FFFBEB", alpha=1.0),
                     border=BorderStyle(color="#F59E0B", width=1.5, style="dashed"),
-                    radius=8.0,
+                    radius=MAX_CARD_RADIUS,
                     padding=16.0,
                 ),
                 text_content=TextContentIR(paragraphs=paras),
@@ -349,7 +350,7 @@ def compile_layout_element_to_ir(
             },
             style=ElementStyleIR(
                 border=BorderStyle(color="#CBD5E1", width=1.0),
-                radius=4.0,
+                radius=MAX_CARD_RADIUS,
             ),
         )
 

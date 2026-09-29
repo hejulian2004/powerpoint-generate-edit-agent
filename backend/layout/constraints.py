@@ -139,21 +139,14 @@ def estimate_text_lines(
     padding: float = 0.0,
     char_width_ratio: float = 0.55,
 ) -> int:
-    """Rough heuristic estimation of text lines given bounding width and font size."""
-    usable_width = max(10.0, box_width - 2 * padding)
-    # Average character width in proportional fonts is roughly char_width_ratio * font_size
-    char_width = max(3.0, font_size * char_width_ratio)
-    chars_per_line = max(1, int(usable_width / char_width))
+    """Line estimate shared with IR review. ``char_width_ratio`` is ignored.
 
-    total_lines = 0
-    for paragraph in text.split("\n"):
-        if not paragraph:
-            total_lines += 1
-        else:
-            lines_in_para = (len(paragraph) + chars_per_line - 1) // chars_per_line
-            total_lines += max(1, lines_in_para)
+    Width is CJK ``1.05 × font`` and ASCII ``0.55 × font`` from ``eval.text_measure``.
+    """
+    del char_width_ratio
+    from ..eval.text_measure import estimate_text_lines as shared_estimate
 
-    return total_lines
+    return shared_estimate(text, box_width, font_size, padding)
 
 
 def check_text_overflow(

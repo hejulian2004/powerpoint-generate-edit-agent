@@ -1,6 +1,6 @@
 import React, { useState, useRef, useEffect, useMemo } from 'react'
 import {
-  Send, Sparkles, Wrench, Eye, CheckCircle2,
+  Send, Wrench, Eye, CheckCircle2,
   Bot, User, Loader2, SlidersHorizontal, ShieldCheck, Activity,
   Paperclip, X, FileText, FileType2, Image as ImageIcon, Presentation,
   Zap
@@ -53,8 +53,6 @@ export const ChatPanel: React.FC = () => {
     contextUsage,
     sendChatMessage,
     sendChatWithAttachments,
-    activeRightTab,
-    setActiveRightTab,
     selectedElementId,
     interactionMode,
     setInteractionMode,
@@ -75,6 +73,7 @@ export const ChatPanel: React.FC = () => {
   const [isDragging, setIsDragging] = useState(false)
   const [activeCommandIndex, setActiveCommandIndex] = useState(0)
   const [paletteDismissed, setPaletteDismissed] = useState(false)
+  const [inspectorOpen, setInspectorOpen] = useState(false)
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
@@ -83,6 +82,10 @@ export const ChatPanel: React.FC = () => {
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [messages, isAgentThinking])
+
+  useEffect(() => {
+    if (selectedElementId) setInspectorOpen(true)
+  }, [selectedElementId])
 
   useEffect(() => {
     attachmentsRef.current = attachments
@@ -256,60 +259,37 @@ export const ChatPanel: React.FC = () => {
 
   return (
     <aside className="w-[390px] bg-panel border-l border-line flex flex-col shrink-0 h-full overflow-hidden shadow-xs">
-      {/* Segmented Tab Switcher */}
-      <div className="h-12 px-3 border-b border-line flex items-center justify-between bg-panel shrink-0">
-        <div className="flex bg-elevated p-1 rounded-xl border border-line text-xs font-medium w-full">
-          <button
-            onClick={() => setActiveRightTab('copilot')}
-            className={`flex-1 flex items-center justify-center gap-1.5 py-1.5 rounded-lg transition-all ${
-              activeRightTab === 'copilot'
-                ? 'bg-panel text-main font-semibold shadow-xs'
-                : 'text-muted hover:text-main'
-            }`}
-          >
-            <Sparkles className="w-3.5 h-3.5" />
-            <span>AI 协同设计</span>
-          </button>
-          <button
-            onClick={() => setActiveRightTab('inspector')}
-            className={`flex-1 flex items-center justify-center gap-1.5 py-1.5 rounded-lg transition-all ${
-              activeRightTab === 'inspector'
-                ? 'bg-panel text-main font-semibold shadow-xs'
-                : 'text-muted hover:text-main'
-            }`}
-          >
-            <SlidersHorizontal className="w-3.5 h-3.5" />
-            <span>图元属性 {selectedElementId ? '●' : ''}</span>
-          </button>
-        </div>
-      </div>
-
-      {/* Mode 1: Property Inspector */}
-      {activeRightTab === 'inspector' ? (
-        <PropertyPanel />
-      ) : (
-        /* Mode 2: Copilot Chat */
-        <div className="flex-1 flex flex-col overflow-hidden bg-canvas">
-          {/* Main Agent Dialogue Header with Context Usage Progress */}
-          <div className="px-3 py-2 border-b border-line bg-panel flex items-center justify-between shrink-0">
-            <div className="flex items-center gap-1.5 text-xs text-secondary font-medium">
-              <Bot className="w-3.5 h-3.5 text-blue-600" />
-              <span className="font-semibold text-main">主 Agent 协同工作台</span>
-              <span className="text-[10px] text-muted">（唯一对外对话）</span>
+      <div className="flex-1 flex flex-col overflow-hidden bg-canvas min-h-0">
+          <div className="px-3 py-2 border-b border-line bg-panel flex items-center justify-between shrink-0 gap-2">
+            <div className="flex items-center gap-1.5 text-xs text-secondary font-medium min-w-0">
+              <Bot className="w-3.5 h-3.5 text-blue-600 shrink-0" />
+              <span className="font-semibold text-main truncate">主 Agent 协同工作台</span>
             </div>
-            {contextUsage && (
-              <ContextUsageIndicator
-                percentage={contextUsage.usage_percent}
-                currentTokens={contextUsage.current_tokens}
-                maxTokens={contextUsage.max_tokens}
-                isCompressed={contextUsage.is_compressed}
-                limitKey={contextUsage.context_limit_key}
-              />
-            )}
+            <div className="flex items-center gap-1.5 shrink-0">
+              {selectedElementId && (
+                <button
+                  type="button"
+                  onClick={() => setInspectorOpen((open) => !open)}
+                  className="flex items-center gap-1 px-1.5 py-1 rounded-lg text-[10px] font-medium text-secondary hover:text-main hover:bg-elevated"
+                  aria-label={inspectorOpen ? '收起图元属性' : '展开图元属性'}
+                >
+                  <SlidersHorizontal className="w-3.5 h-3.5" />
+                  <span>{inspectorOpen ? '收起属性' : '图元属性'}</span>
+                </button>
+              )}
+              {contextUsage && (
+                <ContextUsageIndicator
+                  percentage={contextUsage.usage_percent}
+                  currentTokens={contextUsage.current_tokens}
+                  maxTokens={contextUsage.max_tokens}
+                  isCompressed={contextUsage.is_compressed}
+                  limitKey={contextUsage.context_limit_key}
+                />
+              )}
+            </div>
           </div>
 
-          {/* Messages Scroll Area */}
-          <div className="flex-1 overflow-y-auto p-4 space-y-4 custom-scrollbar">
+          <div data-testid="chat-messages" className="flex-1 overflow-y-auto p-4 space-y-4 custom-scrollbar">
             {messages.map((msg) => {
               const isUser = msg.role === 'user'
               return (
@@ -511,6 +491,15 @@ export const ChatPanel: React.FC = () => {
             <div ref={messagesEndRef} />
           </div>
 
+          {selectedElementId && inspectorOpen && (
+            <div
+              data-testid="inspector-dock"
+              className="h-[42%] max-h-[42%] min-h-0 overflow-hidden border-t border-line bg-panel shrink-0 flex flex-col"
+            >
+              <PropertyPanel />
+            </div>
+          )}
+
           {/* Input Box */}
           <form
             onSubmit={handleSubmit}
@@ -662,7 +651,6 @@ export const ChatPanel: React.FC = () => {
             </p>
           </form>
         </div>
-      )}
     </aside>
   )
 }

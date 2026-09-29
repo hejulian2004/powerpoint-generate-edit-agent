@@ -16,6 +16,10 @@ class MockReasoningLLM:
         self.received_messages: List[List[Dict[str, Any]]] = []
 
     async def chat_completion(self, messages, role="reasoning", **kwargs):
+        from tests.intent_reply import maybe_route
+        routed = maybe_route(messages, "generate_presentation")
+        if routed:
+            return routed
         self.received_messages.append(messages)
         return {
             "choices": [{
@@ -95,6 +99,7 @@ def test_langgraph_integration_with_plan_critic():
         final_state = await app.ainvoke(initial_state, config={
             "configurable": {
                 "pres": pres,
+                "llm_client": MockReasoningLLM(),
                 "on_event": on_ev
             }
         })

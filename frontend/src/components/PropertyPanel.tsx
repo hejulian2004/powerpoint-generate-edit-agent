@@ -11,6 +11,7 @@ import {
 import { usePPTStore } from '../store/usePPTStore'
 import type { ShapeElementIR, TextElementIR, ConnectorElementIR, GroupElementIR, ImageElementIR } from '../types/presentation-ir.generated'
 import { themeColors, DEFAULT_COLOR_SWATCHES, SLIDE_THEME_PRESETS } from '../theme/tokens'
+import { MAX_CARD_RADIUS, clampRadius } from '../theme/slideTokens'
 
 const safeHexColor = (col?: string, fallback = '#0F172A') => {
   if (!col) return fallback
@@ -506,7 +507,10 @@ export const PropertyPanel: React.FC = () => {
 
   const handleUpdate = (updates: Record<string, any>) => {
     if (!canAuthor) return
-    updateElementDirect(elem.id, updates)
+    const next = typeof updates.radius === 'number'
+      ? { ...updates, radius: clampRadius(updates.radius) }
+      : updates
+    updateElementDirect(elem.id, next)
   }
 
   // Quick Layout Alignment Helpers
@@ -987,14 +991,14 @@ export const PropertyPanel: React.FC = () => {
                 <CommitSlider
                   value={currentRadius}
                   min={0}
-                  max={48}
+                  max={MAX_CARD_RADIUS}
                   onCommit={(v) => handleUpdate({ radius: v })}
                   className="w-full accent-inverted bg-line h-1.5 rounded-lg cursor-pointer"
                 />
                 <CommitNumberInput
                   value={currentRadius}
                   min={0}
-                  max={48}
+                  max={MAX_CARD_RADIUS}
                   fallback={0}
                   onCommit={(v) => handleUpdate({ radius: v })}
                   className="w-12 bg-subtle border border-line-strong rounded px-1.5 py-0.5 text-xs text-main font-tabular font-medium text-center focus:outline-none"

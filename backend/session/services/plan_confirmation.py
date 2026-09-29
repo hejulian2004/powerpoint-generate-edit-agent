@@ -33,6 +33,7 @@ class PlanConfirmationService:
         active_slide_id: Optional[str] = None,
         ui_context: Optional[Dict[str, Any]] = None,
         ui_context_revision: Optional[int] = None,
+        tool_calls: Optional[list] = None,
     ) -> Dict[str, Any]:
         record = {
             "plan_id": plan_id,
@@ -42,6 +43,7 @@ class PlanConfirmationService:
             "document_epoch": document_epoch,
             "expected_revision": expected_revision,
             "active_slide_id": active_slide_id,
+            "tool_calls": list(tool_calls) if tool_calls is not None else None,
             # The requesting client's UI context is frozen alongside the plan so
             # confirming later binds deictic references to the elements the user
             # selected when they asked - not to a newer client-local selection.

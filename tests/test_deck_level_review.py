@@ -14,7 +14,7 @@ from backend.session.session import PPTSession
 
 
 class DeckLLM:
-    """Approves all free-text critiques and lets the heuristic planner build the deck."""
+    """Approves critiques. The model returns the deck tool call itself."""
 
     api_key = "live_deck_key"
 
@@ -23,6 +23,10 @@ class DeckLLM:
         self.vision_calls = 0
 
     async def chat_completion(self, messages, role="reasoning", tools=None, **kwargs):
+        from tests.intent_reply import maybe_route
+        routed = maybe_route(messages, "generate_presentation")
+        if routed:
+            return routed
         sys_msg = next((m["content"] for m in messages if m.get("role") == "system"), "")
         if role == "vision":
             self.vision_calls += 1
@@ -34,8 +38,8 @@ class DeckLLM:
             self.content_manifest_slides.append(user_msg)
             return {"choices": [{"message": {"content": "【内容评审结论】: 通过\n【内容健康分: 92/100】"}}]}
         if tools:
-            # No tool calls -> deterministic heuristic planner generates the deck.
-            return {"choices": [{"message": {"content": "ok"}}]}
+            from tests.intent_reply import generation_tool_choice
+            return generation_tool_choice("下一代大模型技术演进")
         return {"choices": [{"message": {"content": "ok"}}]}
 
 

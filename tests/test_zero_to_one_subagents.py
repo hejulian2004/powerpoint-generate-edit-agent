@@ -16,7 +16,11 @@ class MockAgentLLM:
         self.plan_calls = 0
         self.vision_calls = 0
 
-    async def chat_completion(self, messages, role="reasoning", **kwargs):
+    async def chat_completion(self, messages, role="reasoning", tools=None, **kwargs):
+        from tests.intent_reply import generation_tool_choice, maybe_route
+        routed = maybe_route(messages, "generate_presentation")
+        if routed:
+            return routed
         if role == "vision":
             self.vision_calls += 1
             return {
@@ -39,7 +43,8 @@ class MockAgentLLM:
                         }
                     }]
                 }
-            # Fallback tool call response
+            if tools:
+                return generation_tool_choice("量子计算与量子优越性")
             return {
                 "choices": [{
                     "message": {

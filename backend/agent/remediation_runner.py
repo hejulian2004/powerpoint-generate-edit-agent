@@ -295,6 +295,17 @@ class RemediationRunner:
                 }
             }
 
+        elif action.action_type == FixActionType.CLAMP_RADIUS:
+            from ..design.tokens import MAX_CARD_RADIUS, clamp_radius
+            return {
+                "tool": "update_element",
+                "args": {
+                    "slide_id": slide_id,
+                    "element_id": p.get("element_id"),
+                    "radius": clamp_radius(p.get("radius", MAX_CARD_RADIUS)),
+                },
+            }
+
         elif action.action_type in [FixActionType.ALIGN_ELEMENTS, FixActionType.FIX_ALIGNMENT]:
             return {
                 "tool": "align_elements",
