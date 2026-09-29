@@ -10,6 +10,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import Any, List, Optional
 
+from ...design.tokens import MAX_CARD_RADIUS
 from ...slidespec.schema import BlockRole, FigureBlock, SlideSpec, TableBlock
 from ..schema import (
     Canvas,
@@ -229,7 +230,7 @@ def stack_visual_assets(
                         background_color="#F1F5F9",
                         border_color="#CBD5E1",
                         border_width=1.0,
-                        corner_radius=8.0,
+                        corner_radius=MAX_CARD_RADIUS,
                     ),
                     content={
                         "source_figure_id": block.source_figure_id,

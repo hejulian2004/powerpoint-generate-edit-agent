@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import pytest
 
 from backend.agent.mutation_gateway import STALE_MUTATION, MutationGateway
 from backend.ir.models import PresentationIR, SlideIR, TextContentIR, TextElementIR
@@ -200,7 +201,7 @@ def test_debounced_schedule_coalesces_writes():
             def __init__(self):
                 self.saves = 0
 
-            async def save(self, snapshot):
+            async def save(self, snapshot, pending_tombstones=None):
                 self.saves += 1
 
         repo = _CountingRepo()
@@ -233,7 +234,7 @@ def test_concurrent_commit_during_flush_is_not_lost():
                 self.release = asyncio.Event()
                 self.gate_first = True
 
-            async def save(self, snapshot):
+            async def save(self, snapshot, pending_tombstones=None):
                 self.saves.append(snapshot)
                 if self.gate_first:
                     self.gate_first = False
@@ -314,3 +315,194 @@ def test_restart_after_commit_rejects_lost_ack_replay(tmp_path):
         await workspace2.close()
 
     asyncio.run(_run())
+
+
+def test_debounce_cancellation_race_preserves_single_writer_and_latest_state(tmp_path):
+    """P0 race regression test: in-flight SQLite save is never cancelled,
+
+    max_concurrent_sqlite_writers is strictly 1 at all times, and the DB
+    always converges to the latest generation snapshot.
+    """
+    import threading
+
+    async def _run():
+        db = tmp_path / "concurrency_race.db"
+        repo = SQLiteRepository(db)
+
+        concurrent_writers = 0
+        max_concurrent_writers = 0
+        count_lock = threading.Lock()
+
+        save1_entered = threading.Event()
+        save1_release = threading.Event()
+        first_call = True
+
+        orig_save_sync = repo._save_sync
+
+        def _instrumented_save_sync(snapshot, pending_tombstones=None):
+            nonlocal concurrent_writers, max_concurrent_writers, first_call
+            with count_lock:
+                concurrent_writers += 1
+                if concurrent_writers > max_concurrent_writers:
+                    max_concurrent_writers = concurrent_writers
+            try:
+                if first_call:
+                    first_call = False
+                    save1_entered.set()
+                    # Block the first worker thread
+                    save1_release.wait(timeout=5)
+                return orig_save_sync(snapshot, pending_tombstones)
+            finally:
+                with count_lock:
+                    concurrent_writers -= 1
+
+        repo._save_sync = _instrumented_save_sync
+
+        session = SessionFactory.create(_pres(title="version_1"), session_id="sess_p0_race")
+        service = SessionPersistenceService(
+            repo, lambda sid: session if sid == "sess_p0_race" else None,
+            debounce_seconds=0.01,
+        )
+        session.persistence = service
+
+        # 1. Schedule initial persist (generation 1) -> enters worker thread and blocks
+        session.schedule_persist()
+        # Wait for thread to enter _save_sync
+        for _ in range(100):
+            if save1_entered.is_set():
+                break
+            await asyncio.sleep(0.01)
+        assert save1_entered.is_set(), "First save did not enter instrumented _save_sync"
+
+        # 2. While the first save is still blocked in its OS thread, mutate to version_2
+        session.pres.title = "version_2"
+        session.pres.version += 1
+        session.schedule_persist()
+
+        # 3. Fire persist_session_now concurrently while save 1 is in-flight
+        persist_task = asyncio.create_task(service.persist_session_now("sess_p0_race"))
+        await asyncio.sleep(0.05)
+
+        # At this point, save 1 is in-flight, persist_now is waiting for the session lock.
+        # Ensure max_concurrent_writers is still 1
+        with count_lock:
+            assert max_concurrent_writers == 1
+
+        # 4. Release save 1
+        save1_release.set()
+        await asyncio.wait_for(persist_task, timeout=2.0)
+
+        # Verify writer invariant was preserved across the entire race
+        with count_lock:
+            assert max_concurrent_writers == 1
+            assert concurrent_writers == 0
+
+        # 5. Reload from SQLite and verify version_2 is what was durably stored
+        loaded = await repo.load("sess_p0_race")
+        assert loaded is not None
+        assert loaded.presentation["title"] == "version_2"
+        assert loaded.presentation["version"] == session.pres.version
+
+        await service.close()
+        await repo.close()
+
+    asyncio.run(_run())
+
+
+def test_run_exclusive_double_cancellation_preserves_lock_and_single_writer(tmp_path):
+    """P0 contract test: double cancellation on _run_exclusive never releases self._lock
+
+    prematurely while OS worker thread is still executing, and single writer is strictly preserved.
+    """
+    import threading
+    from backend.session.snapshot import SessionSnapshot
+
+    async def _run():
+        db = tmp_path / "double_cancel_race.db"
+        repo = SQLiteRepository(db)
+
+        concurrent_writers = 0
+        max_concurrent_writers = 0
+        count_lock = threading.Lock()
+
+        worker1_entered = threading.Event()
+        worker1_release = threading.Event()
+        worker2_entered = threading.Event()
+
+        orig_save_sync = repo._save_sync
+
+        def _instrumented_save_sync(snapshot: SessionSnapshot):
+            nonlocal concurrent_writers, max_concurrent_writers
+            with count_lock:
+                concurrent_writers += 1
+                if concurrent_writers > max_concurrent_writers:
+                    max_concurrent_writers = concurrent_writers
+            try:
+                if snapshot.session_id == "snap1":
+                    worker1_entered.set()
+                    worker1_release.wait(timeout=5.0)
+                elif snapshot.session_id == "snap2":
+                    worker2_entered.set()
+                return orig_save_sync(snapshot)
+            finally:
+                with count_lock:
+                    concurrent_writers -= 1
+
+        repo._save_sync = _instrumented_save_sync
+
+        snap1 = SessionSnapshot(session_id="snap1", presentation={"title": "s1"}, document_epoch="epoch1")
+        snap2 = SessionSnapshot(session_id="snap2", presentation={"title": "s2"}, document_epoch="epoch1")
+
+        # 1. Start task1 -> worker1 begins and blocks on worker1_release
+        task1 = asyncio.create_task(repo.save(snap1))
+        for _ in range(100):
+            if worker1_entered.is_set():
+                break
+            await asyncio.sleep(0.01)
+        assert worker1_entered.is_set()
+
+        # 2. First cancellation of task1
+        task1.cancel()
+        await asyncio.sleep(0.02)
+        assert not task1.done(), "task1 must NOT be done while worker1 thread is still running"
+
+        # 3. Second cancellation of task1 (double cancellation)
+        task1.cancel()
+        await asyncio.sleep(0.02)
+        assert not task1.done(), "task1 must NOT be done after second cancel while worker1 thread is still running"
+
+        # 4. Start task2 attempting to acquire repo lock and save snap2
+        task2 = asyncio.create_task(repo.save(snap2))
+        await asyncio.sleep(0.05)
+
+        # Assert task2 cannot enter _save_sync while worker1 is running under the lock
+        assert not worker2_entered.is_set(), "task2 must NOT enter _save_sync before worker1 releases the lock"
+        with count_lock:
+            assert max_concurrent_writers == 1
+            assert concurrent_writers == 1
+
+        # 5. Release worker1 so it finishes
+        worker1_release.set()
+
+        # task1 must complete by raising asyncio.CancelledError
+        with pytest.raises(asyncio.CancelledError):
+            await task1
+
+        # task2 can now acquire the lock and finish successfully
+        await asyncio.wait_for(task2, timeout=2.0)
+        assert worker2_entered.is_set()
+
+        with count_lock:
+            assert max_concurrent_writers == 1
+            assert concurrent_writers == 0
+
+        # Verify snap2 was saved properly
+        loaded2 = await repo.load("snap2")
+        assert loaded2 is not None
+        assert loaded2.presentation["title"] == "s2"
+
+        await repo.close()
+
+    asyncio.run(_run())
+
+

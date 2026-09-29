@@ -46,7 +46,7 @@ def test_api_slide_svg():
 def _mock_outbound_policy(monkeypatch):
     """Bypasses DNS/SSRF for normalization tests (security covered separately)."""
 
-    def _fake_validate(cls, base_url, trusted_hosts=None, allow_private_for_tests=False):
+    def _fake_validate(cls, base_url, trusted_hosts=None, allow_loopback=False):
         from urllib.parse import urlparse as _up
 
         raw = str(base_url).strip().rstrip("/") or "https://test.invalid/v1"

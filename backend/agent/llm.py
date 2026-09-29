@@ -199,7 +199,7 @@ class LLMClient:
                             "width": 300,
                             "height": 160,
                             "fill_color": "#2563EB",
-                            "radius": 12.0,
+                            "radius": 3.0,
                             "text": "AI 架构设计\n- 自动化解析\n- 实时渲染",
                             "text_color": "#FFFFFF",
                             "font_size": 18

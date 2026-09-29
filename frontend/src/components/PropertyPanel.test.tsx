@@ -80,7 +80,7 @@ describe('PropertyPanel editing transactions', () => {
 
     const outbox = usePPTStore.getState().outbox
     expect(outbox).toHaveLength(1)
-    expect(outbox[0].message.payload.radius).toBe(24)
+    expect(outbox[0].message.payload.radius).toBe(3)
   })
 
   it('does not emit a mutation when a blurred numeric field is unchanged', () => {

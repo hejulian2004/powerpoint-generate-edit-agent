@@ -145,6 +145,7 @@ class AgentRuntime:
         transport: Optional[Any] = None,
         mode: Optional[str] = None,
         approved_plan: Optional[str] = None,
+        frozen_tool_calls: Optional[List[Dict[str, Any]]] = None,
         record_user_message: bool = True,
     ) -> Dict[str, Any]:
         """Runs an interactive turn executed through the LangGraph state machine.
@@ -360,6 +361,8 @@ class AgentRuntime:
             }
             if approved_plan:
                 initial_state["plan"] = approved_plan
+            if frozen_tool_calls is not None:
+                initial_state["frozen_tool_calls"] = list(frozen_tool_calls)
 
             config = {
                 "configurable": {
@@ -862,6 +865,7 @@ class AgentRuntime:
             transport=transport,
             mode="plan",
             approved_plan=record.get("plan", ""),
+            frozen_tool_calls=record.get("tool_calls"),
             record_user_message=False,
         )
         if result.get("turn_rejected"):

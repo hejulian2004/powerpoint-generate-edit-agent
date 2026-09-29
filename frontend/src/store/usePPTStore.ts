@@ -548,6 +548,7 @@ export interface PendingPlan {
   documentEpoch?: string | null
   expectedRevision?: number
   createdAt: number
+  toolCalls?: Array<{ name?: string; tool?: string; arguments?: Record<string, any>; args?: Record<string, any> }>
 }
 
 export interface PendingConfirmation {
@@ -2120,7 +2121,8 @@ export const usePPTStore = create<PPTState>((set, get) => ({
               intent: data.intent,
               documentEpoch: data.document_epoch ?? null,
               expectedRevision: data.expected_revision,
-              createdAt: Date.now()
+              createdAt: Date.now(),
+              toolCalls: Array.isArray(data.tool_calls) ? data.tool_calls : undefined
             }
           })
         } else if (type === 'plan_approved') {

@@ -4,6 +4,7 @@ import {
   Edit3, Bold, Image as ImageIcon, Layers, Ungroup, Copy
 } from 'lucide-react'
 import { usePPTStore } from '../store/usePPTStore'
+import { MAX_CARD_RADIUS } from '../theme/slideTokens'
 import { SVGRendererComponent } from './SVGRendererComponent'
 import { CanvasToolbar } from './CanvasToolbar'
 import {
@@ -731,7 +732,7 @@ export const SlideCanvas: React.FC = () => {
               {isImageOrShape && (
                 <div className="flex items-center gap-1 bg-subtle px-1.5 py-0.5 rounded border border-line">
                   <span className="text-[10px] text-muted font-medium">圆角</span>
-                  {[0, 4, 8, 16].map((r) => (
+                  {Array.from({ length: MAX_CARD_RADIUS + 1 }, (_, r) => r).map((r) => (
                     <button
                       key={r}
                       onClick={() => updateElementDirect(selectedElement.id, { radius: r })}

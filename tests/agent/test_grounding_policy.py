@@ -5,7 +5,6 @@ from backend.agent.grounding import (
     DECISION_BLOCK,
     DECISION_PLACEHOLDER,
     blocking_verdicts,
-    collect_generation_text,
     data_claim_numbers,
     scan_text_verdicts,
 )
@@ -57,12 +56,14 @@ def test_blocking_verdicts_respects_placeholder_opt_in():
 
 def test_heuristic_deck_contains_no_fabricated_data_claims():
     calls = _heuristic_tool_planner("generate_presentation", "制作关于AI架构的PPT", None)
-    text = collect_generation_text(dict(calls[0]["arguments"]))
+    assert calls[0]["name"] == "request_clarification"
+    text = calls[0]["arguments"]["question"]
     assert data_claim_numbers(text, "") == []
     assert not [v for v in scan_text_verdicts(text, "") if v.decision == DECISION_BLOCK]
 
 
 def test_heuristic_kpi_slide_contains_no_fabricated_numbers():
     calls = _heuristic_tool_planner("generate_slide", "做一个指标页", None)
-    text = collect_generation_text(dict(calls[0]["arguments"]))
+    assert calls[0]["name"] == "request_clarification"
+    text = calls[0]["arguments"]["question"]
     assert data_claim_numbers(text, "") == []

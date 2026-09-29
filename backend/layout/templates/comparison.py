@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, List
 
+from ...design.tokens import MAX_CARD_RADIUS
 from ...slidespec.schema import BadgeBlock, BlockRole, FigureBlock, SlideSpec, TableBlock, TextBlock
 from ..schema import (
     Canvas,
@@ -39,7 +40,7 @@ def _badge_style(variant: str) -> ElementStyle:
         background_color=bg,
         border_color=border,
         border_width=1.0,
-        corner_radius=6.0,
+        corner_radius=MAX_CARD_RADIUS,
         padding=8.0,
         text=TextStyle(
             font_size=14.0,
@@ -154,7 +155,7 @@ class BenchmarkComparisonTemplate(BaseLayoutTemplate):
                                 background_color="#EFF6FF" if t.emphasis else "#F8FAFC",
                                 border_color="#BFDBFE" if t.emphasis else "#E2E8F0",
                                 border_width=1.0,
-                                corner_radius=6.0,
+                                corner_radius=MAX_CARD_RADIUS,
                                 padding=pad,
                                 text=TextStyle(
                                     font_size=font_sz,
@@ -229,7 +230,7 @@ class BenchmarkComparisonTemplate(BaseLayoutTemplate):
                                 background_color="#F8FAFC",
                                 border_color="#E2E8F0",
                                 border_width=1.0,
-                                corner_radius=8.0,
+                                corner_radius=MAX_CARD_RADIUS,
                                 padding=pad,
                                 text=TextStyle(
                                     font_size=font_sz,

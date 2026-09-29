@@ -112,7 +112,9 @@ def test_confidence_and_criticality_gating():
     res = RemediationRunner.apply_plan(pres, history, plan, slide_id="slide_gate", only_critical=True)
 
     assert res["success"] is True
-    assert res["applied_count"] == 1
+    # Viewport clamp is critical. Alignment at confidence 0.85 is also auto-applicable.
+    # The 0.50 separation stays out, and top-align does not move x.
+    assert res["applied_count"] == 2
     assert res["applied_records"][0]["args"]["element_id"] == "e_clip"
     assert e1.x == 1100.0
     assert e2.x == 200.0

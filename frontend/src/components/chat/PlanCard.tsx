@@ -29,6 +29,21 @@ export const PlanCard: React.FC<PlanCardProps> = ({ plan, onConfirm, onCancel, d
         {plan.plan || '（无计划内容）'}
       </p>
 
+      {plan.toolCalls && plan.toolCalls.length > 0 && (
+        <ul className="text-[10px] text-secondary space-y-0.5 font-tabular">
+          {plan.toolCalls.map((call, index) => {
+            const args = call.arguments || call.args || {}
+            const name = call.name || call.tool || '工具'
+            const target = args.slide_id || args.title || '当前页'
+            return (
+              <li key={`${name}-${index}`}>
+                {name}（目标: {String(target)}）
+              </li>
+            )
+          })}
+        </ul>
+      )}
+
       {review.recommendations && (
         <p className="text-[10px] text-amber-700 bg-amber-100/70 rounded px-2 py-1">
           评审建议: {review.recommendations}

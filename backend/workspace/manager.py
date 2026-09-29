@@ -51,6 +51,16 @@ class WorkspaceManager:
         """Forces immediate durable flush of session_id to disk."""
         await self._persistence.persist_session_now(session_id)
 
+    async def get_request_tombstone(
+        self,
+        session_id: str,
+        request_id: str,
+    ):
+        """Authoritative 7-day replay ledger lookup against repository."""
+        if hasattr(self._repo, "get_request_tombstone"):
+            return await self._repo.get_request_tombstone(session_id, request_id)
+        return None
+
     async def _save_session(self, session) -> None:
         await self._repo.save(session_to_snapshot(session))
 

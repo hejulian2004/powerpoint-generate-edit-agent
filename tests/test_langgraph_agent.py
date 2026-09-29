@@ -83,10 +83,19 @@ def test_generate_presentation_tool():
     s2 = pres.slides[1]
     assert len(s2.elements) >= 4  # title + 3 cards
 
-    # Slide 3: timeline
+    # Slide 3: text timeline stacks as a takeaway list (title + three steps).
     s3 = pres.slides[2]
-    # title + 3 step cards + 2 arrow connectors = 6 elements
-    assert len(s3.elements) >= 5
+    timeline_text = "\n".join(
+        run.text
+        for element in s3.elements
+        if getattr(element, "text_content", None)
+        for paragraph in element.text_content.paragraphs
+        for run in paragraph.runs
+        if run.text
+    )
+    assert "原型验证" in timeline_text
+    assert "状态编排" in timeline_text
+    assert "商业发布" in timeline_text
 
     # Slide 4: kpi_metrics
     s4 = pres.slides[3]
@@ -95,6 +104,56 @@ def test_generate_presentation_tool():
     # Slide 5: comparison
     s5 = pres.slides[4]
     assert len(s5.elements) >= 3
+    for slide in pres.slides:
+        rendered = "\n".join(
+            run.text
+            for element in slide.elements
+            if getattr(element, "text_content", None)
+            for paragraph in element.text_content.paragraphs
+            for run in paragraph.runs
+            if run.text
+        )
+        assert "RESEARCH" not in rendered
+        assert "01 / OVERVIEW" not in rendered
+        for element in slide.elements:
+            assert element.x + element.width <= 1280.5
+            assert element.y + element.height <= 720.5
+
+
+def test_generate_presentation_seven_cards_stay_on_canvas():
+    """Seven card items stack inside the canvas and do not use canned kickers."""
+    pres = PresentationIR(title="七点")
+    history = HistoryManager()
+    res = tools.execute(
+        "generate_presentation",
+        {
+            "topic": "七点总览",
+            "replace": True,
+            "slides": [{
+                "title": "七点总览",
+                "layout": "card_grid",
+                "items": [{"title": f"要点{i}", "description": "说明"} for i in range(7)],
+            }],
+        },
+        pres,
+        history,
+    )
+    assert res["success"] is True
+    assert len(pres.slides) == 1
+    rendered = "\n".join(
+        run.text
+        for element in pres.slides[0].elements
+        if getattr(element, "text_content", None)
+        for paragraph in element.text_content.paragraphs
+        for run in paragraph.runs
+        if run.text
+    )
+    assert "RESEARCH" not in rendered
+    assert "01 / OVERVIEW" not in rendered
+    assert "要点6" in rendered
+    for element in pres.slides[0].elements:
+        assert element.x + element.width <= 1280.5
+        assert element.y + element.height <= 720.5
 
 
 def test_generate_slide_layout_archetypes():
@@ -141,9 +200,17 @@ def test_generate_slide_layout_archetypes():
     )
     assert res2["success"] is True
     assert slide.title == "季度增长分析"
-    # Editorial header (kicker/title/rule) + per-metric value/label/sub/rule
-    kpi_vals = [e for e in slide.elements if e.name and e.name.startswith("Metric Value")]
-    assert len(kpi_vals) == 2
+    blob = "\n".join(
+        run.text
+        for element in slide.elements
+        if getattr(element, "text_content", None)
+        for paragraph in element.text_content.paragraphs
+        for run in paragraph.runs
+        if run.text
+    )
+    assert "+158%" in blob
+    assert "99.2%" in blob
+    assert slide.id == "s_test"
 
 
 def test_batch_add_cards_and_align_elements():
@@ -249,6 +316,21 @@ def test_clear_slide_elements():
     assert len(slide.elements) == 0
 
 
+class _DecidingLLM:
+    """Supplies the model's intent. An empty key keeps later planning on the offline path."""
+
+    def __init__(self, intent: str):
+        self.intent = intent
+        self.api_key = ""
+
+    async def chat_completion(self, messages, tools=None, role="fast", **kwargs):
+        from tests.intent_reply import maybe_route
+        routed = maybe_route(messages, self.intent)
+        if routed:
+            return routed
+        return {"choices": [{"message": {"content": "ok"}}]}
+
+
 def test_langgraph_agent_full_turn_generation():
     """Verify full LangGraph agent turn executing multi-slide generation."""
     async def _run():
@@ -258,7 +340,7 @@ def test_langgraph_agent_full_turn_generation():
         # Whole-document generation is a replacement, which requires a session.
         session = PPTSession(session_id="sess_full_turn_gen", pres=pres)
 
-        runtime = AgentRuntime()
+        runtime = AgentRuntime(llm_client=_DecidingLLM("generate_presentation"))
         events = []
 
         async def on_event(ev):
@@ -273,15 +355,15 @@ def test_langgraph_agent_full_turn_generation():
         )
 
         assert result["intent"] == "generate_presentation"
-        assert len(result["tools_executed"]) > 0
-        assert len(pres.slides) >= 3
-        assert "企业数字化转型" in pres.title or len(pres.slides) > 1
+        assert result.get("error") is None
+        assert result["tools_executed"] == []
+        assert len(pres.slides) == 1
+        assert pres.slides[0].id == "init"
+        assert "不能编排" in result["reply"]
 
-        # Check events emitted
         event_types = [e["type"] for e in events]
         assert "agent_thinking" in event_types
-        assert "tool_executing" in event_types
-        assert "tool_completed" in event_types
+        assert "tool_executing" not in event_types
         assert "agent_finished" in event_types
 
     asyncio.run(_run())
@@ -295,7 +377,7 @@ def test_langgraph_agent_full_turn_timeline():
         pres.slides.append(s)
         history = HistoryManager()
 
-        runtime = AgentRuntime()
+        runtime = AgentRuntime(llm_client=_DecidingLLM("generate_slide"))
         result = await runtime.run_turn(
             user_message="为当前幻灯片新增一页项目实施时间线",
             pres=pres,
@@ -303,8 +385,9 @@ def test_langgraph_agent_full_turn_timeline():
         )
 
         assert result["intent"] == "generate_slide"
-        assert len(result["tools_executed"]) > 0
-        assert len(s.elements) > 2
+        assert result["tools_executed"] == []
+        assert len(s.elements) == 0
+        assert "不能编排" in result["reply"]
 
     asyncio.run(_run())
 
@@ -360,7 +443,7 @@ def test_update_element_typography_and_geometry():
     assert elem.y == 250.0
     assert elem.width == 450.0
     assert elem.height == 280.0
-    assert elem.style.radius == 24.0
+    assert elem.style.radius == 3.0
     assert elem.style.opacity == 0.95
     assert elem.style.fill.color == "#12131A"
     assert elem.style.border.color == "#3B82F6"
@@ -386,9 +469,9 @@ def test_langgraph_agent_full_turn_layout_and_theme():
         pres.slides.append(s)
         history = HistoryManager()
 
-        runtime = AgentRuntime()
+        runtime = AgentRuntime(llm_client=_DecidingLLM("apply_theme"))
 
-        # 1. Apply theme
+        # 1. Apply theme. The model named apply_theme; the turn does not keyword-match 科技蓝.
         res_theme = await runtime.run_turn(
             user_message="切换为科技蓝主题风格",
             pres=pres,
@@ -397,7 +480,8 @@ def test_langgraph_agent_full_turn_layout_and_theme():
         assert res_theme["intent"] == "apply_theme"
         assert pres.theme.get("name") == "tech_blue"
 
-        # 2. Optimize layout
+        # 2. Optimize layout. A second model decision, not a second keyword table.
+        runtime.llm = _DecidingLLM("optimize_layout")
         res_layout = await runtime.run_turn(
             user_message="自适应规整排版卡片",
             pres=pres,
@@ -406,3 +490,78 @@ def test_langgraph_agent_full_turn_layout_and_theme():
         assert res_layout["intent"] == "optimize_layout"
 
     asyncio.run(_run())
+
+
+def test_router_node_llm_intent_classification():
+    """Verify router_node uses LLM semantic classification when llm_client is provided."""
+    from backend.agent.graph import router_node
+
+    class MockRoutingLLM:
+        def __init__(self, target_intent: str):
+            self.target_intent = target_intent
+            self.call_count = 0
+
+        def _is_unconfigured(self) -> bool:
+            return False
+
+        async def chat_completion(self, messages, role="fast", temperature=0.0, max_tokens=150):
+            self.call_count += 1
+            return {
+                "choices": [
+                    {
+                        "message": {
+                            "content": f'{{"intent": "{self.target_intent}", "reason": "semantic analysis"}}'
+                        }
+                    }
+                ]
+            }
+
+    async def _run():
+        pres = PresentationIR(title="Beautify Deck")
+        pres.slides.append(SlideIR(id="s1", slide_num=1))
+
+        # 1. User says "美化ui" -> LLM classifies as optimize_layout
+        llm = MockRoutingLLM("optimize_layout")
+        state = {"user_query": "美化ui"}
+        res = await router_node(state, {"configurable": {"pres": pres, "llm_client": llm}})
+        assert llm.call_count == 1
+        assert res["intent"] == "optimize_layout"
+
+        # 2. User says complex aesthetic phrase -> LLM classifies as optimize_layout
+        llm2 = MockRoutingLLM("optimize_layout")
+        state2 = {"user_query": "这个界面的视觉效果太单调了，请帮我自动调整排版和UI质感"}
+        res2 = await router_node(state2, {"configurable": {"pres": pres, "llm_client": llm2}})
+        assert llm2.call_count == 1
+        assert res2["intent"] == "optimize_layout"
+
+    asyncio.run(_run())
+
+
+def test_beautify_ui_full_turn_executes_layout_tools():
+    """Verify that asking agent to '美化ui' executes layout beautification without being ignored as chat."""
+    async def _run():
+        pres = PresentationIR(title="Beautify UI Deck")
+        s = SlideIR(id="s1", slide_num=1)
+        # Overlapping elements that need beautification and remediation
+        s.add_element(TextElementIR(id="t1", x=80, y=100, width=500, height=60, text_content=TextContentIR.from_plain_text("页面标题")))
+        s.add_element(ShapeElementIR(id="c1", x=80, y=220, width=300, height=200))
+        s.add_element(ShapeElementIR(id="c2", x=400, y=220, width=300, height=200))
+        pres.slides.append(s)
+        history = HistoryManager()
+
+        runtime = AgentRuntime(llm_client=_DecidingLLM("optimize_layout"))
+
+        res = await runtime.run_turn(
+            user_message="美化ui",
+            pres=pres,
+            history=history
+        )
+
+        assert res["intent"] == "optimize_layout"
+        # Must execute layout optimization/remediation tools rather than doing nothing
+        assert len(res["tools_executed"]) > 0
+        executed_names = [t.get("tool") for t in res["tools_executed"]]
+        assert any(name in ("auto_fix_layout", "optimize_layout") for name in executed_names)
+
+    asyncio.run(_run())
+

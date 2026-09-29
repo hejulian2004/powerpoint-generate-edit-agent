@@ -19,15 +19,23 @@ from backend.session.session import PPTSession
 
 
 class MockLoopLLM:
-    """Mock LLM simulating first rejection then approval for plan and content."""
+    """Mock LLM simulating first rejection then approval for plan and content.
+
+    The model itself chooses generate_presentation and, when asked for tools,
+    returns the deck specification. A loop_mock_ key would skip those calls.
+    """
     def __init__(self, reject_first_plan: bool = False, reject_first_content: bool = False):
-        self.api_key = "loop_mock_key"
+        self.api_key = "loop_live_key"
         self.reject_first_plan = reject_first_plan
         self.reject_first_content = reject_first_content
         self.plan_call_count = 0
         self.content_call_count = 0
 
-    async def chat_completion(self, messages, role="reasoning", **kwargs):
+    async def chat_completion(self, messages, role="reasoning", tools=None, **kwargs):
+        from tests.intent_reply import generation_tool_choice, maybe_route
+        routed = maybe_route(messages, "generate_presentation")
+        if routed:
+            return routed
         if role == "vision":
             return {
                 "choices": [{
@@ -75,7 +83,8 @@ class MockLoopLLM:
                 }]
             }
 
-        # Fallback executor tools response
+        if tools:
+            return generation_tool_choice("下一代大模型技术演进")
         return {
             "choices": [{
                 "message": {

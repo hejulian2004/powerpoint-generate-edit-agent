@@ -859,3 +859,280 @@ def test_chinese_compact_table_locator():
         validate_truthfulness(raw_input, spec_tbl20, strict=True)
 
 
+def test_narrative_grounding_rejects_unsupported_qualitative_claims():
+    """Ensure qualitative hallucinations in slide titles (e.g. '全面超越') are rejected
+
+    even if they do not introduce unsupported numbers.
+    """
+    raw_input = """
+    We propose AnomalyAgent for industrial anomaly detection.
+    AnomalyAgent achieves an accuracy of 89.5% on MVTec AD.
+    """
+
+    # Hallucinated title claiming '全面超越' not in raw input
+    spec_hallucinated = CanonicalPPTSpec(
+        presentation=PresentationConfig(title="AnomalyAgent Paper"),
+        evidence=[MetricEvidence(id="m1", name="accuracy", value="89.5%")],
+        slides=[
+            SlideRequest(
+                id="s1",
+                type=SlideType.RESULT,
+                title="AnomalyAgent 实现了对现有工业异常检测方法的全面超越",
+                evidence_refs=["m1"],
+            )
+        ],
+    )
+
+    with pytest.raises(UnsupportedTextualFactError) as exc_info:
+        validate_truthfulness(raw_input, spec_hallucinated, strict=True)
+    assert "slide_title" in str(exc_info.value)
+
+    # Non-strict mode reports error
+    res = validate_truthfulness(raw_input, spec_hallucinated, strict=False)
+    assert res.valid is False
+    assert any("全面超越" in err for err in res.errors)
+
+
+def test_narrative_grounding_rejects_unsupported_objective_claims():
+    """Ensure ungrounded absolute assertions in slide objectives are rejected."""
+    raw_input = "We evaluate our proposed method on industrial anomaly detection."
+
+    spec_hallucinated_obj = CanonicalPPTSpec(
+        presentation=PresentationConfig(title="Presentation"),
+        evidence=[ClaimEvidence(id="c1", content="We evaluate our proposed method on industrial anomaly detection.")],
+        slides=[
+            SlideRequest(
+                id="s1",
+                type=SlideType.RESULT,
+                title="Result",
+                objective="展示本框架如何彻底解决小样本异常检测难题",
+                evidence_refs=["c1"],
+            )
+        ],
+    )
+
+    with pytest.raises(UnsupportedTextualFactError) as exc_info:
+        validate_truthfulness(raw_input, spec_hallucinated_obj, strict=True)
+    assert "slide_objective" in str(exc_info.value)
+
+
+def test_narrative_grounding_allows_editorial_labels_and_grounded_paraphrases():
+    """Ensure standard editorial labels ('研究背景', 'Results') and grounded phrases pass."""
+    raw_input = """
+    We propose AnomalyAgent for industrial anomaly detection.
+    Accuracy reaches 89.5%.
+    """
+
+    spec_valid = CanonicalPPTSpec(
+        presentation=PresentationConfig(title="AnomalyAgent Presentation"),
+        evidence=[MetricEvidence(id="m1", name="Accuracy", value="89.5%")],
+        slides=[
+            SlideRequest(
+                id="s1",
+                type=SlideType.TITLE,
+                title="封面",
+            ),
+            SlideRequest(
+                id="s2",
+                type=SlideType.RESULT,
+                title="研究背景",
+                objective="Introduce the paper",
+            ),
+            SlideRequest(
+                id="s3",
+                type=SlideType.RESULT,
+                title="Accuracy",
+                evidence_refs=["m1"],
+            ),
+        ],
+    )
+
+    res = validate_truthfulness(raw_input, spec_valid, strict=True)
+    assert res.valid is True
+    assert len(res.errors) == 0
+
+
+def test_narrative_grounding_rejects_verb_prefix_and_unsupported_title():
+    """Ensure verb prefixes like 'Summarize why ... dominates' cannot bypass grounding,
+
+    unsupported presentation titles are blocked, and layout instructions in titles are rejected.
+    """
+    raw_input = "We evaluate our proposed method on industrial anomaly detection."
+
+    # 1. Objective with verb prefix and comparative claim not in raw_input
+    spec_fake_obj = CanonicalPPTSpec(
+        presentation=PresentationConfig(title="Industrial Anomaly Detection"),
+        evidence=[ClaimEvidence(id="c1", content="We evaluate our proposed method on industrial anomaly detection.")],
+        slides=[
+            SlideRequest(
+                id="s1",
+                type=SlideType.RESULT,
+                title="Evaluation",
+                objective="Summarize why AnomalyAgent dominates every competing method",
+                evidence_refs=["c1"],
+            )
+        ],
+    )
+    with pytest.raises(UnsupportedTextualFactError) as exc_info:
+        validate_truthfulness(raw_input, spec_fake_obj, strict=True)
+    assert "slide_objective" in str(exc_info.value)
+
+    # 2. Unsupported presentation title with hallucinated framework name
+    spec_fake_title = CanonicalPPTSpec(
+        presentation=PresentationConfig(title="AnomalyAgent: A Universal Framework for Reliable Industrial Intelligence"),
+        evidence=[ClaimEvidence(id="c1", content="We evaluate our proposed method on industrial anomaly detection.")],
+        slides=[
+            SlideRequest(
+                id="s1",
+                type=SlideType.RESULT,
+                title="Evaluation",
+                evidence_refs=["c1"],
+            )
+        ],
+    )
+    with pytest.raises(UnsupportedTextualFactError) as exc_info:
+        validate_truthfulness(raw_input, spec_fake_title, strict=True)
+    assert "presentation_title" in str(exc_info.value)
+
+    # 3. Layout instruction in user-visible slide title
+    spec_layout_title = CanonicalPPTSpec(
+        presentation=PresentationConfig(title="Industrial Anomaly Detection"),
+        evidence=[ClaimEvidence(id="c1", content="We evaluate our proposed method on industrial anomaly detection.")],
+        slides=[
+            SlideRequest(
+                id="s1",
+                type=SlideType.RESULT,
+                title="Split into 2 columns card grid",
+                evidence_refs=["c1"],
+            )
+        ],
+    )
+    with pytest.raises(UnsupportedTextualFactError) as exc_info:
+        validate_truthfulness(raw_input, spec_layout_title, strict=True)
+    assert "slide_title" in str(exc_info.value)
+
+
+def test_narrative_grounding_allows_conservative_morphological_variants():
+    """Ensure conservative morphology variants (e.g. improves -> improved) pass with evidence."""
+    raw_input = "AnomalyAgent improves anomaly detection robustness across industrial benchmarks."
+    spec = CanonicalPPTSpec(
+        presentation=PresentationConfig(title="AnomalyAgent Robustness"),
+        evidence=[ClaimEvidence(id="c1", content="AnomalyAgent improves anomaly detection robustness across industrial benchmarks.")],
+        slides=[
+            SlideRequest(
+                id="s1",
+                type=SlideType.RESULT,
+                title="Improved Robustness for Anomaly Detection",
+                objective="Discussion of improved detection",
+                evidence_refs=["c1"],
+            )
+        ],
+    )
+    res = validate_truthfulness(raw_input, spec, strict=True)
+    assert res.valid is True
+
+
+def test_claim_relation_recombination_rejection():
+    """Ensure relational comparison claims cannot recombine entities across disconnected sentences."""
+    # Sentence 1: AlgorithmAlpha beats BaselineB.
+    # Sentence 2: AlgorithmBeta beats BaselineC.
+    raw_input = (
+        "Benchmark: In our experiments, AlgorithmAlpha beats BaselineB by a significant margin. "
+        "Furthermore, AlgorithmBeta beats BaselineC on ImageNet."
+    )
+
+    spec_invalid = CanonicalPPTSpec(
+        presentation=PresentationConfig(title="Benchmark"),
+        evidence=[ClaimEvidence(id="c1", content="AlgorithmBeta beats BaselineB")],
+        slides=[SlideRequest(id="s1", type=SlideType.RESULT, title="Results", evidence_refs=["c1"])],
+    )
+
+    # Recombining entities across disconnected sentences is rejected by textual provenance (literal) or relation binding
+    with pytest.raises((UnsupportedFactRelationError, UnsupportedTextualFactError)) as exc_info:
+        validate_truthfulness(raw_input, spec_invalid, strict=True)
+    assert "AlgorithmBeta beats BaselineB" in str(exc_info.value) or "claim_relation" in str(exc_info.value)
+
+    # Valid co-located relation passes
+    spec_valid = CanonicalPPTSpec(
+        presentation=PresentationConfig(title="Benchmark"),
+        evidence=[ClaimEvidence(id="c1", content="AlgorithmAlpha beats BaselineB")],
+        slides=[SlideRequest(id="s1", type=SlideType.RESULT, title="Results", evidence_refs=["c1"])],
+    )
+    res = validate_truthfulness(raw_input, spec_valid, strict=True)
+    assert res.valid is True
+
+
+def test_truthfulness_json_equation_latex_and_source_page_grounding():
+    """Verify that JSON-escaped LaTeX formulas and JSON-formatted source_page numbers are grounded."""
+    import json
+
+    raw_json = json.dumps({
+        "spec_version": "1.0",
+        "presentation": {"title": "RL Math Reasoning", "style": "academic_clean"},
+        "evidence": [
+            {
+                "id": "eq1",
+                "kind": "equation",
+                "latex": r"g(\tau)=\alpha_{out}r_{out}+\sum_{t=1}^{T}\gamma^{t-1}r_t",
+                "description": "Trajectory return",
+            },
+            {
+                "id": "c1",
+                "kind": "claim",
+                "source_page": 4,
+                "content": "SERC inner loop computes process rewards.",
+            },
+            {
+                "id": "fig2",
+                "kind": "figure_reference",
+                "label": "Figure 2",
+                "source_page": 3,
+                "caption": "The Framework of Agent0-VL",
+            },
+        ],
+        "slides": [
+            {
+                "id": "s1",
+                "type": "METHOD_OVERVIEW",
+                "title": "Method Architecture",
+                "evidence_refs": ["eq1", "c1", "fig2"],
+            }
+        ],
+    })
+
+    spec = CanonicalPPTSpec(
+        spec_version="1.0",
+        presentation=PresentationConfig(title="RL Math Reasoning", style="academic_clean"),
+        evidence=[
+            EquationEvidence(
+                id="eq1",
+                latex=r"g(\tau)=\alpha_{out}r_{out}+\sum_{t=1}^{T}\gamma^{t-1}r_t",
+                description="Trajectory return",
+            ),
+            ClaimEvidence(
+                id="c1",
+                source_page=4,
+                content="SERC inner loop computes process rewards.",
+            ),
+            FigureReferenceEvidence(
+                id="fig2",
+                label="Figure 2",
+                source_page=3,
+                caption="The Framework of Agent0-VL",
+            ),
+        ],
+        slides=[
+            SlideRequest(
+                id="s1",
+                type=SlideType.METHOD_OVERVIEW,
+                title="Method Architecture",
+                evidence_refs=["eq1", "c1", "fig2"],
+            )
+        ],
+    )
+
+    # In strict mode, both the escaped LaTeX and source_page must pass truthfulness guard
+    res = validate_truthfulness(raw_json, spec, strict=True)
+    assert res.valid is True
+    assert len(res.errors) == 0
+

@@ -197,28 +197,14 @@ class VisualCriticSubagent:
                 res = await llm_client.chat_completion(isolated_messages, role="vision", max_tokens=600)
                 multimodal_feedback = res["choices"][0]["message"].get("content", "视觉分析完成")
 
-                # Extract aesthetic score from independent subagent review
+                # The model score stays on the feedback record. health_report.score
+                # is sealed with the rule engine before this call, so prose cannot
+                # change which FixActions run.
+                model_aesthetic = None
                 if multimodal_feedback:
                     m = re.search(r'【美学评分[:：]\s*(\d{1,3})\s*(?:/\s*100)?】', multimodal_feedback)
                     if m:
-                        vm_score = max(0.0, min(100.0, float(m.group(1))))
-                        rule_aesthetic = health_report.quality_score.aesthetics
-                        # 50% rule-based + 50% independent subagent aesthetic rating
-                        fused_aesthetic = round(0.50 * rule_aesthetic + 0.50 * vm_score, 1)
-                        health_report.quality_score.aesthetics = fused_aesthetic
-
-                        # Recompute total score
-                        qs = health_report.quality_score
-                        new_total = round(
-                            0.30 * qs.geometry +
-                            0.20 * qs.readability +
-                            0.15 * qs.contrast +
-                            0.15 * qs.balance +
-                            0.20 * qs.aesthetics,
-                            1
-                        )
-                        qs.total = new_total
-                        health_report.score = new_total
+                        model_aesthetic = max(0.0, min(100.0, float(m.group(1))))
 
                 vision_status = {
                     "vision_available": True,
@@ -228,7 +214,8 @@ class VisualCriticSubagent:
                     "fallback": None,
                     "subagent": "VisualCriticSubagent",
                     "context_isolated": True,
-                    "message": "视觉质检 Subagent 独立盲审完成"
+                    "aesthetic_model_score": model_aesthetic,
+                    "message": "视觉质检 Subagent 独立盲审完成。模型美学分只记入反馈，不改规则健康分。"
                 }
             except Exception as e:
                 logger.warning(f"Subagent vision critique failed, falling back: {e}")

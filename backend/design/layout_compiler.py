@@ -31,13 +31,13 @@ from ..layout.schema import (
 from ..layout.validator import ValidationReport, validate_layout
 from ..slidespec.schema import SlideSpec
 from .layout_schema import LayoutElementPlan, LLMLayoutPlan
+from .tokens import MAX_CARD_RADIUS
 
 logger = logging.getLogger(__name__)
 
 LAYOUT_PLAN_VERSION = "1.0.0"
 MIN_READABLE_FONT_SIZE = 10.0
 MIN_BODY_FONT_SIZE = 12.0
-MAX_CARD_RADIUS = 3.0
 
 _ALIGNMENTS = {"left", "center", "right", "justify"}
 _VERTICAL_ALIGNMENTS = {"top", "middle", "bottom"}

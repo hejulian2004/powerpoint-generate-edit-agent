@@ -265,6 +265,10 @@ class _PlanMockLLM:
     api_key = "plan_mock_key"
 
     async def chat_completion(self, messages, role="reasoning", **kwargs):
+        from tests.intent_reply import maybe_route
+        routed = maybe_route(messages, "generate_presentation")
+        if routed:
+            return routed
         if role == "vision":
             return {"choices": [{"message": {"content": "【美学评分: 90/100】"}}]}
         sys_msg = next((m["content"] for m in messages if m.get("role") == "system"), "")

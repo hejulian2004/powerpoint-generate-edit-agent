@@ -6,7 +6,6 @@ from backend.ir.models import PresentationIR, SlideIR
 from backend.ir.patch import HistoryManager
 from backend.agent.tools import tools
 from backend.agent.runtime import AgentRuntime
-from backend.agent.llm import LLMClient
 
 
 def test_tool_create_and_delete_slide():
@@ -82,14 +81,44 @@ def test_tool_add_and_update_shape():
     assert slide.elements[0].style.fill.color == "#3B82F6"
 
 
+class _TitleSlideLLM:
+    """Model decision for one turn: modify the current slide by adding a title."""
+
+    api_key = "runtime_live_key"
+
+    async def chat_completion(self, messages, role="reasoning", tools=None, **kwargs):
+        from tests.intent_reply import maybe_route, tool_call_choice
+
+        routed = maybe_route(messages, "modify_elements")
+        if routed:
+            return routed
+        if tools:
+            return tool_call_choice("add_text", {
+                "slide_id": "s1",
+                "text": "标题幻灯片",
+                "x": 100,
+                "y": 80,
+                "width": 1080,
+                "height": 70,
+                "font_size": 36,
+                "font_color": "#1E293B",
+                "bold": True,
+                "align": "center",
+            })
+        if role == "vision":
+            return {"choices": [{"message": {"content": "【美学评分: 90/100】"}}]}
+        return {"choices": [{"message": {"content": "【内容评审结论】: 通过\n【内容健康分: 92/100】"}}]}
+
+
 def test_agent_runtime_turn():
     async def _inner():
         pres = PresentationIR(title="Agent Test Pres")
         pres.slides.append(SlideIR(id="s1", slide_num=1, title="Intro"))
         history = HistoryManager()
 
-        # Mock client will trigger add_text / add_shape based on prompt keywords
-        client = LLMClient(api_key="mock_key")
+        # The model chooses modify_elements, then the add_text call. The mock
+        # client's keyword tool table is not an intent classifier.
+        client = _TitleSlideLLM()
         runtime = AgentRuntime(llm_client=client)
 
         events = []

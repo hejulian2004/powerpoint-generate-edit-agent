@@ -98,9 +98,20 @@ def test_collect_generation_text_excludes_structural_badges():
 # 3. Router clarification gate
 # =====================================================================
 
+class _IntentLLM:
+    """The model classifies the request; the test does not keyword-match it."""
+
+    def __init__(self, intent: str):
+        self.intent = intent
+
+    async def chat_completion(self, messages, role="fast", **kwargs):
+        from tests.intent_reply import intent_choice
+        return intent_choice(self.intent)
+
+
 def test_router_asks_for_source_when_factual_and_ungrounded():
     state = {"user_query": "制作一份关于2025年Q3财报的数据汇报PPT", "messages": []}
-    result = asyncio.run(router_node(state, {"configurable": {}}))
+    result = asyncio.run(router_node(state, {"configurable": {"llm_client": _IntentLLM("generate_presentation")}}))
     assert result["intent"] == "generate_presentation"
     assert result["grounding_clarification"]
     assert result["grounding"]["requires_source"] is True
@@ -111,7 +122,10 @@ def test_router_proceeds_when_source_supplied():
         "user_query": "根据以上数据制作一份汇报PPT",
         "messages": [{"role": "user", "content": "2025年Q3营收12.3亿元，同比增长35%。"}],
     }
-    result = asyncio.run(router_node(state, {"configurable": {}}))
+    result = asyncio.run(router_node(
+        state,
+        {"configurable": {"llm_client": _IntentLLM("generate_presentation")}},
+    ))
     assert result["grounding_clarification"] is None
     assert result["grounding"]["has_source"] is True
 

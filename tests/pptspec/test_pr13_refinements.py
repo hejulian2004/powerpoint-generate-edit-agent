@@ -382,7 +382,7 @@ async def test_llm_normalizer_fallback_called():
     mock_llm = AsyncMock()
     # LLM returns valid CanonicalPPTSpec JSON without inventing facts
     mock_spec_json = json.dumps({
-        "presentation": {"title": "LLM Repaired"},
+        "presentation": {"title": "Overview"},
         "evidence": [{"id": "c1", "kind": "claim", "content": "Evidence grounded in raw text."}],
         "slides": [{"id": "s1", "type": "RESULT", "title": "Overview", "evidence_refs": ["c1"]}],
     })
@@ -402,7 +402,7 @@ async def test_llm_normalizer_fallback_called():
     assert mock_llm.chat_completion.called
     assert res.valid is True
     assert res.spec is not None
-    assert res.spec.presentation.title == "LLM Repaired"
+    assert res.spec.presentation.title == "Overview"
 
 
 # =====================================================================

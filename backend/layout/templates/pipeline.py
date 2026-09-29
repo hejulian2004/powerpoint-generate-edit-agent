@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, List
 
+from ...design.tokens import MAX_CARD_RADIUS
 from ...slidespec.schema import BlockRole, FigureBlock, SlideSpec, TableBlock, TextBlock
 from ..schema import (
     Canvas,
@@ -80,7 +81,7 @@ class PipelineArchitectureTemplate(BaseLayoutTemplate):
                                 background_color="#F8FAFC" if t.emphasis else None,
                                 border_color="#E2E8F0" if t.emphasis else None,
                                 border_width=1.0 if t.emphasis else 0.0,
-                                corner_radius=6.0 if t.emphasis else 0.0,
+                                corner_radius=MAX_CARD_RADIUS if t.emphasis else 0.0,
                                 padding=pad if t.emphasis else 4.0,
                                 text=TextStyle(
                                     font_size=font_sz,
@@ -146,7 +147,7 @@ class PipelineArchitectureTemplate(BaseLayoutTemplate):
                             background_color="#F8FAFC",
                             border_color="#E2E8F0",
                             border_width=1.0,
-                            corner_radius=8.0,
+                            corner_radius=MAX_CARD_RADIUS,
                             padding=pad,
                             text=TextStyle(
                                 font_size=font_sz,

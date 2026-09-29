@@ -213,7 +213,7 @@ class _StubExecutorLLM:
 
 
 def test_planned_tool_call_threads_uic_active_slide():
-    """The requesting client's active slide is bound onto the concrete tool call."""
+    """Offline layout wording asks for content and does not write the live deck."""
     async def _run():
         pres = _pres(active="slide_1")
         session = PPTSession(session_id="sess_uic_thread", pres=pres)
@@ -229,8 +229,7 @@ def test_planned_tool_call_threads_uic_active_slide():
         )
         assert plan.tool_calls
         call = plan.tool_calls[0]
-        assert call["arguments"]["slide_id"] == "slide_2"
-        # Planning is request-scoped: the live document is untouched.
+        assert call["name"] == "request_clarification"
         assert pres.active_slide_id == "slide_1"
 
     asyncio.run(_run())
